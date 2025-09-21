@@ -1,0 +1,227 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Updated to cosmic Web3 theme with neon green, purple, and black */
+  --background: #000000;
+  --foreground: #f0f0f0;
+  --card: rgba(255, 255, 255, 0.05);
+  --card-foreground: #f0f0f0;
+  --popover: rgba(255, 255, 255, 0.1);
+  --popover-foreground: #f0f0f0;
+  --primary: #00ff7f;
+  --primary-foreground: #000000;
+  --secondary: #800080;
+  --secondary-foreground: #f0f0f0;
+  --muted: rgba(255, 255, 255, 0.3);
+  --muted-foreground: #a0a0a0;
+  --accent: #ffcc00;
+  --accent-foreground: #000000;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.1);
+  --input: rgba(255, 255, 255, 0.1);
+  --ring: #00ff7f;
+  --chart-1: #00ff7f;
+  --chart-2: #800080;
+  --chart-3: #ffcc00;
+  --chart-4: #dc2626;
+  --chart-5: #1a1a1a;
+  --radius: 0.5rem;
+  --sidebar: rgba(0, 0, 0, 0.7);
+  --sidebar-foreground: #f0f0f0;
+  --sidebar-primary: #00ff7f;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #800080;
+  --sidebar-accent-foreground: #f0f0f0;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+  --sidebar-ring: #00ff7f;
+}
+
+.dark {
+  --background: #000000;
+  --foreground: #f0f0f0;
+  --card: rgba(255, 255, 255, 0.05);
+  --card-foreground: #f0f0f0;
+  --popover: rgba(255, 255, 255, 0.1);
+  --popover-foreground: #f0f0f0;
+  --primary: #00ff7f;
+  --primary-foreground: #000000;
+  --secondary: #800080;
+  --secondary-foreground: #f0f0f0;
+  --muted: rgba(255, 255, 255, 0.3);
+  --muted-foreground: #a0a0a0;
+  --accent: #ffcc00;
+  --accent-foreground: #000000;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.1);
+  --input: rgba(255, 255, 255, 0.1);
+  --ring: #00ff7f;
+  --chart-1: #00ff7f;
+  --chart-2: #800080;
+  --chart-3: #ffcc00;
+  --chart-4: #dc2626;
+  --chart-5: #1a1a1a;
+  --sidebar: rgba(0, 0, 0, 0.7);
+  --sidebar-foreground: #f0f0f0;
+  --sidebar-primary: #00ff7f;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #800080;
+  --sidebar-accent-foreground: #f0f0f0;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+  --sidebar-ring: #00ff7f;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Added cosmic background and animations */
+.cosmic-bg {
+  background: linear-gradient(to bottom, #00ff7f 0%, #1a4d2e 25%, #0d1f14 50%, #000000 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.cosmic-bg::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: radial-gradient(2px 2px at 20px 30px, rgba(255, 255, 255, 0.3), transparent),
+    radial-gradient(2px 2px at 40px 70px, rgba(255, 255, 255, 0.2), transparent),
+    radial-gradient(1px 1px at 90px 40px, rgba(255, 255, 255, 0.4), transparent),
+    radial-gradient(1px 1px at 130px 80px, rgba(255, 255, 255, 0.3), transparent),
+    radial-gradient(2px 2px at 160px 30px, rgba(255, 255, 255, 0.2), transparent);
+  background-repeat: repeat;
+  background-size: 200px 100px;
+  animation: stars 20s linear infinite;
+}
+
+@keyframes stars {
+  from {
+    transform: translateY(0px);
+  }
+  to {
+    transform: translateY(-100px);
+  }
+}
+
+.glow-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(1px);
+  animation: float 6s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-20px) rotate(180deg);
+  }
+}
+
+.glassmorphism {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.glow-button {
+  box-shadow: 0 0 20px rgba(147, 51, 234, 0.4);
+  transition: all 0.3s ease;
+}
+
+.glow-button:hover {
+  box-shadow: 0 0 30px rgba(147, 51, 234, 0.6);
+  transform: translateY(-2px);
+}
+
+/* Added orbit ring animations for spheres */
+.orbit-ring {
+  position: absolute;
+  border: 1px solid rgba(147, 51, 234, 0.3);
+  border-radius: 50%;
+  animation: rotate 20s linear infinite;
+}
+
+@keyframes rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.planet-sphere {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(0.5px);
+  animation: float 8s ease-in-out infinite;
+  box-shadow: 0 0 40px rgba(147, 51, 234, 0.3);
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0px) scale(1);
+  }
+  50% {
+    transform: translateY(-30px) scale(1.05);
+  }
+}
