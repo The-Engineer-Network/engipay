@@ -101,7 +101,7 @@ export default function PaymentsSwapsPage() {
   }
 
   return (
-    <div className="min-h-screen cosmic-bg text-foreground">
+    <div className="min-h-screen bg-black text-foreground">
       {/* Floating Orbs */}
       <div className="glow-orb w-32 h-32 bg-gradient-to-r from-primary/30 to-secondary/30 top-20 left-10" />
       <div className="glow-orb w-24 h-24 bg-gradient-to-r from-secondary/20 to-accent/20 top-40 right-20" />
