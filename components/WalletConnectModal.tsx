@@ -1,21 +1,22 @@
 "use client"
 
 import { useState } from "react"
-import { 
-  Dialog, 
-  DialogContent, 
-  DialogHeader, 
-  DialogTitle, 
-  DialogDescription 
+import { useRouter } from "next/navigation"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { 
-  Wallet, 
-  Shield, 
-  Zap, 
-  ArrowRightLeft, 
-  Bitcoin, 
+import {
+  Wallet,
+  Shield,
+  Zap,
+  ArrowRightLeft,
+  Bitcoin,
   ExternalLink,
   CheckCircle,
   TrendingUp
@@ -29,6 +30,7 @@ interface WalletConnectModalProps {
 export function WalletConnectModal({ open, onOpenChange }: WalletConnectModalProps) {
   const [connecting, setConnecting] = useState(false)
   const [connectedWallet, setConnectedWallet] = useState<string | null>(null)
+  const router = useRouter()
 
   const wallets = [
     {
@@ -76,6 +78,7 @@ export function WalletConnectModal({ open, onOpenChange }: WalletConnectModalPro
       setConnectedWallet(walletName)
       setConnecting(false)
       setTimeout(() => {
+        window.location.href = '/dashboard'
         onOpenChange(false)
         setConnectedWallet(null)
       }, 2000)
