@@ -2,12 +2,13 @@ import type { Metadata } from 'next'
 import { GeistSans } from 'geist/font/sans'
 import { GeistMono } from 'geist/font/mono'
 import { Analytics } from '@vercel/analytics/next'
+import { WalletProvider } from '@/contexts/WalletContext'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.app',
+  title: 'EngiPay - DeFi Dashboard',
+  description: 'Your comprehensive DeFi portfolio management dashboard',
+  generator: 'EngiPay',
 }
 
 export const viewport = {
@@ -29,8 +30,10 @@ export default function RootLayout({
         <meta httpEquiv="Expires" content="0" />
       </head>
       <body className={`font-sans ${GeistSans.variable} ${GeistMono.variable}`}>
-        {children}
-        <Analytics />
+        <WalletProvider>
+          {children}
+          <Analytics />
+        </WalletProvider>
       </body>
     </html>
   )

@@ -425,10 +425,7 @@ export default function EngiPayLanding() {
         </div>
         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
           {exploreCards.map((card, index) => (
-            <Card
-              key={index}
-              className="glassmorphism hover:scale-105 transition-all duration-300 cursor-pointer group"
-            >
+            <Card key={index} className="glassmorphism hover:scale-105 transition-all duration-300 cursor-pointer group">
               <CardContent className="p-8 text-center">
                 <div className="text-primary mb-4 flex justify-center group-hover:scale-110 transition-transform">
                   {card.icon}
@@ -547,3 +544,4 @@ export default function EngiPayLanding() {
     </div>
   )
 }
+
