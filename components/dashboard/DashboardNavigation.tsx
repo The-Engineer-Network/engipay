@@ -1,6 +1,7 @@
 "use client"
 
-import { Wallet, TrendingUp, Clock, Target } from "lucide-react"
+import Link from "next/link"
+import { Wallet, TrendingUp, Target } from "lucide-react"
 import { TabType } from "@/types/dashboard"
 
 interface DashboardNavigationProps {
@@ -9,10 +10,13 @@ interface DashboardNavigationProps {
 }
 
 export function DashboardNavigation({ activeTab, onTabChange }: DashboardNavigationProps) {
-  const tabs = [
-    { id: "overview", label: "Overview", icon: <Wallet className="w-4 h-4" /> },
-    { id: "payment", label: "Payment & Swap", icon: <TrendingUp className="w-4 h-4" /> },
-    { id: "defi", label: "DeFi & Profile", icon: <Target className="w-4 h-4" /> },
+  const tabs: { id: TabType; label: string; icon: React.ReactNode; isLink: boolean }[] = [
+    { id: "overview", label: "Overview", icon: <Wallet className="w-4 h-4" />, isLink: false },
+    { id: "payment", label: "Payment & Swap", icon: <TrendingUp className="w-4 h-4" />, isLink: false },
+  ]
+
+  const links = [
+    { href: "/defi", label: "DeFi & Profile", icon: <Target className="w-4 h-4" /> },
   ]
 
   return (
@@ -22,7 +26,7 @@ export function DashboardNavigation({ activeTab, onTabChange }: DashboardNavigat
           {tabs.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => onTabChange(tab.id)}
+              onClick={() => onTabChange(tab.id as TabType)}
               className="flex items-center space-x-2 py-4 px-2 font-medium transition-colors"
               style={{
                 borderBottom: activeTab === tab.id ? '2px solid #00d084' : '2px solid transparent',
@@ -42,6 +46,25 @@ export function DashboardNavigation({ activeTab, onTabChange }: DashboardNavigat
               {tab.icon}
               <span>{tab.label}</span>
             </button>
+          ))}
+          {links.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className="flex items-center space-x-2 py-4 px-2 font-medium transition-colors"
+              style={{
+                color: 'rgba(255, 255, 255, 0.7)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = '#ffffff'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)'
+              }}
+            >
+              {link.icon}
+              <span>{link.label}</span>
+            </Link>
           ))}
         </div>
       </div>

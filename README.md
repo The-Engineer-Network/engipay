@@ -10,6 +10,8 @@ A revolutionary Web3 super app that combines everyday payments with powerful DeF
 - **🔄 Cross-Chain Swaps**: Seamless BTC ↔ STRK/ETH via Atomiq SDK
 - **₿ Bitcoin Ready**: Direct Bitcoin integration via Xverse Wallet API
 - **💰 DeFi Power Tools**: Lending, borrowing, yield farming, and staking
+- **📊 Dashboard**: Real-time portfolio tracking and analytics
+- **🔗 Seamless Navigation**: Easy access between dashboard and DeFi features
 - **🔒 Enterprise Security**: Built on StarkNet's zero-knowledge rollup technology
 - **📱 Mobile-First**: Responsive design with smooth animations
 
@@ -45,9 +47,15 @@ engipay/
 ├── app/                          # Next.js App Router
 │   ├── about/                    # About page
 │   │   └── page.tsx
+│   ├── dashboard/                # Main dashboard
+│   │   └── page.tsx
+│   ├── defi/                     # DeFi management page
+│   │   └── page.tsx
 │   ├── faq/                      # FAQ page
 │   │   └── page.tsx
 │   ├── features/                 # Features page
+│   │   └── page.tsx
+│   ├── profile-page/             # User profile page
 │   │   └── page.tsx
 │   ├── technology/               # Technology page
 │   │   └── page.tsx
@@ -60,6 +68,16 @@ engipay/
 │   │   ├── card.tsx
 │   │   ├── loader.tsx           # Custom loader components
 │   │   └── ...
+│   ├── dashboard/                # Dashboard components
+│   │   ├── DashboardHeader.tsx
+│   │   ├── DashboardNavigation.tsx
+│   │   └── ...
+│   ├── defi/                     # DeFi components
+│   │   ├── portfolio-overview.tsx
+│   │   ├── yield-farming.tsx
+│   │   ├── lending-borrowing.tsx
+│   │   ├── claim-rewards.tsx
+│   │   └── profile-settings.tsx
 │   ├── theme-provider.tsx       # Theme provider
 │   └── WalletConnectModal.tsx   # Wallet connection modal
 ├── hooks/                        # Custom React hooks
@@ -217,6 +235,21 @@ import type { ComponentProps } from './types'
 - Call-to-action buttons
 - Newsletter subscription
 - Footer with social links
+
+### Dashboard Page (`/dashboard`)
+- Portfolio overview with balance cards
+- Recent activity feed
+- Quick action buttons
+- DeFi opportunities
+- Navigation to DeFi and Profile pages
+
+### DeFi Page (`/defi`)
+- Portfolio overview with charts and positions
+- Yield farming and staking pools
+- Lending and borrowing interface
+- Rewards claiming system
+- Profile settings management
+- Back button to dashboard
 
 ### About Page (`/about`)
 - Company mission and values
