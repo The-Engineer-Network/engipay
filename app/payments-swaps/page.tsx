@@ -1,6 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
+import { useWallet } from "@/contexts/WalletContext"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -19,12 +22,26 @@ import {
   Filter,
   Calendar,
   DollarSign,
+  ArrowLeft,
 } from "lucide-react"
 
 export default function PaymentsSwapsPage() {
   const [selectedToken, setSelectedToken] = useState("")
   const [amount, setAmount] = useState("")
   const [destinationToken, setDestinationToken] = useState("")
+  const router = useRouter()
+  const { isConnected } = useWallet()
+
+  useEffect(() => {
+    // Check wallet connection - check both context and localStorage
+    const savedWallet = localStorage.getItem("engipay-wallet")
+    const hasWalletConnection = isConnected || savedWallet
+
+    if (!hasWalletConnection) {
+      router.push('/')
+      return
+    }
+  }, [isConnected, router])
 
   const paymentOptions = [
     {
@@ -107,9 +124,17 @@ export default function PaymentsSwapsPage() {
       <div className="glow-orb w-24 h-24 bg-gradient-to-r from-secondary/20 to-accent/20 top-40 right-20" />
 
       <div className="container mx-auto px-4 py-8">
-        <div className="text-center mb-8">
-          <h1 className="text-4xl md:text-5xl font-bold mb-4">Payments & Swaps</h1>
-          <p className="text-xl text-muted-foreground">Manage your transactions and cross-chain swaps</p>
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-4xl md:text-5xl font-bold mb-4">Payments & Swaps</h1>
+            <p className="text-xl text-muted-foreground">Manage your transactions and cross-chain swaps</p>
+          </div>
+          <Link href="/dashboard">
+            <Button variant="outline" className="flex items-center gap-2">
+              <ArrowLeft className="w-4 h-4" />
+              Back to Dashboard
+            </Button>
+          </Link>
         </div>
 
         {/* Payments Section */}

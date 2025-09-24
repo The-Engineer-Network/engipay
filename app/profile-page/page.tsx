@@ -1,7 +1,9 @@
 "use client"
 
 import '@/styles/profile-page.css'
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
+import { useWallet } from "@/contexts/WalletContext"
 import { ArrowLeft, TrendingUp, Wallet, Settings, Award, PieChart } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -15,6 +17,19 @@ import { ProfileSettings } from "@/components/defi/profile-settings"
 
 export default function ProfilePage() {
   const [activeTab, setActiveTab] = useState("portfolio")
+  const router = useRouter()
+  const { isConnected } = useWallet()
+
+  useEffect(() => {
+    // Check wallet connection - check both context and localStorage
+    const savedWallet = localStorage.getItem("engipay-wallet")
+    const hasWalletConnection = isConnected || savedWallet
+
+    if (!hasWalletConnection) {
+      router.push('/')
+      return
+    }
+  }, [isConnected, router])
 
   return (
     <div className="min-h-screen bg-background">

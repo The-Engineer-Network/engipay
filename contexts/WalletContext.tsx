@@ -15,12 +15,15 @@ interface WalletContextType {
   walletAddress: string | null;
   walletName: string | null;
   isConnecting: boolean;
+  balances: any[];
+  isLoadingBalances: boolean;
   connectWallet: (walletName: string) => Promise<void>;
   disconnectWallet: () => void;
   openWalletModal: () => void;
   closeWalletModal: () => void;
   showWalletModal: boolean;
   checkWalletInstalled: (walletName: string) => boolean;
+  fetchBalances: () => Promise<void>;
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
@@ -43,6 +46,8 @@ export function WalletProvider({ children }: WalletProviderProps) {
   const [walletName, setWalletName] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [showWalletModal, setShowWalletModal] = useState(false);
+  const [balances, setBalances] = useState<any[]>([]);
+  const [isLoadingBalances, setIsLoadingBalances] = useState(false);
 
   // Check for existing connection on mount
   useEffect(() => {
@@ -169,6 +174,9 @@ export function WalletProvider({ children }: WalletProviderProps) {
         title: "Wallet connected",
         description: `Successfully connected to ${walletName}`,
       });
+
+      // Fetch balances after connection
+      await fetchBalances();
     } catch (error: any) {
       console.error("Wallet connection error:", error);
       toast({
@@ -195,10 +203,94 @@ export function WalletProvider({ children }: WalletProviderProps) {
     }
   };
 
+  const fetchBalances = async () => {
+    if (!walletAddress || !window.ethereum) return;
+
+    setIsLoadingBalances(true);
+    try {
+      const provider = new ethers.providers.Web3Provider(window.ethereum);
+
+      // Common token contracts (Ethereum mainnet)
+      const tokens = [
+        {
+          symbol: "ETH",
+          name: "Ethereum",
+          address: null, // Native ETH
+          decimals: 18,
+          icon: "🔷"
+        },
+        {
+          symbol: "USDT",
+          name: "Tether",
+          address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", // USDT contract
+          decimals: 6,
+          icon: "💵"
+        },
+        {
+          symbol: "USDC",
+          name: "USD Coin",
+          address: "0xA0b86a33E6441e88C5F2712C3E9b74F63F8F8E8b", // USDC contract
+          decimals: 6,
+          icon: "💰"
+        }
+      ];
+
+      const balances = [];
+
+      for (const token of tokens) {
+        try {
+          let balance;
+          if (token.address === null) {
+            // Native ETH balance
+            balance = await provider.getBalance(walletAddress);
+          } else {
+            // ERC-20 token balance
+            const contract = new ethers.Contract(
+              token.address,
+              ["function balanceOf(address) view returns (uint256)"],
+              provider
+            );
+            balance = await contract.balanceOf(walletAddress);
+          }
+
+          const formattedBalance = ethers.utils.formatUnits(balance, token.decimals);
+          const numericBalance = parseFloat(formattedBalance);
+
+          if (numericBalance > 0) {
+            balances.push({
+              symbol: token.symbol,
+              name: token.name,
+              balance: numericBalance.toFixed(token.decimals === 18 ? 4 : 2),
+              value: "$0.00", // Would need price API for real values
+              change: "+0.0%",
+              icon: token.icon,
+              trend: "stable" as const,
+              volume: "Real balance"
+            });
+          }
+        } catch (error) {
+          console.error(`Error fetching ${token.symbol} balance:`, error);
+        }
+      }
+
+      setBalances(balances);
+    } catch (error) {
+      console.error("Error fetching balances:", error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch wallet balances",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingBalances(false);
+    }
+  };
+
   const disconnectWallet = () => {
     setIsConnected(false);
     setWalletAddress(null);
     setWalletName(null);
+    setBalances([]);
     localStorage.removeItem("engipay-wallet");
     toast({
       title: "Wallet disconnected",
@@ -214,12 +306,15 @@ export function WalletProvider({ children }: WalletProviderProps) {
     walletAddress,
     walletName,
     isConnecting,
+    balances,
+    isLoadingBalances,
     connectWallet,
     disconnectWallet,
     openWalletModal,
     closeWalletModal,
     showWalletModal,
     checkWalletInstalled,
+    fetchBalances,
   };
 
   return (

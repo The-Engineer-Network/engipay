@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -22,6 +23,7 @@ import {
 import Link from "next/link"
 import { WalletConnectModal } from "@/components/WalletConnectModal"
 import { LovelyLoader } from "@/components/ui/loader"
+import { useWallet } from "@/contexts/WalletContext"
 
 export default function EngiPayLanding() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -29,6 +31,8 @@ export default function EngiPayLanding() {
   const [typedText, setTypedText] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [isSubscribing, setIsSubscribing] = useState(false)
+  const router = useRouter()
+  const { walletAddress, walletName, disconnectWallet, isConnected } = useWallet()
   const fullText =
     "Send, Swap, and Earn in one wallet-native experience — no banks, no intermediaries, just your wallet."
 
@@ -92,6 +96,10 @@ export default function EngiPayLanding() {
       setIsSubscribing(false)
       // You could add a success message here
     }, 2000)
+  }
+
+  const handleWalletDisconnect = () => {
+    disconnectWallet()
   }
 
   const XLogo = () => (
@@ -180,6 +188,11 @@ export default function EngiPayLanding() {
 
             {/* Desktop Menu */}
             <div className="hidden md:flex items-center space-x-8">
+              {isConnected && (
+                <Link href="/dashboard" className="text-black hover:text-purple-500 transition-colors font-medium">
+                  Dashboard
+                </Link>
+              )}
               <Link href="/features" className="text-black hover:text-purple-500 transition-colors font-medium">
                 Features
               </Link>
@@ -193,13 +206,23 @@ export default function EngiPayLanding() {
                 FAQ
               </Link>
               <div className="flex items-center space-x-2">
-                <Button
-                  className="glow-button bg-purple-600 hover:bg-purple-700 text-white flex items-center gap-2"
-                  onClick={handleGetStarted}
-                >
-                  <Settings className="w-4 h-4" />
-                  Connect Wallet
-                </Button>
+                {isConnected ? (
+                  <Button
+                    className="glow-button bg-green-600 hover:bg-green-700 text-white flex items-center gap-2"
+                    onClick={handleWalletDisconnect}
+                  >
+                    <Wallet className="w-4 h-4" />
+                    {walletName} ({walletAddress?.slice(0, 6)}...)
+                  </Button>
+                ) : (
+                  <Button
+                    className="glow-button bg-purple-600 hover:bg-purple-700 text-white flex items-center gap-2"
+                    onClick={handleGetStarted}
+                  >
+                    <Settings className="w-4 h-4" />
+                    Connect Wallet
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -223,6 +246,15 @@ export default function EngiPayLanding() {
             }`}
           >
             <div className="space-y-4">
+              {isConnected && (
+                <Link
+                  href="/dashboard"
+                  className="block text-black hover:text-purple-500 transition-colors font-medium w-full text-left"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Dashboard
+                </Link>
+              )}
               <Link
                 href="/features"
                 className="block text-black hover:text-purple-500 transition-colors font-medium w-full text-left"
@@ -252,16 +284,29 @@ export default function EngiPayLanding() {
                 FAQ
               </Link>
               <div className="flex space-x-2">
-                <Button
-                  className="flex-1 glow-button bg-purple-600 hover:bg-purple-700 text-white flex items-center gap-2"
-                  onClick={() => {
-                    handleGetStarted()
-                    setMobileMenuOpen(false)
-                  }}
-                >
-                  <Settings className="w-4 h-4" />
-                  Connect Wallet
-                </Button>
+                {isConnected ? (
+                  <Button
+                    className="flex-1 glow-button bg-green-600 hover:bg-green-700 text-white flex items-center gap-2"
+                    onClick={() => {
+                      handleWalletDisconnect()
+                      setMobileMenuOpen(false)
+                    }}
+                  >
+                    <Wallet className="w-4 h-4" />
+                    {walletName} ({walletAddress?.slice(0, 6)}...)
+                  </Button>
+                ) : (
+                  <Button
+                    className="flex-1 glow-button bg-purple-600 hover:bg-purple-700 text-white flex items-center gap-2"
+                    onClick={() => {
+                      handleGetStarted()
+                      setMobileMenuOpen(false)
+                    }}
+                  >
+                    <Settings className="w-4 h-4" />
+                    Connect Wallet
+                  </Button>
+                )}
               </div>
             </div>
           </div>

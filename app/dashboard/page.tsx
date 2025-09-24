@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
+import { useWallet } from "@/contexts/WalletContext"
 import { LovelyLoader } from "@/components/ui/loader"
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader"
 import { DashboardNavigation } from "@/components/dashboard/DashboardNavigation"
@@ -9,22 +10,32 @@ import { BalanceCard } from "@/components/dashboard/BalanceCard"
 import { QuickActions } from "@/components/dashboard/QuickActions"
 import { ActivityCard } from "@/components/dashboard/ActivityCard"
 import { DeFiCard } from "@/components/dashboard/DeFiCard"
-import { mockBalances, mockRecentActivity, mockDeFiOpportunities } from "@/data/dashboardData"
+import { mockRecentActivity, mockDeFiOpportunities } from "@/data/dashboardData"
 import { TabType } from "@/types/dashboard"
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<TabType>("overview")
   const router = useRouter()
+  const { isConnected, balances, isLoadingBalances } = useWallet()
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
+    // Check wallet connection - check both context and localStorage
+    const savedWallet = localStorage.getItem("engipay-wallet")
+    const hasWalletConnection = isConnected || savedWallet
+
+    if (!hasWalletConnection) {
+      router.push('/')
+      return
+    }
+
     // Simulate initial loading
     const timer = setTimeout(() => {
       setIsLoading(false)
     }, 1500)
 
     return () => clearTimeout(timer)
-  }, [])
+  }, [isConnected, router])
 
 
   const handleQuickAction = (action: string) => {
@@ -71,8 +82,10 @@ export default function DashboardPage() {
             </div>
             <div className="flex items-center justify-center lg:justify-end space-x-4">
               <div className="text-center lg:text-right">
-                <div className="text-xl sm:text-2xl font-bold text-green-400">+$2,847.32</div>
-                <div className="text-xs sm:text-sm text-gray-400">24h Change</div>
+                <div className="text-xl sm:text-2xl font-bold text-green-400">
+                  {isLoadingBalances ? '...' : `$${balances.reduce((total, asset) => total + parseFloat(asset.value.replace('$', '')), 0).toFixed(2)}`}
+                </div>
+                <div className="text-xs sm:text-sm text-gray-400">Total Portfolio Value</div>
               </div>
               <div className="w-12 h-12 sm:w-16 sm:h-16 bg-gradient-to-br from-green-400 to-emerald-500 rounded-full flex items-center justify-center animate-pulse">
                 <span className="text-lg sm:text-2xl">📈</span>
@@ -93,24 +106,46 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-center sm:text-right">
-              <p className="text-sm text-gray-400">6 assets • Real-time</p>
+              <p className="text-sm text-gray-400">{balances.length} assets • {isLoadingBalances ? 'Loading...' : 'Real-time'}</p>
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6 gap-4 sm:gap-6">
-            {mockBalances.map((asset, index) => (
-              <div key={asset.symbol} style={{ animationDelay: `${index * 0.1}s` }} className="w-full">
-                <BalanceCard
-                  symbol={asset.symbol}
-                  name={asset.name}
-                  balance={asset.balance}
-                  value={asset.value}
-                  change={asset.change}
-                  icon={asset.icon}
-                  trend={asset.trend}
-                  volume={asset.volume}
-                />
+            {isLoadingBalances ? (
+              // Loading skeleton
+              Array.from({ length: 4 }).map((_, index) => (
+                <div key={index} className="w-full">
+                  <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4 animate-pulse">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="h-4 bg-gray-700 rounded w-16"></div>
+                      <div className="h-6 bg-gray-700 rounded w-6"></div>
+                    </div>
+                    <div className="h-6 bg-gray-700 rounded w-20 mb-1"></div>
+                    <div className="h-4 bg-gray-700 rounded w-16"></div>
+                  </div>
+                </div>
+              ))
+            ) : balances.length > 0 ? (
+              balances.map((asset, index) => (
+                <div key={asset.symbol} style={{ animationDelay: `${index * 0.1}s` }} className="w-full">
+                  <BalanceCard
+                    symbol={asset.symbol}
+                    name={asset.name}
+                    balance={asset.balance}
+                    value={asset.value}
+                    change={asset.change}
+                    icon={asset.icon}
+                    trend={asset.trend}
+                    volume={asset.volume}
+                  />
+                </div>
+              ))
+            ) : (
+              // No balances message
+              <div className="col-span-full text-center py-8">
+                <div className="text-gray-400 text-lg">No token balances found</div>
+                <div className="text-gray-500 text-sm mt-2">Connect your wallet to view your assets</div>
               </div>
-            ))}
+            )}
           </div>
         </div>
 
@@ -127,7 +162,9 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between">
               <div className="flex-1">
                 <h4 className="text-sm sm:text-lg font-semibold text-green-400">Total Value</h4>
-                <p className="text-xl sm:text-2xl font-bold">$6,256.00</p>
+                <p className="text-xl sm:text-2xl font-bold">
+                  {isLoadingBalances ? '...' : `$${balances.reduce((total, asset) => total + parseFloat(asset.value.replace('$', '')), 0).toFixed(2)}`}
+                </p>
               </div>
               <div className="w-10 h-10 sm:w-12 sm:h-12 bg-green-500/20 rounded-full flex items-center justify-center ml-4">
                 <span className="text-lg sm:text-2xl">💰</span>
