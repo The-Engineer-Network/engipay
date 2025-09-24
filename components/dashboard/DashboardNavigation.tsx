@@ -10,12 +10,12 @@ interface DashboardNavigationProps {
 }
 
 export function DashboardNavigation({ activeTab, onTabChange }: DashboardNavigationProps) {
-  const tabs: { id: TabType; label: string; icon: React.ReactNode; isLink: boolean }[] = [
-    { id: "overview", label: "Overview", icon: <Wallet className="w-4 h-4" />, isLink: false },
-    { id: "payment", label: "Payment & Swap", icon: <TrendingUp className="w-4 h-4" />, isLink: false },
+  const tabs = [
+    { id: "overview", label: "Overview", icon: <Wallet className="w-4 h-4" />, isLink: false, href: null },
   ]
 
   const links = [
+    { href: "/payments-swaps", label: "Payment & Swap", icon: <TrendingUp className="w-4 h-4" /> },
     { href: "/defi", label: "DeFi & Profile", icon: <Target className="w-4 h-4" /> },
   ]
 

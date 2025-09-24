@@ -1,23 +1,34 @@
 "use client"
 
+import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Wallet, ExternalLink } from "lucide-react"
 import { useWallet } from "@/contexts/WalletContext"
 
 export function DashboardHeader() {
-  const { walletAddress, walletName, openWalletModal } = useWallet()
+  const router = useRouter()
+  const { walletAddress, walletName, disconnectWallet } = useWallet()
+
+  const handleWalletDisconnect = () => {
+    disconnectWallet()
+    router.push('/')
+  }
 
   return (
     <header style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}>
       <div className="container mx-auto px-4 py-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
-            <div
-              className="w-8 h-8 rounded-lg flex items-center justify-center"
-              style={{ backgroundColor: '#00d084' }}
-            >
-              <span style={{ color: '#000000' }} className="font-bold text-sm">E</span>
-            </div>
+            <Link href="/" className="flex items-center space-x-2 cursor-pointer hover:opacity-80 transition-opacity">
+              <div
+                className="w-8 h-8 rounded-lg flex items-center justify-center"
+                style={{ backgroundColor: '#00d084' }}
+              >
+                <span style={{ color: '#000000' }} className="font-bold text-sm">E</span>
+              </div>
+              <span className="text-xl font-bold" style={{ color: '#ffffff' }}>EngiPay</span>
+            </Link>
             <div>
               <h1 className="text-xl font-bold" style={{ color: '#ffffff' }}> Dashboard</h1>
               <p style={{ color: 'rgba(255, 255, 255, 0.7)', fontSize: '14px' }}>
@@ -39,7 +50,7 @@ export function DashboardHeader() {
             </Button>
             <Button
               size="sm"
-              onClick={openWalletModal}
+              onClick={handleWalletDisconnect}
               style={{
                 backgroundColor: '#00d084',
                 color: '#000000',

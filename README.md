@@ -10,8 +10,10 @@ A revolutionary Web3 super app that combines everyday payments with powerful DeF
 - **🔄 Cross-Chain Swaps**: Seamless BTC ↔ STRK/ETH via Atomiq SDK
 - **₿ Bitcoin Ready**: Direct Bitcoin integration via Xverse Wallet API
 - **💰 DeFi Power Tools**: Lending, borrowing, yield farming, and staking
-- **📊 Dashboard**: Real-time portfolio tracking and analytics
+- **📊 Real Wallet Balances**: Live display of actual ETH, USDT, and USDC balances
 - **🔗 Seamless Navigation**: Easy access between dashboard and DeFi features
+- **🔌 Wallet Management**: Connect/disconnect wallets with persistent sessions
+- **🏠 Seamless Navigation**: Easy switching between home page and dashboard when logged in
 - **🔒 Enterprise Security**: Built on StarkNet's zero-knowledge rollup technology
 - **📱 Mobile-First**: Responsive design with smooth animations
 
@@ -237,11 +239,18 @@ import type { ComponentProps } from './types'
 - Footer with social links
 
 ### Dashboard Page (`/dashboard`)
-- Portfolio overview with balance cards
+- Real-time wallet balance display (ETH, USDT, USDC)
+- Portfolio overview with live balance cards
 - Recent activity feed
 - Quick action buttons
 - DeFi opportunities
-- Navigation to DeFi and Profile pages
+- Navigation tabs: Overview (internal), Payment & Swap (links to `/payments-swaps`), DeFi & Profile (links to `/defi`)
+
+### Payments & Swaps Page (`/payments-swaps`)
+- Payment options: Send, Request, QR scan, Merchant payments
+- Cross-chain token swaps with Atomiq SDK
+- Transaction history with filtering
+- Chipi Pay integration
 
 ### DeFi Page (`/defi`)
 - Portfolio overview with charts and positions

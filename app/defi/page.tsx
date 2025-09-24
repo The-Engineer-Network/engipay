@@ -1,6 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
+import { useWallet } from "@/contexts/WalletContext"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft } from "lucide-react"
@@ -13,6 +15,19 @@ import { ProfileSettings } from "@/components/defi/profile-settings"
 
 export default function DeFiPage() {
   const [activeTab, setActiveTab] = useState("portfolio")
+  const router = useRouter()
+  const { isConnected } = useWallet()
+
+  useEffect(() => {
+    // Check wallet connection - check both context and localStorage
+    const savedWallet = localStorage.getItem("engipay-wallet")
+    const hasWalletConnection = isConnected || savedWallet
+
+    if (!hasWalletConnection) {
+      router.push('/')
+      return
+    }
+  }, [isConnected, router])
 
   return (
     <div className="min-h-screen text-white"
