@@ -208,7 +208,7 @@ export function WalletProvider({ children }: WalletProviderProps) {
 
     setIsLoadingBalances(true);
     try {
-      const provider = new ethers.providers.Web3Provider(window.ethereum);
+      const provider = new ethers.BrowserProvider(window.ethereum);
 
       // Common token contracts (Ethereum mainnet)
       const tokens = [
@@ -253,7 +253,7 @@ export function WalletProvider({ children }: WalletProviderProps) {
             balance = await contract.balanceOf(walletAddress);
           }
 
-          const formattedBalance = ethers.utils.formatUnits(balance, token.decimals);
+          const formattedBalance = ethers.formatUnits(balance, token.decimals);
           const numericBalance = parseFloat(formattedBalance);
 
           if (numericBalance > 0) {

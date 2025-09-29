@@ -3,6 +3,7 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { Analytics } from "@vercel/analytics/next";
 import { WalletProvider } from "@/contexts/WalletContext";
+import { ChipiPayProviderWrapper } from "@/contexts/ChipiPayContext";
 import { Toaster } from "@/components/ui/toaster";
 import "./globals.css";
 
@@ -33,11 +34,13 @@ export default function RootLayout({
         <meta httpEquiv="Pragma" content="no-cache" />
         <meta httpEquiv="Expires" content="0" />
       </head>
-      <body className={`font-sans ${GeistSans.variable} ${GeistMono.variable}`}>
+      <body className="font-sans">
         <WalletProvider>
-          {children}
-          <Toaster />
-          <Analytics />
+          <ChipiPayProviderWrapper>
+            {children}
+            <Toaster />
+            <Analytics />
+          </ChipiPayProviderWrapper>
         </WalletProvider>
       </body>
     </html>
