@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useWallet } from "@/contexts/WalletContext"
+import { ServicePurchase } from "@/components/payments/ServicePurchase"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -162,6 +163,11 @@ export default function PaymentsSwapsPage() {
               </Card>
             ))}
           </div>
+        </section>
+
+        {/* Chipi Pay Service Purchase */}
+        <section className="mb-12">
+          <ServicePurchase />
         </section>
 
         {/* Swaps Section */}
