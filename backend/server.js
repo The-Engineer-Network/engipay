@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
@@ -17,6 +18,18 @@ const chipiPayRoutes = require('./routes/chipipay');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Database connection
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/engipay', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
+
+const db = mongoose.connection;
+db.on('error', console.error.bind(console, 'MongoDB connection error:'));
+db.once('open', () => {
+  console.log('✅ Connected to MongoDB');
+});
 
 // Security middleware
 app.use(helmet());
@@ -40,6 +53,8 @@ const authLimiter = rateLimit({
   message: 'Too many authentication attempts, please try again later.'
 });
 app.use('/api/auth/', authLimiter);
+
+// Atomiq specific rate limits (applied in routes)
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
