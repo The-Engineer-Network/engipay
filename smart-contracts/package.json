@@ -1,0 +1,19 @@
+{
+  "name": "engipay-smart-contracts",
+  "version": "1.0.0",
+  "description": "Smart contracts for EngiPay DeFi platform",
+  "scripts": {
+    "compile": "starknet-compile",
+    "test": "starknet-test",
+    "deploy": "starknet-deploy",
+    "verify": "starknet-verify"
+  },
+  "devDependencies": {
+    "@shardlabs/starknet-hardhat-plugin": "^0.1.0",
+    "hardhat": "^2.14.0",
+    "starknet": "^0.5.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^4.8.0"
+  }
+}

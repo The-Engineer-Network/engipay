@@ -20,7 +20,7 @@ export function ServicePurchase() {
   const [loading, setLoading] = useState(true)
   const [buying, setBuying] = useState<string | null>(null)
   const { walletAddress, isConnected } = useWallet()
-  const { apiKey } = useChipiPay()
+  const { getSKUs, buySKU } = useChipiPay()
   const { toast } = useToast()
 
   useEffect(() => {
@@ -29,14 +29,8 @@ export function ServicePurchase() {
 
   const fetchSKUs = async () => {
     try {
-      const response = await fetch(`https://api.chipipay.com/v1/skus?api_key=${apiKey}`, {
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      })
-      if (!response.ok) throw new Error('Failed to fetch SKUs')
-      const data = await response.json()
-      setSkus(data.skus || [])
+      const data = await getSKUs()
+      setSkus(data || [])
     } catch (error) {
       console.error('Error fetching SKUs:', error)
       toast({
@@ -61,28 +55,15 @@ export function ServicePurchase() {
 
     setBuying(skuId)
     try {
-      const response = await fetch('https://api.chipipay.com/v1/buy', {
-        method: 'POST',
-        headers: {
-          'X-API-Key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          sku_id: skuId,
-          quantity: 1,
-          recipient_address: walletAddress,
-          api_key: apiKey,
-        }),
+      await buySKU(skuId, {
+        quantity: 1,
+        recipient_address: walletAddress,
       })
 
-      if (!response.ok) throw new Error('Purchase failed')
-
-      const data = await response.json()
       toast({
         title: 'Purchase Successful',
         description: 'Your service purchase is being processed.',
       })
-      // Optionally refresh SKUs or update UI
     } catch (error) {
       console.error('Purchase error:', error)
       toast({
