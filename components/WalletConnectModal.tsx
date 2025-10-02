@@ -51,6 +51,11 @@ export function WalletConnectModal({
       name: "Braavos",
       icon: "⚡",
     },
+    {
+      name: "Xverse",
+      icon: "₿",
+      popular: false,
+    },
   ];
 
   const features = [
