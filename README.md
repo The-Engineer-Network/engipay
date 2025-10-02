@@ -46,6 +46,35 @@ A revolutionary Web3 super app that combines everyday payments with powerful DeF
 
 ```
 engipay/
+├── smart-contracts/              # Smart contract analysis and development
+│   ├── contracts/                # Cairo smart contracts
+│   │   ├── Escrow.cairo          # Payment escrow contract
+│   │   ├── EngiToken.cairo       # Governance token contract
+│   │   └── RewardDistributor.cairo # Reward distribution contract
+│   ├── hardhat.config.js         # StarkNet development configuration
+│   ├── package.json              # Smart contract dependencies
+│   ├── README.md                 # Smart contract requirements analysis
+│   ├── AUDIT_GUIDE.md            # Smart contract audit preparation guide
+│   └── contracts-analysis.md     # Detailed contract specifications
+├── TESTING_GUIDE.md             # Comprehensive testing guide for entire platform
+├── backend/                      # Backend API server
+│   ├── routes/                   # API route handlers
+│   │   ├── auth.js              # Authentication endpoints
+│   │   ├── users.js             # User management
+│   │   ├── portfolio.js         # Portfolio tracking
+│   │   ├── transactions.js      # Transaction handling
+│   │   ├── defi.js              # DeFi operations
+│   │   ├── swaps.js             # Token swaps
+│   │   ├── payments.js          # Payment services
+│   │   ├── chipipay.js          # Chipi Pay integration
+│   │   ├── analytics.js         # Analytics endpoints
+│   │   └── webhooks.js          # Webhook handlers
+│   ├── middleware/               # Express middleware
+│   │   └── auth.js              # Authentication middleware
+│   ├── server.js                # Main server file
+│   ├── package.json             # Backend dependencies
+│   ├── .env                     # Backend environment variables
+│   └── README.md                # Backend documentation
 ├── app/                          # Next.js App Router
 │   ├── about/                    # About page
 │   │   └── page.tsx
@@ -80,8 +109,13 @@ engipay/
 │   │   ├── lending-borrowing.tsx
 │   │   ├── claim-rewards.tsx
 │   │   └── profile-settings.tsx
+│   ├── payments/                 # Payment components
+│   │   └── ServicePurchase.tsx   # Chipi Pay service purchase
 │   ├── theme-provider.tsx       # Theme provider
 │   └── WalletConnectModal.tsx   # Wallet connection modal
+├── contexts/                     # React contexts
+│   ├── WalletContext.tsx         # Wallet connection context
+│   └── ChipiPayContext.tsx       # Chipi Pay integration context
 ├── hooks/                        # Custom React hooks
 │   ├── use-mobile.ts
 │   └── use-toast.ts
@@ -94,9 +128,12 @@ engipay/
 ├── styles/                       # Additional styles
 │   └── globals.css
 ├── next.config.mjs              # Next.js configuration
-├── package.json                 # Dependencies & scripts
+├── package.json                 # Frontend dependencies & scripts
 ├── tailwind.config.js           # Tailwind configuration
 ├── tsconfig.json                # TypeScript configuration
+├── .env.local                   # Frontend environment variables
+├── CHIPIPAY_INTEGRATION.md      # Chipi Pay integration guide
+├── BACKEND_API_DOCUMENTATION.md # Backend API documentation
 └── README.md                    # This file
 ```
 
