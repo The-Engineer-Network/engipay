@@ -19,7 +19,7 @@ export default function TechnologyPage() {
     // Simulate initial loading
     const timer = setTimeout(() => {
       setIsLoading(false)
-    }, 1500)
+    }, 500)
 
     return () => clearTimeout(timer)
   }, [])

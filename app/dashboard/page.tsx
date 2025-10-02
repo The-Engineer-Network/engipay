@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useWallet } from "@/contexts/WalletContext"
-import { LovelyLoader } from "@/components/ui/loader"
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader"
 import { DashboardNavigation } from "@/components/dashboard/DashboardNavigation"
 import { BalanceCard } from "@/components/dashboard/BalanceCard"
@@ -15,27 +14,37 @@ import { TabType } from "@/types/dashboard"
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<TabType>("overview")
+  const [isClient, setIsClient] = useState(false)
   const router = useRouter()
   const { isConnected, balances, isLoadingBalances } = useWallet()
-  const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    // Check wallet connection - check both context and localStorage
-    const savedWallet = localStorage.getItem("engipay-wallet")
-    const hasWalletConnection = isConnected || savedWallet
+    // Set client flag to prevent hydration issues
+    setIsClient(true)
 
-    if (!hasWalletConnection) {
-      router.push('/')
-      return
+    // Only check localStorage on client side to prevent hydration mismatch
+    if (typeof window !== 'undefined') {
+      const savedWallet = localStorage.getItem("engipay-wallet")
+      const hasWalletConnection = isConnected || savedWallet
+
+      if (!hasWalletConnection) {
+        router.push('/')
+        return
+      }
     }
-
-    // Simulate initial loading
-    const timer = setTimeout(() => {
-      setIsLoading(false)
-    }, 1500)
-
-    return () => clearTimeout(timer)
   }, [isConnected, router])
+
+  // Prevent hydration mismatch by not rendering until client-side
+  if (!isClient) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-400 mx-auto mb-4"></div>
+          <p className="text-gray-300">Loading...</p>
+        </div>
+      </div>
+    )
+  }
 
 
   const handleQuickAction = (action: string) => {
@@ -45,19 +54,14 @@ export default function DashboardPage() {
 
   const handleTabChange = (tab: TabType) => {
     setActiveTab(tab)
+    // Handle navigation between pages
+    if (tab === "payments") {
+      router.push('/payments-swaps')
+    } else if (tab === "defi") {
+      router.push('/defi')
+    }
   }
 
-  // Show loading screen
-  if (isLoading) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-500">
-        <div className="text-center animate-in slide-in-from-bottom-4 duration-700 delay-200">
-          <LovelyLoader size="lg" className="mb-4" />
-          <p className="text-white text-lg font-medium animate-in slide-in-from-bottom-2 duration-500 delay-300">Loading Dashboard...</p>
-        </div>
-      </div>
-    )
-  }
 
 
   return (
