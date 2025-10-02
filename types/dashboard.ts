@@ -39,4 +39,4 @@ export interface DashboardData {
   promotions: DeFiOpportunity[]
 }
 
-export type TabType = "overview" | "portfolio" | "defi" | "payment"
+export type TabType = "overview" | "payments" | "defi"

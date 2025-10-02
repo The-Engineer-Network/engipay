@@ -67,7 +67,7 @@ export default function EngiPayLanding() {
     // Simulate initial loading
     const timer = setTimeout(() => {
       setIsLoading(false)
-    }, 2000)
+    }, 500)
 
     return () => clearTimeout(timer)
   }, [])
@@ -86,7 +86,7 @@ export default function EngiPayLanding() {
     setTimeout(() => {
       setIsLoading(false)
       setShowWalletModal(true)
-    }, 1500)
+    }, 200)
   }
 
   const handleSubscribe = () => {
@@ -95,7 +95,7 @@ export default function EngiPayLanding() {
     setTimeout(() => {
       setIsSubscribing(false)
       // You could add a success message here
-    }, 2000)
+    }, 200)
   }
 
   const handleWalletDisconnect = () => {
@@ -176,14 +176,15 @@ export default function EngiPayLanding() {
       />
 
       {/* Navigation */}
-      <nav className="sticky top-0 z-50 glassmorphism">
+      <nav className="sticky top-0 z-50 glassmorphism backdrop-blur-md bg-black/20 border-b border-white/10">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                <span className="text-primary-foreground font-bold text-lg">E</span>
-              </div>
-              <span className="text-xl font-bold text-black">EngiPay</span>
+            <div className="flex items-center space-x-2 overflow-hidden">
+                <img
+                className=" w-10 h-10 object-contain filter brightness-0"
+                src="/engipay.png" alt="EngiPay Logo"
+                />
+              <span className="-pl-2 text-xl font-bold text-black">EngiPay</span>
             </div>
 
             {/* Desktop Menu */}
@@ -323,7 +324,9 @@ export default function EngiPayLanding() {
             </Badge>
             <h1 className="text-5xl md:text-7xl font-bold mb-6 text-balance text-black">
               The Next-Gen
-              <span className="block text-primary">Payments + DeFi</span>
+              <span className="block text-purple-600" style={{textShadow: '0 0 10px rgba(0, 0, 0, 0.8), 0 0 20px rgba(0, 0, 0, 0.6), 0 0 30px rgba(0, 0, 0, 0.4)'}}>
+                Payments + DeFi
+              </span>
               <span className="block text-black">Super App</span>
             </h1>
             <p className="text-xl md:text-2xl mb-8 text-black min-h-[3rem] text-pretty font-medium">
@@ -446,9 +449,9 @@ export default function EngiPayLanding() {
             <Button
               size="lg"
               className="glow-button bg-purple-600 hover:bg-purple-700 text-white"
-              onClick={handleGetStarted}
+              onClick={() => router.push("/about")}
             >
-              Get Started
+              Get to Know Us
             </Button>
             <Button
               size="lg"
@@ -504,11 +507,12 @@ export default function EngiPayLanding() {
         <div className="container mx-auto px-4 py-12">
           <div className="grid md:grid-cols-4 gap-8">
             <div className="md:col-span-2">
-              <div className="flex items-center space-x-2 mb-4">
-                <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                  <span className="text-primary-foreground font-bold text-lg">E</span>
-                </div>
-                <span className="text-xl font-bold text-black">EngiPay</span>
+              <div className="flex items-center space-x-2 mb-4 overflow-hidden">
+                  <img
+                  className=" w-10 h-10 object-contain filter brightness-0 invert"
+                  src="/engipay.png" alt="EngiPay Logo"
+                  />
+                <span className="-pl-2 text-xl font-bold text-white">EngiPay</span>
               </div>
               <p className="text-muted-foreground mb-6">Powering Lifestyle Finance on StarkNet.</p>
               <div className="flex space-x-2">
@@ -589,4 +593,6 @@ export default function EngiPayLanding() {
     </div>
   )
 }
+
+
 

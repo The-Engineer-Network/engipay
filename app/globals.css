@@ -127,7 +127,7 @@
 
 /* Added cosmic background and animations */
 .cosmic-bg {
-  background: linear-gradient(to bottom, #00ff7f 0%, #1a4d2e 25%, #0d1f14 50%, #000000 100%);
+  background: linear-gradient(to bottom, #00cc66 0%, #0d3320 25%, #05140a 50%, #000000 100%);
   position: relative;
   overflow: hidden;
 }
