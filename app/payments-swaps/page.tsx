@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useWallet } from "@/contexts/WalletContext"
 import { ServicePurchase } from "@/components/payments/ServicePurchase"
+import { BtcSwap } from "@/components/payments/BtcSwap"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -25,6 +26,8 @@ import {
   DollarSign,
   ArrowLeft,
 } from "lucide-react"
+import { getBitcoinBalance, sendBitcoin } from "@/lib/xverse"
+import { toast } from "@/hooks/use-toast"
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader"
 import { DashboardNavigation } from "@/components/dashboard/DashboardNavigation"
 import { TabType } from "@/types/dashboard"
@@ -34,9 +37,13 @@ export default function PaymentsSwapsPage() {
   const [selectedToken, setSelectedToken] = useState("")
   const [amount, setAmount] = useState("")
   const [destinationToken, setDestinationToken] = useState("")
+  const [btcBalance, setBtcBalance] = useState<any>(null)
+  const [btcRecipient, setBtcRecipient] = useState("")
+  const [btcSendAmount, setBtcSendAmount] = useState("")
+  const [isSendingBtc, setIsSendingBtc] = useState(false)
   const [isClient, setIsClient] = useState(false)
   const router = useRouter()
-  const { isConnected } = useWallet()
+  const { isConnected, walletName } = useWallet()
 
   useEffect(() => {
     // Set client flag to prevent hydration issues
@@ -54,6 +61,21 @@ export default function PaymentsSwapsPage() {
     }
   }, [isConnected, router])
 
+  useEffect(() => {
+    // Load BTC balance if Xverse is connected
+    const loadBtcBalance = async () => {
+      if (walletName === 'Xverse') {
+        try {
+          const balance = await getBitcoinBalance()
+          setBtcBalance(balance)
+        } catch (error) {
+          console.error('Error loading BTC balance:', error)
+        }
+      }
+    }
+    loadBtcBalance()
+  }, [walletName])
+
   // Prevent hydration mismatch by not rendering until client-side
   if (!isClient) {
     return (
@@ -66,18 +88,18 @@ export default function PaymentsSwapsPage() {
     )
   }
 
-   const handleQuickAction = (action: string) => {
+  const handleQuickAction = (action: string) => {
     console.log(`Quick action: ${action}`)
     // Handle quick actions here
   }
 
-   const handleTabChange = (tab: TabType) => {
-     setActiveTab(tab)
-     // Handle navigation for overview tab
-     if (tab === "overview") {
-       router.push('/dashboard')
-     }
-   }
+  const handleTabChange = (tab: TabType) => {
+    setActiveTab(tab)
+    // Handle navigation for overview tab
+    if (tab === "overview") {
+      router.push('/dashboard')
+    }
+  }
 
   const paymentOptions = [
     {
@@ -153,6 +175,50 @@ export default function PaymentsSwapsPage() {
     console.log("Swap initiated", { selectedToken, amount, destinationToken })
   }
 
+  const handleSendBtc = async () => {
+    if (!btcRecipient || !btcSendAmount) {
+      toast({
+        title: "Missing Information",
+        description: "Please enter recipient address and amount",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const amountSatoshis = Math.floor(parseFloat(btcSendAmount) * 100000000) // Convert BTC to satoshis
+
+    setIsSendingBtc(true)
+    try {
+      const result = await sendBitcoin({
+        to: btcRecipient,
+        amount: amountSatoshis,
+        feeRate: 1, // 1 sat/vB
+      })
+
+      if (result.success) {
+        toast({
+          title: "BTC Sent Successfully",
+          description: `Transaction ID: ${result.txId}`,
+        })
+        setBtcRecipient("")
+        setBtcSendAmount("")
+        // Refresh balance
+        const balance = await getBitcoinBalance()
+        setBtcBalance(balance)
+      } else {
+        throw new Error(result.error)
+      }
+    } catch (error: any) {
+      toast({
+        title: "Send Failed",
+        description: error.message || "Failed to send BTC",
+        variant: "destructive",
+      })
+    } finally {
+      setIsSendingBtc(false)
+    }
+  }
+
   return (
     // Main Container
     <div className="min-h-screen bg-black text-foreground">
@@ -162,6 +228,7 @@ export default function PaymentsSwapsPage() {
 
       <DashboardHeader />
       <DashboardNavigation activeTab={activeTab} onTabChange={handleTabChange} />
+      
       {/* Page Content */}
       <div className="container mx-auto px-4 py-8">
         <div className="mb-8">
@@ -196,97 +263,81 @@ export default function PaymentsSwapsPage() {
           </div>
         </section>
 
+        {/* Bitcoin Operations Section */}
+        {walletName === 'Xverse' && (
+          <section className="mb-12">
+            <h2 className="text-3xl font-bold mb-6 flex items-center gap-2">
+              <Bitcoin className="w-8 h-8 text-orange-500" />
+              Bitcoin Operations
+            </h2>
+            <div className="grid md:grid-cols-2 gap-6">
+              <Card className="glassmorphism">
+                <CardHeader>
+                  <CardTitle>Balance</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-orange-400">
+                    {btcBalance ? (btcBalance.total / 100000000).toFixed(8) : '0.00000000'} BTC
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Confirmed: {btcBalance ? (btcBalance.confirmed / 100000000).toFixed(8) : '0.00000000'} BTC
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Unconfirmed: {btcBalance ? (btcBalance.unconfirmed / 100000000).toFixed(8) : '0.00000000'} BTC
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card className="glassmorphism">
+                <CardHeader>
+                  <CardTitle>Send BTC</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Recipient Address</label>
+                    <Input
+                      placeholder="bc1q..."
+                      value={btcRecipient}
+                      onChange={(e) => setBtcRecipient(e.target.value)}
+                      className="glassmorphism"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Amount (BTC)</label>
+                    <Input
+                      type="number"
+                      placeholder="0.00000000"
+                      value={btcSendAmount}
+                      onChange={(e) => setBtcSendAmount(e.target.value)}
+                      className="glassmorphism"
+                      step="0.00000001"
+                    />
+                  </div>
+                  <Button
+                    onClick={handleSendBtc}
+                    disabled={isSendingBtc || !btcRecipient || !btcSendAmount}
+                    className="glow-button bg-orange-500 hover:bg-orange-500/90 text-white w-full"
+                  >
+                    {isSendingBtc ? 'Sending...' : 'Send BTC'}
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          </section>
+        )}
+
         {/* Chipi Pay Service Purchase */}
         <section className="mb-12">
           <ServicePurchase />
         </section>
 
-        {/* Swaps Section */}
+        {/* Cross-Chain Swaps Section */}
         <section className="mb-12">
           <h2 className="text-3xl font-bold mb-6 flex items-center gap-2">
             <ArrowLeftRight className="w-8 h-8 text-primary" />
             Cross-Chain Swaps
           </h2>
-          <Card className="glassmorphism">
-            <CardHeader>
-              <CardTitle>Swap Tokens</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="grid md:grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-sm font-medium mb-2">Select Token</label>
-                  <Select value={selectedToken} onValueChange={setSelectedToken}>
-                    <SelectTrigger className="glassmorphism bg-black/40 border-white/20 text-white backdrop-blur-md">
-                      <SelectValue placeholder="Choose token" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-black/90 border-white/20 backdrop-blur-md">
-                      {tokens.map((token) => (
-                        <SelectItem key={token.symbol} value={token.symbol}>
-                          <div className="flex items-center gap-2">
-                            {token.symbol === "BTC" && <Bitcoin className="w-4 h-4" />}
-                            {token.symbol === "ETH" && <Coins className="w-4 h-4" />}
-                            {token.symbol === "STRK" && <Zap className="w-4 h-4" />}
-                            {token.name}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">Enter Amount</label>
-                  <Input
-                    type="number"
-                    placeholder="0.00"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    className="glassmorphism"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-2">Select Destination</label>
-                <Select value={destinationToken} onValueChange={setDestinationToken}>
-                  <SelectTrigger className="glassmorphism bg-black/40 border-white/20 text-white backdrop-blur-md">
-                    <SelectValue placeholder="Choose destination token" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-black/90 border-white/20 backdrop-blur-md">
-                    {tokens.filter(t => t.symbol !== selectedToken).map((token) => (
-                      <SelectItem key={token.symbol} value={token.symbol}>
-                        <div className="flex items-center gap-2">
-                          {token.symbol === "BTC" && <Bitcoin className="w-4 h-4" />}
-                          {token.symbol === "ETH" && <Coins className="w-4 h-4" />}
-                          {token.symbol === "STRK" && <Zap className="w-4 h-4" />}
-                          {token.name}
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="bg-muted/20 p-4 rounded-lg">
-                <h4 className="font-semibold mb-2">Swap Details</h4>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span>Estimated Gas Fee:</span>
-                    <span className="text-cyan-500">$2.50</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Exchange Rate:</span>
-                    <span className="text-[#34D399]">1 BTC ≈ 15.2 ETH</span>
-                  </div>
-                </div>
-              </div>
-              <Button
-                className="glow-button bg-primary hover:bg-primary/90 text-primary-foreground w-full"
-                onClick={handleSwap}
-                disabled={!selectedToken || !amount || !destinationToken}
-              >
-                <ArrowLeftRight className="w-4 h-4 mr-2" />
-                Swap with Atomic SDK
-              </Button>
-            </CardContent>
-          </Card>
+          <BtcSwap />
         </section>
 
         {/* Transaction History */}
