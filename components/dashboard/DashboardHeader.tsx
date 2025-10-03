@@ -1,14 +1,31 @@
 "use client"
 
 import { useRouter } from "next/navigation"
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { Wallet, ExternalLink } from "lucide-react"
+import { Wallet, ExternalLink, Bitcoin } from "lucide-react"
 import { useWallet } from "@/contexts/WalletContext"
+import { getBitcoinBalance } from "@/lib/xverse"
 
 export function DashboardHeader() {
   const router = useRouter()
   const { walletAddress, walletName, disconnectWallet } = useWallet()
+  const [btcBalance, setBtcBalance] = useState(0)
+
+  useEffect(() => {
+    const loadBtcBalance = async () => {
+      if (walletName === 'Xverse') {
+        try {
+          const balance = await getBitcoinBalance()
+          setBtcBalance(balance.total / 100000000) // Convert satoshis to BTC
+        } catch (error) {
+          console.error('Error loading BTC balance:', error)
+        }
+      }
+    }
+    loadBtcBalance()
+  }, [walletName])
 
   const handleWalletDisconnect = () => {
     disconnectWallet()
@@ -33,6 +50,14 @@ export function DashboardHeader() {
               <p className="text-gray-300 text-xs sm:text-sm hidden sm:block">
                 Welcome back! Here's your financial overview
               </p>
+              {walletName === 'Xverse' && (
+                <div className="flex items-center gap-2 mt-2">
+                  <Bitcoin className="w-4 h-4 text-orange-400" />
+                  <span className="text-sm text-orange-400">
+                    BTC: {btcBalance.toFixed(8)}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 

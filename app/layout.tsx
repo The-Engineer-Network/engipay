@@ -5,6 +5,7 @@ import { Analytics } from "@vercel/analytics/next";
 import { WalletProvider } from "@/contexts/WalletContext";
 import { ChipiPayProviderWrapper } from "@/contexts/ChipiPayContext";
 import { Toaster } from "@/components/ui/toaster";
+import { Suspense } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -25,7 +26,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <meta
           httpEquiv="Cache-Control"
@@ -34,14 +35,20 @@ export default function RootLayout({
         <meta httpEquiv="Pragma" content="no-cache" />
         <meta httpEquiv="Expires" content="0" />
       </head>
-      <body className="font-sans">
-        <WalletProvider>
-          <ChipiPayProviderWrapper>
-            {children}
-            <Toaster />
-            <Analytics />
-          </ChipiPayProviderWrapper>
-        </WalletProvider>
+      <body className="font-sans" suppressHydrationWarning>
+        <Suspense fallback={
+          <div className="min-h-screen bg-black flex items-center justify-center">
+            <div className="text-green-400 text-xl">Loading EngiPay...</div>
+          </div>
+        }>
+          <WalletProvider>
+            <ChipiPayProviderWrapper>
+              {children}
+              <Toaster />
+              <Analytics />
+            </ChipiPayProviderWrapper>
+          </WalletProvider>
+        </Suspense>
       </body>
     </html>
   );
