@@ -127,13 +127,13 @@ export function WalletConnectModal({
                     key={wallet.name}
                     onClick={() => handleWalletConnect(wallet.name)}
                     disabled={isConnecting}
-                    className={`w-full h-12 transition-all duration-200 flex items-center justify-between p-4 ${
+                    className={`relative w-full h-12 transition-all duration-200 flex items-center p-4 ${
                       checkWalletInstalled(wallet.name)
                         ? "bg-green-500/10 hover:bg-green-500/20 border border-green-500/30 hover:border-green-500/50 text-green-300 hover:text-green-200"
                         : "bg-gray-500/10 hover:bg-gray-500/20 border border-gray-500/30 hover:border-gray-500/50 text-gray-400 hover:text-gray-300"
                     }`}
                   >
-                    <div className="flex items-center space-x-3">
+                    <div className="flex items-center space-x-2">
                       <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
                         <span className="text-lg leading-none">
                           {wallet.icon}
