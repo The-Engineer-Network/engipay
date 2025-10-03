@@ -28,8 +28,12 @@ import {
 } from "lucide-react"
 import { getBitcoinBalance, sendBitcoin } from "@/lib/xverse"
 import { toast } from "@/hooks/use-toast"
+import { DashboardHeader } from "@/components/dashboard/DashboardHeader"
+import { DashboardNavigation } from "@/components/dashboard/DashboardNavigation"
+import { TabType } from "@/types/dashboard"
 
 export default function PaymentsSwapsPage() {
+  const [activeTab, setActiveTab] = useState<TabType>("payments")
   const [selectedToken, setSelectedToken] = useState("")
   const [amount, setAmount] = useState("")
   const [destinationToken, setDestinationToken] = useState("")
@@ -37,17 +41,23 @@ export default function PaymentsSwapsPage() {
   const [btcRecipient, setBtcRecipient] = useState("")
   const [btcSendAmount, setBtcSendAmount] = useState("")
   const [isSendingBtc, setIsSendingBtc] = useState(false)
+  const [isClient, setIsClient] = useState(false)
   const router = useRouter()
   const { isConnected, walletName } = useWallet()
 
   useEffect(() => {
-    // Check wallet connection - check both context and localStorage
-    const savedWallet = localStorage.getItem("engipay-wallet")
-    const hasWalletConnection = isConnected || savedWallet
+    // Set client flag to prevent hydration issues
+    setIsClient(true)
 
-    if (!hasWalletConnection) {
-      router.push('/')
-      return
+    // Only check localStorage on client side to prevent hydration mismatch
+    if (typeof window !== 'undefined') {
+      const savedWallet = localStorage.getItem("engipay-wallet")
+      const hasWalletConnection = isConnected || savedWallet
+
+      if (!hasWalletConnection) {
+        router.push('/')
+        return
+      }
     }
   }, [isConnected, router])
 
@@ -65,6 +75,31 @@ export default function PaymentsSwapsPage() {
     }
     loadBtcBalance()
   }, [walletName])
+
+  // Prevent hydration mismatch by not rendering until client-side
+  if (!isClient) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-400 mx-auto mb-4"></div>
+          <p className="text-gray-300">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  const handleQuickAction = (action: string) => {
+    console.log(`Quick action: ${action}`)
+    // Handle quick actions here
+  }
+
+  const handleTabChange = (tab: TabType) => {
+    setActiveTab(tab)
+    // Handle navigation for overview tab
+    if (tab === "overview") {
+      router.push('/dashboard')
+    }
+  }
 
   const paymentOptions = [
     {
@@ -185,28 +220,25 @@ export default function PaymentsSwapsPage() {
   }
 
   return (
+    // Main Container
     <div className="min-h-screen bg-black text-foreground">
       {/* Floating Orbs */}
       <div className="glow-orb w-32 h-32 bg-gradient-to-r from-primary/30 to-secondary/30 top-20 left-10" />
       <div className="glow-orb w-24 h-24 bg-gradient-to-r from-secondary/20 to-accent/20 top-40 right-20" />
 
+      <DashboardHeader />
+      <DashboardNavigation activeTab={activeTab} onTabChange={handleTabChange} />
+      
+      {/* Page Content */}
       <div className="container mx-auto px-4 py-8">
-        <div className="mb-8 flex items-center justify-between">
-          <div>
-            <h1 className="text-4xl md:text-5xl font-bold mb-4">Payments & Swaps</h1>
-            <p className="text-xl text-muted-foreground">Manage your transactions and cross-chain swaps</p>
-          </div>
-          <Link href="/dashboard">
-            <Button variant="outline" className="flex items-center gap-2">
-              <ArrowLeft className="w-4 h-4" />
-              Back to Dashboard
-            </Button>
-          </Link>
+        <div className="mb-8">
+          <h1 className="text-3xl md:text-2xl font-bold mb-4">Payments & Swaps</h1>
+          <p className="text-xl text-muted-foreground">Manage your transactions and cross-chain swaps</p>
         </div>
 
         {/* Payments Section */}
         <section className="mb-12">
-          <h2 className="text-3xl font-bold mb-6 flex items-center gap-2">
+          <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
             <DollarSign className="w-8 h-8 text-primary" />
             Payments
           </h2>

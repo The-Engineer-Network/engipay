@@ -11,12 +11,9 @@ interface DashboardNavigationProps {
 
 export function DashboardNavigation({ activeTab, onTabChange }: DashboardNavigationProps) {
   const tabs = [
-    { id: "overview", label: "Overview", icon: <Wallet className="w-4 h-4" />, isLink: false, href: null },
-  ]
-
-  const links = [
-    { href: "/payments-swaps", label: "Payment & Swap", icon: <TrendingUp className="w-4 h-4" /> },
-    { href: "/defi", label: "DeFi & Profile", icon: <Target className="w-4 h-4" /> },
+    { id: "overview", label: "Overview", icon: <Wallet className="w-4 h-4" />, href: "/dashboard" },
+    { id: "payments", label: "Payments & Swaps", icon: <TrendingUp className="w-4 h-4" />, href: "/payments-swaps" },
+    { id: "defi", label: "DeFi & Profile", icon: <Target className="w-4 h-4" />, href: "/defi" },
   ]
 
   return (
@@ -24,47 +21,53 @@ export function DashboardNavigation({ activeTab, onTabChange }: DashboardNavigat
       <div className="container mx-auto px-4">
         <div className="flex space-x-8">
           {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => onTabChange(tab.id as TabType)}
-              className="flex items-center space-x-2 py-4 px-2 font-medium transition-colors"
-              style={{
-                borderBottom: activeTab === tab.id ? '2px solid #00d084' : '2px solid transparent',
-                color: activeTab === tab.id ? '#00d084' : 'rgba(255, 255, 255, 0.7)',
-              }}
-              onMouseEnter={(e) => {
-                if (activeTab !== tab.id) {
-                  e.currentTarget.style.color = '#ffffff'
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (activeTab !== tab.id) {
-                  e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)'
-                }
-              }}
-            >
-              {tab.icon}
-              <span>{tab.label}</span>
-            </button>
-          ))}
-          {links.map((link) => (
-            <Link
-              key={link.href}
-              href={link.href}
-              className="flex items-center space-x-2 py-4 px-2 font-medium transition-colors"
-              style={{
-                color: 'rgba(255, 255, 255, 0.7)',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = '#ffffff'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)'
-              }}
-            >
-              {link.icon}
-              <span>{link.label}</span>
-            </Link>
+            tab.href ? (
+              <Link
+                key={tab.id}
+                href={tab.href}
+                className="flex items-center space-x-2 py-4 px-2 font-medium transition-colors"
+                style={{
+                  borderBottom: activeTab === tab.id ? '2px solid #00d084' : '2px solid transparent',
+                  color: activeTab === tab.id ? '#00d084' : 'rgba(255, 255, 255, 0.7)',
+                }}
+                onMouseEnter={(e) => {
+                  if (activeTab !== tab.id) {
+                    e.currentTarget.style.color = '#ffffff'
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (activeTab !== tab.id) {
+                    e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)'
+                  }
+                }}
+              >
+                {tab.icon}
+                <span>{tab.label}</span>
+              </Link>
+            ) : (
+              <button
+                key={tab.id}
+                onClick={() => onTabChange(tab.id as TabType)}
+                className="flex items-center space-x-2 py-4 px-2 font-medium transition-colors"
+                style={{
+                  borderBottom: activeTab === tab.id ? '2px solid #00d084' : '2px solid transparent',
+                  color: activeTab === tab.id ? '#00d084' : 'rgba(255, 255, 255, 0.7)',
+                }}
+                onMouseEnter={(e) => {
+                  if (activeTab !== tab.id) {
+                    e.currentTarget.style.color = '#ffffff'
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (activeTab !== tab.id) {
+                    e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)'
+                  }
+                }}
+              >
+                {tab.icon}
+                <span>{tab.label}</span>
+              </button>
+            )
           ))}
         </div>
       </div>
