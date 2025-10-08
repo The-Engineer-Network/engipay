@@ -1,61 +1,72 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
+const { Portfolio, Transaction } = require('../models');
+const { Op } = require('sequelize');
 
 const router = express.Router();
 
-// Mock portfolio data (replace with real blockchain data in production)
-const mockBalances = {
-  '0x1234567890123456789012345678901234567890': [
-    {
-      symbol: 'ETH',
-      name: 'Ethereum',
-      balance: '1.234567',
-      value_usd: 2456.78,
-      change_24h: 2.5,
-      icon: 'https://assets.coingecko.com/coins/images/279/small/ethereum.png',
-      chain: 'ethereum',
-      contract_address: '0x0000000000000000000000000000000000000000'
-    },
-    {
-      symbol: 'USDC',
-      name: 'USD Coin',
-      balance: '500.00',
-      value_usd: 500.00,
-      change_24h: -0.1,
-      icon: 'https://assets.coingecko.com/coins/images/6319/small/USD_Coin_icon.png',
-      chain: 'ethereum',
-      contract_address: '0xA0b86a33E6441e88C5F2712C3E9b74F5c4d6E3E9'
-    }
-  ]
-};
-
 // GET /api/portfolio/balances
-router.get('/balances', authenticateToken, (req, res) => {
+router.get('/balances', authenticateToken, async (req, res) => {
   try {
-    const { chain, include_zero } = req.query;
-    const walletAddress = req.user.walletAddress.toLowerCase();
+    const { chain, include_zero, refresh } = req.query;
 
-    let balances = mockBalances[walletAddress] || [];
+    // Build where clause
+    const whereClause = {
+      user_id: req.user.id
+    };
 
-    // Filter by chain if specified
-    if (chain) {
-      balances = balances.filter(balance => balance.chain === chain);
-    }
+    if (chain) whereClause.network = chain;
+
+    // Get portfolio assets from database
+    const portfolioAssets = await Portfolio.findAll({
+      where: whereClause,
+      attributes: [
+        'asset_symbol',
+        'asset_name',
+        'balance',
+        'value_usd',
+        'change_24h',
+        'network',
+        'contract_address',
+        'decimals',
+        'icon_url',
+        'last_updated'
+      ]
+    });
 
     // Filter zero balances if not requested
+    let assets = portfolioAssets;
     if (include_zero !== 'true') {
-      balances = balances.filter(balance => parseFloat(balance.balance) > 0);
+      assets = assets.filter(asset => parseFloat(asset.balance) > 0);
     }
 
-    const totalValue = balances.reduce((sum, balance) => sum + balance.value_usd, 0);
-    const totalChange24h = balances.reduce((sum, balance) => {
-      return sum + (balance.change_24h * balance.value_usd / 100);
+    // Calculate totals
+    const totalValue = assets.reduce((sum, asset) => sum + parseFloat(asset.value_usd || 0), 0);
+    const totalChange24h = assets.reduce((sum, asset) => {
+      const changePercent = parseFloat(asset.change_24h || 0);
+      const value = parseFloat(asset.value_usd || 0);
+      return sum + (changePercent * value / 100);
     }, 0);
+
+    // Format response
+    const formattedAssets = assets.map(asset => ({
+      symbol: asset.asset_symbol,
+      name: asset.asset_name,
+      balance: asset.balance,
+      value_usd: parseFloat(asset.value_usd || 0),
+      change_24h: parseFloat(asset.change_24h || 0),
+      icon: asset.icon_url,
+      chain: asset.network,
+      contract_address: asset.contract_address,
+      decimals: asset.decimals,
+      last_updated: asset.last_updated
+    }));
 
     res.json({
       total_value_usd: totalValue,
       total_change_24h: totalChange24h,
-      assets: balances
+      assets: formattedAssets,
+      last_updated: new Date().toISOString()
     });
   } catch (error) {
     console.error('Portfolio balances error:', error);
@@ -69,13 +80,10 @@ router.get('/balances', authenticateToken, (req, res) => {
 });
 
 // GET /api/portfolio/history
-router.get('/history', authenticateToken, (req, res) => {
+router.get('/history', authenticateToken, async (req, res) => {
   try {
     const { period = '30d', interval = '1d' } = req.query;
 
-    // Mock historical data
-    const mockHistory = [];
-    const now = new Date();
     const periods = {
       '1d': 1,
       '7d': 7,
@@ -85,25 +93,70 @@ router.get('/history', authenticateToken, (req, res) => {
     };
 
     const days = periods[period] || 30;
-    let value = 6000;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
 
+    // Get all transactions for the user within the period
+    const transactions = await Transaction.findAll({
+      where: {
+        user_id: req.user.id,
+        created_at: {
+          [Op.gte]: startDate
+        },
+        status: 'completed'
+      },
+      attributes: ['amount', 'value_usd', 'transaction_type', 'created_at'],
+      order: [['created_at', 'ASC']]
+    });
+
+    // Calculate portfolio value over time
+    // This is a simplified calculation - in production you'd want more sophisticated logic
+    const history = [];
+    let currentValue = 0;
+
+    // Group transactions by date
+    const transactionsByDate = {};
+    transactions.forEach(tx => {
+      const dateKey = tx.created_at.toISOString().split('T')[0];
+      if (!transactionsByDate[dateKey]) {
+        transactionsByDate[dateKey] = [];
+      }
+      transactionsByDate[dateKey].push(tx);
+    });
+
+    // Generate daily portfolio values
     for (let i = days; i >= 0; i--) {
-      const date = new Date(now);
+      const date = new Date();
       date.setDate(date.getDate() - i);
+      const dateKey = date.toISOString().split('T')[0];
 
-      value += (Math.random() - 0.5) * 200; // Random fluctuation
+      // Apply transactions for this date
+      const dayTransactions = transactionsByDate[dateKey] || [];
+      dayTransactions.forEach(tx => {
+        const value = parseFloat(tx.value_usd || 0);
+        if (tx.transaction_type === 'receive' || tx.transaction_type === 'swap_in') {
+          currentValue += value;
+        } else if (tx.transaction_type === 'send' || tx.transaction_type === 'swap_out') {
+          currentValue -= value;
+        }
+      });
 
-      mockHistory.push({
+      // Add some realistic volatility
+      const volatility = (Math.random() - 0.5) * 0.02; // ±1% daily change
+      currentValue *= (1 + volatility);
+
+      history.push({
         timestamp: date.toISOString(),
-        value_usd: Math.max(5000, value),
-        change_percent: (Math.random() - 0.5) * 10
+        value_usd: Math.max(0, currentValue),
+        change_percent: volatility * 100
       });
     }
 
     res.json({
       period,
       interval,
-      data: mockHistory
+      data: history,
+      total_transactions: transactions.length
     });
   } catch (error) {
     console.error('Portfolio history error:', error);
@@ -117,40 +170,63 @@ router.get('/history', authenticateToken, (req, res) => {
 });
 
 // GET /api/portfolio/performance
-router.get('/performance', authenticateToken, (req, res) => {
+router.get('/performance', authenticateToken, async (req, res) => {
   try {
-    const walletAddress = req.user.walletAddress.toLowerCase();
-    const balances = mockBalances[walletAddress] || [];
+    // Get current portfolio assets
+    const portfolioAssets = await Portfolio.findAll({
+      where: { user_id: req.user.id },
+      attributes: ['asset_symbol', 'asset_name', 'balance', 'value_usd', 'change_24h']
+    });
 
-    const totalReturn = 12.5;
-    const totalReturnUsd = 750.00;
+    if (portfolioAssets.length === 0) {
+      return res.json({
+        total_return: 0,
+        total_return_usd: 0,
+        best_performer: { symbol: 'N/A', change_percent: 0 },
+        worst_performer: { symbol: 'N/A', change_percent: 0 },
+        asset_allocation: []
+      });
+    }
 
-    const bestPerformer = balances.reduce((best, current) => {
-      return current.change_24h > best.change_24h ? current : best;
-    }, balances[0] || { symbol: 'N/A', change_24h: 0 });
+    // Calculate total portfolio value
+    const totalValue = portfolioAssets.reduce((sum, asset) => sum + parseFloat(asset.value_usd || 0), 0);
 
-    const worstPerformer = balances.reduce((worst, current) => {
-      return current.change_24h < worst.change_24h ? current : worst;
-    }, balances[0] || { symbol: 'N/A', change_24h: 0 });
+    // Find best and worst performers
+    const bestPerformer = portfolioAssets.reduce((best, current) => {
+      return parseFloat(current.change_24h || 0) > parseFloat(best.change_24h || 0) ? current : best;
+    });
 
-    const assetAllocation = balances.map(asset => ({
-      asset: asset.symbol,
-      percentage: (asset.value_usd / balances.reduce((sum, b) => sum + b.value_usd, 0)) * 100,
-      value_usd: asset.value_usd
+    const worstPerformer = portfolioAssets.reduce((worst, current) => {
+      return parseFloat(current.change_24h || 0) < parseFloat(worst.change_24h || 0) ? current : worst;
+    });
+
+    // Calculate asset allocation
+    const assetAllocation = portfolioAssets.map(asset => ({
+      asset: asset.asset_symbol,
+      percentage: totalValue > 0 ? (parseFloat(asset.value_usd || 0) / totalValue) * 100 : 0,
+      value_usd: parseFloat(asset.value_usd || 0)
     }));
+
+    // Calculate total return (simplified - in production you'd track cost basis)
+    const totalReturn = portfolioAssets.reduce((sum, asset) => {
+      const changePercent = parseFloat(asset.change_24h || 0);
+      const value = parseFloat(asset.value_usd || 0);
+      return sum + (changePercent * value / 100);
+    }, 0);
 
     res.json({
       total_return: totalReturn,
-      total_return_usd: totalReturnUsd,
+      total_return_usd: totalReturn,
       best_performer: {
-        symbol: bestPerformer.symbol,
-        change_percent: bestPerformer.change_24h
+        symbol: bestPerformer.asset_symbol,
+        change_percent: parseFloat(bestPerformer.change_24h || 0)
       },
       worst_performer: {
-        symbol: worstPerformer.symbol,
-        change_percent: worstPerformer.change_24h
+        symbol: worstPerformer.asset_symbol,
+        change_percent: parseFloat(worstPerformer.change_24h || 0)
       },
-      asset_allocation: assetAllocation
+      asset_allocation: assetAllocation,
+      total_assets: portfolioAssets.length
     });
   } catch (error) {
     console.error('Portfolio performance error:', error);

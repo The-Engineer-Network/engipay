@@ -1,19 +1,33 @@
 {
   "name": "engipay-smart-contracts",
   "version": "1.0.0",
-  "description": "Smart contracts for EngiPay DeFi platform",
+  "description": "EngiPay StarkNet Smart Contracts",
+  "main": "index.js",
   "scripts": {
-    "compile": "starknet-compile",
-    "test": "starknet-test",
-    "deploy": "starknet-deploy",
-    "verify": "starknet-verify"
+    "compile": "node scripts/compile.js",
+    "deploy": "node scripts/deploy.js",
+    "deploy:sepolia": "STARKNET_NETWORK=sepolia node scripts/deploy.js",
+    "deploy:mainnet": "STARKNET_NETWORK=mainnet node scripts/deploy.js",
+    "test": "echo \"Run tests with StarkNet Foundry\" && exit 1",
+    "clean": "rm -rf artifacts deployments.json"
+  },
+  "keywords": [
+    "starknet",
+    "cairo",
+    "smart-contracts",
+    "defi",
+    "blockchain"
+  ],
+  "author": "EngiPay",
+  "license": "MIT",
+  "dependencies": {
+    "starknet": "^6.0.0",
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
-    "@shardlabs/starknet-hardhat-plugin": "^0.1.0",
-    "hardhat": "^2.14.0",
-    "starknet": "^0.5.0"
+    "@starknet-foundry/starknet-foundry": "^0.15.0"
   },
-  "dependencies": {
-    "@openzeppelin/contracts": "^4.8.0"
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

@@ -1,16 +1,16 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { authenticateToken } = require('../middleware/auth');
+const { User } = require('../models');
 
 const router = express.Router();
 
-// In-memory user store (replace with database in production)
-const users = new Map();
-
 // GET /api/users/profile
-router.get('/profile', authenticateToken, (req, res) => {
+router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const user = users.get(req.user.walletAddress.toLowerCase());
+    const user = await User.findOne({
+      where: { wallet_address: req.user.walletAddress.toLowerCase() }
+    });
 
     if (!user) {
       return res.status(404).json({
@@ -20,6 +20,9 @@ router.get('/profile', authenticateToken, (req, res) => {
         }
       });
     }
+
+    // Update last login
+    await user.update({ last_login: new Date() });
 
     res.json({
       id: user.id,
@@ -48,7 +51,7 @@ router.put('/profile', authenticateToken, [
   body('username').optional().isLength({ min: 3, max: 50 }).withMessage('Username must be 3-50 characters'),
   body('email').optional().isEmail().withMessage('Invalid email format'),
   body('avatar_url').optional().isURL().withMessage('Invalid avatar URL')
-], (req, res) => {
+], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -61,7 +64,10 @@ router.put('/profile', authenticateToken, [
       });
     }
 
-    const user = users.get(req.user.walletAddress.toLowerCase());
+    const user = await User.findOne({
+      where: { wallet_address: req.user.walletAddress.toLowerCase() }
+    });
+
     if (!user) {
       return res.status(404).json({
         error: {
@@ -72,12 +78,13 @@ router.put('/profile', authenticateToken, [
     }
 
     const { username, email, avatar_url } = req.body;
+    const updateData = {};
 
-    if (username) user.username = username;
-    if (email) user.email = email;
-    if (avatar_url) user.avatar_url = avatar_url;
+    if (username) updateData.username = username;
+    if (email) updateData.email = email;
+    if (avatar_url) updateData.avatar_url = avatar_url;
 
-    users.set(req.user.walletAddress.toLowerCase(), user);
+    await user.update(updateData);
 
     res.json({
       id: user.id,
@@ -104,11 +111,12 @@ router.put('/profile', authenticateToken, [
 // PUT /api/users/settings
 router.put('/settings', authenticateToken, [
   body('notifications').optional().isBoolean().withMessage('Notifications must be boolean'),
-  body('currency').optional().isIn(['USD', 'EUR', 'GBP', 'JPY']).withMessage('Invalid currency'),
-  body('language').optional().isIn(['en', 'es', 'fr', 'de']).withMessage('Invalid language'),
+  body('currency').optional().isIn(['USD', 'EUR', 'GBP', 'JPY', 'BTC', 'ETH']).withMessage('Invalid currency'),
+  body('language').optional().isIn(['en', 'es', 'fr', 'de', 'zh', 'ja']).withMessage('Invalid language'),
   body('theme').optional().isIn(['light', 'dark', 'auto']).withMessage('Invalid theme'),
+  body('timezone').optional().isString().withMessage('Timezone must be string'),
   body('two_factor_enabled').optional().isBoolean().withMessage('Two factor must be boolean')
-], (req, res) => {
+], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -121,7 +129,10 @@ router.put('/settings', authenticateToken, [
       });
     }
 
-    const user = users.get(req.user.walletAddress.toLowerCase());
+    const user = await User.findOne({
+      where: { wallet_address: req.user.walletAddress.toLowerCase() }
+    });
+
     if (!user) {
       return res.status(404).json({
         error: {
@@ -131,18 +142,25 @@ router.put('/settings', authenticateToken, [
       });
     }
 
-    const { notifications, currency, language, theme, two_factor_enabled } = req.body;
+    const { notifications, currency, language, theme, timezone, two_factor_enabled } = req.body;
+    const currentSettings = user.settings || {};
 
-    if (notifications !== undefined) user.settings.notifications = notifications;
-    if (currency) user.settings.currency = currency;
-    if (language) user.settings.language = language;
-    if (theme) user.settings.theme = theme;
-    if (two_factor_enabled !== undefined) user.settings.two_factor_enabled = two_factor_enabled;
+    const updatedSettings = {
+      ...currentSettings,
+      notifications: notifications !== undefined ? notifications : currentSettings.notifications,
+      currency: currency || currentSettings.currency,
+      language: language || currentSettings.language,
+      theme: theme || currentSettings.theme,
+      timezone: timezone || currentSettings.timezone
+    };
 
-    users.set(req.user.walletAddress.toLowerCase(), user);
+    await user.update({
+      settings: updatedSettings,
+      two_factor_enabled: two_factor_enabled !== undefined ? two_factor_enabled : user.two_factor_enabled
+    });
 
     res.json({
-      settings: user.settings
+      settings: updatedSettings
     });
   } catch (error) {
     console.error('Settings update error:', error);
