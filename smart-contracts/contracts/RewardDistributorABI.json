@@ -1,0 +1,277 @@
+{
+  "abi": [
+    {
+      "name": "RewardPoolAdded",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "token",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "reward_rate",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "Staked",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "user",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "Unstaked",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "user",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "RewardsClaimed",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "user",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "PoolUpdated",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "new_reward_rate",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "create_pool",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "token",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "initial_reward_rate",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "external"
+    },
+    {
+      "name": "update_pool_reward_rate",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "new_reward_rate",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "toggle_pool_pause",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "stake",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "unstake",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "claim_rewards",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "get_pool_info",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::array::Array::<core::felt252>"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_user_stake",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "user",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::array::Array::<core::felt252>"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_pending_rewards",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "user",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_total_pools",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "emergency_withdraw",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "fund_rewards",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    }
+  ]
+}

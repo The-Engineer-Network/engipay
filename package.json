@@ -6,7 +6,12 @@
     "build": "next build",
     "dev": "next dev",
     "lint": "next lint",
-    "start": "next start"
+    "start": "next start",
+    "setup-db": "cd backend && npm run setup-db",
+    "sync-db": "cd backend && npm run sync-db",
+    "reset-db": "cd backend && npm run reset-db",
+    "backend-dev": "cd backend && npm run dev",
+    "backend-install": "cd backend && npm install"
   },
   "dependencies": {
     "@atomiqlabs/sdk": "^6.0.2",
@@ -48,6 +53,7 @@
     "embla-carousel-react": "8.5.1",
     "ethers": "^6.15.0",
     "geist": "^1.3.1",
+    "get-starknet": "^4.0.0",
     "input-otp": "1.4.1",
     "lucide-react": "^0.454.0",
     "next": "^14.2.15",
@@ -59,6 +65,7 @@
     "react-resizable-panels": "^2.1.7",
     "recharts": "2.15.4",
     "sonner": "^1.7.4",
+    "starknet": "^7.6.4",
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
     "vaul": "^0.9.9",

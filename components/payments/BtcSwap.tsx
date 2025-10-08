@@ -111,12 +111,27 @@ export function BtcSwap() {
   };
 
   const pollSwapConfirmation = async (txHash: string): Promise<boolean> => {
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        // Mock confirmation - in real implementation, poll blockchain
-        resolve(Math.random() > 0.1); // 90% success rate
-      }, 3000);
-    });
+    const maxAttempts = 30; // 30 attempts * 10s = 5 minutes
+    const pollInterval = 10000; // 10 seconds
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const status = await atomiq.getSwapStatus(txHash);
+        if (status === 'confirmed') {
+          return true;
+        } else if (status === 'failed') {
+          return false;
+        }
+        // If pending, wait and try again
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+      } catch (error) {
+        console.error('Error polling swap status:', error);
+        // Continue polling on error
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+      }
+    }
+    // Timeout after max attempts
+    return false;
   };
 
   const handleSwapError = (error: any): string => {

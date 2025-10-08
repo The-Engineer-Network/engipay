@@ -153,10 +153,14 @@ export function WalletProvider({ children }: WalletProviderProps) {
           throw new Error("Failed to connect to Xverse wallet");
         }
 
-        // Get real BTC address from Xverse
-        // Note: In real implementation, we'd get the address from the wallet
-        // For now, using a placeholder - in production, get from wallet response
-        const address = "bc1qplaceholderaddress"; // This should come from wallet response
+        // Get real BTC address from Xverse wallet
+        // The xverseWallet.connect() sets the address internally
+        // We need to access it - assuming it has a getAddress method or property
+        const address = xverseWallet.address; // Get the real address
+        if (!address) {
+          throw new Error("Failed to get wallet address");
+        }
+
         setWalletAddress(address);
         setWalletName(walletName);
         setIsConnected(true);

@@ -3,11 +3,10 @@ const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const rateLimit = require('express-rate-limit');
 const { ethers } = require('ethers');
+const { User } = require('../models');
+const { redisClient } = require('../server') || null;
 
 const router = express.Router();
-
-// In-memory user store (replace with database in production)
-const users = new Map();
 
 // Auth-specific rate limiting
 const authLimiter = rateLimit({
@@ -37,13 +36,20 @@ router.post('/nonce', authLimiter, [
     // Generate a unique nonce
     const nonce = `Sign this message to authenticate: ${Date.now()}-${Math.random().toString(36).substring(2)}`;
 
-    // Store nonce temporarily (in production, use Redis or database)
+    // Store nonce in Redis with expiration
     const nonceKey = `nonce_${wallet_address}`;
-    global.nonceStore = global.nonceStore || new Map();
-    global.nonceStore.set(nonceKey, {
+    const nonceData = JSON.stringify({
       nonce,
       expiresAt: Date.now() + (5 * 60 * 1000) // 5 minutes
     });
+
+    if (redisClient) {
+      await redisClient.setEx(nonceKey, 300, nonceData); // 5 minutes expiration
+    } else {
+      // Fallback to in-memory if Redis not available
+      global.nonceStore = global.nonceStore || new Map();
+      global.nonceStore.set(nonceKey, JSON.parse(nonceData));
+    }
 
     res.json({
       nonce,
@@ -83,7 +89,14 @@ router.post('/verify', authLimiter, [
 
     // Verify nonce exists and hasn't expired
     const nonceKey = `nonce_${wallet_address}`;
-    const storedNonce = global.nonceStore?.get(nonceKey);
+    let storedNonce = null;
+
+    if (redisClient) {
+      const nonceData = await redisClient.get(nonceKey);
+      storedNonce = nonceData ? JSON.parse(nonceData) : null;
+    } else {
+      storedNonce = global.nonceStore?.get(nonceKey);
+    }
 
     if (!storedNonce || storedNonce.nonce !== nonce || storedNonce.expiresAt < Date.now()) {
       return res.status(401).json({
@@ -117,26 +130,38 @@ router.post('/verify', authLimiter, [
     }
 
     // Clear used nonce
-    global.nonceStore.delete(nonceKey);
+    if (redisClient) {
+      await redisClient.del(nonceKey);
+    } else {
+      global.nonceStore?.delete(nonceKey);
+    }
 
-    // Find or create user
-    let user = users.get(wallet_address.toLowerCase());
+    // Find or create user in database
+    let user = await User.findOne({
+      where: { wallet_address: wallet_address.toLowerCase() }
+    });
+
     if (!user) {
-      user = {
-        id: `user_${Date.now()}_${Math.random().toString(36).substring(2)}`,
+      // Create new user
+      user = await User.create({
         wallet_address: wallet_address.toLowerCase(),
-        created_at: new Date().toISOString(),
-        last_login: new Date().toISOString(),
         kyc_status: 'pending',
         settings: {
-          notifications: true,
+          notifications: {
+            email: true,
+            push: true,
+            sms: false,
+            marketing: false
+          },
           currency: 'USD',
-          language: 'en'
+          language: 'en',
+          theme: 'auto',
+          timezone: 'UTC'
         }
-      };
-      users.set(wallet_address.toLowerCase(), user);
+      });
     } else {
-      user.last_login = new Date().toISOString();
+      // Update last login
+      await user.update({ last_login: new Date() });
     }
 
     // Generate JWT token
@@ -145,22 +170,20 @@ router.post('/verify', authLimiter, [
         userId: user.id,
         walletAddress: user.wallet_address
       },
-      process.env.JWT_SECRET || 'your-secret-key',
-      { expiresIn: '24h' }
+      process.env.JWT_SECRET || 'your-super-secure-jwt-secret-key-change-this-in-production',
+      { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
 
     // Return user data and token
-    const { id, wallet_address: walletAddress, created_at, last_login, kyc_status, settings } = user;
-
     res.json({
       token,
       user: {
-        id,
-        wallet_address: walletAddress,
-        created_at,
-        last_login,
-        kyc_status,
-        settings
+        id: user.id,
+        wallet_address: user.wallet_address,
+        created_at: user.created_at,
+        last_login: user.last_login,
+        kyc_status: user.kyc_status,
+        settings: user.settings
       }
     });
 
@@ -194,16 +217,27 @@ router.post('/refresh', [
     const { token: refreshToken } = req.body;
 
     // Verify refresh token
-    const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET || 'your-secret-key');
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET || 'your-refresh-token-secret-key-change-this-too');
+
+    // Verify user still exists
+    const user = await User.findByPk(decoded.userId);
+    if (!user || user.wallet_address !== decoded.walletAddress) {
+      return res.status(401).json({
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'User not found or token invalid'
+        }
+      });
+    }
 
     // Generate new access token
     const newToken = jwt.sign(
       {
-        userId: decoded.userId,
-        walletAddress: decoded.walletAddress
+        userId: user.id,
+        walletAddress: user.wallet_address
       },
-      process.env.JWT_SECRET || 'your-secret-key',
-      { expiresIn: '24h' }
+      process.env.JWT_SECRET || 'your-super-secure-jwt-secret-key-change-this-in-production',
+      { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
 
     res.json({

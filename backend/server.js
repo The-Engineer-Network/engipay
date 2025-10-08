@@ -2,8 +2,18 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const mongoose = require('mongoose');
+const { Sequelize } = require('sequelize');
 require('dotenv').config();
+
+// Conditional Redis import
+let createClient;
+try {
+  const redis = require('redis');
+  createClient = redis.createClient;
+} catch (error) {
+  console.warn('⚠️  Redis not available, caching disabled');
+  createClient = null;
+}
 
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
@@ -19,17 +29,69 @@ const chipiPayRoutes = require('./routes/chipipay');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Database connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/engipay', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-});
+// PostgreSQL Database connection
+const sequelize = new Sequelize(
+  process.env.DB_NAME || 'engipay_db',
+  process.env.DB_USER || 'engipay_user',
+  process.env.DB_PASSWORD || 'your_secure_password_here',
+  {
+    host: process.env.DB_HOST || 'localhost',
+    port: process.env.DB_PORT || 5432,
+    dialect: 'postgres',
+    logging: process.env.NODE_ENV === 'development' ? console.log : false,
+    pool: {
+      max: parseInt(process.env.DB_POOL_MAX) || 10,
+      min: parseInt(process.env.DB_POOL_MIN) || 2,
+      acquire: parseInt(process.env.DB_POOL_ACQUIRE) || 30000,
+      idle: parseInt(process.env.DB_POOL_IDLE) || 10000,
+    },
+    define: {
+      timestamps: true,
+      underscored: true,
+      paranoid: true, // Enable soft deletes
+    },
+  }
+);
 
-const db = mongoose.connection;
-db.on('error', console.error.bind(console, 'MongoDB connection error:'));
-db.once('open', () => {
-  console.log('✅ Connected to MongoDB');
-});
+// Redis connection for caching
+let redisClient = null;
+if (process.env.REDIS_URL && createClient) {
+  try {
+    redisClient = createClient({
+      url: process.env.REDIS_URL,
+    });
+
+    redisClient.on('error', (err) => console.error('Redis Client Error:', err));
+    redisClient.on('connect', () => console.log('✅ Connected to Redis'));
+  } catch (error) {
+    console.warn('⚠️  Redis connection failed, caching disabled');
+    redisClient = null;
+  }
+} else {
+  console.log('ℹ️  Redis not configured, caching disabled');
+}
+
+// Test database connection
+const connectDatabase = async () => {
+  try {
+    await sequelize.authenticate();
+    console.log('✅ Connected to PostgreSQL database');
+
+    // Sync database (create tables if they don't exist)
+    if (process.env.NODE_ENV === 'development') {
+      await sequelize.sync({ alter: true });
+      console.log('✅ Database synchronized');
+    }
+
+    // Connect to Redis if configured
+    if (redisClient) {
+      await redisClient.connect();
+    }
+  } catch (error) {
+    console.error('❌ Database connection failed:', error);
+    process.exit(1);
+  }
+};
 
 // Security middleware
 app.use(helmet());
@@ -99,10 +161,49 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 EngiPay Backend server running on port ${PORT}`);
-  console.log(`📊 Health check available at http://localhost:${PORT}/health`);
+// Initialize database connection and start server
+const startServer = async () => {
+  await connectDatabase();
+
+  app.listen(PORT, () => {
+    console.log(`🚀 EngiPay Backend server running on port ${PORT}`);
+    console.log(`📊 Health check available at http://localhost:${PORT}/health`);
+    console.log(`🗄️  Database: PostgreSQL`);
+    console.log(`🔄 Cache: ${redisClient ? 'Redis' : 'Disabled'}`);
+  });
+};
+
+// Handle graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  try {
+    if (redisClient) {
+      await redisClient.disconnect();
+    }
+    await sequelize.close();
+  } catch (error) {
+    console.error('Error during shutdown:', error);
+  }
+  process.exit(0);
 });
 
-module.exports = app;
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, shutting down gracefully');
+  try {
+    if (redisClient) {
+      await redisClient.disconnect();
+    }
+    await sequelize.close();
+  } catch (error) {
+    console.error('Error during shutdown:', error);
+  }
+  process.exit(0);
+});
+
+// Start the server
+startServer().catch((error) => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
+});
+
+module.exports = { app, sequelize, redisClient };

@@ -1,5 +1,5 @@
 // Xverse Wallet API Integration using SATS Connect
-import { getAddress, request, sendBtcTransaction, AddressPurpose, BitcoinNetworkType, getBalanceMethodName } from '@sats-connect/core';
+import { getAddress, request, sendBtcTransaction, AddressPurpose, BitcoinNetworkType } from 'sats-connect';
 
 export interface BitcoinTransaction {
   to: string;
@@ -28,7 +28,7 @@ export interface BRC20Token {
 // Real Xverse Wallet class using SATS Connect
 class XverseWallet {
   private connected = false;
-  private address: string | null = null;
+  public address: string | null = null;
 
   constructor(config: { apiKey: string; endpoint: string }) {
     // Initialize with API key and endpoint if needed
@@ -75,14 +75,23 @@ class XverseWallet {
     }
 
     try {
-      // In production, this would use SATS Connect to get real balance
-      // For demo, return mock balance that represents real BTC data
+      // Fetch real balance from BlockCypher API
+      const network = 'main'; // or 'test3' for testnet
+      const response = await fetch(`https://api.blockcypher.com/v1/btc/${network}/addrs/${this.address}/balance`);
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch balance from API');
+      }
+
+      const data = await response.json();
+
       return {
-        confirmed: 50000000, // 0.5 BTC in satoshis
-        unconfirmed: 0,
-        total: 50000000
+        confirmed: data.balance || 0,
+        unconfirmed: data.unconfirmed_balance || 0,
+        total: (data.balance || 0) + (data.unconfirmed_balance || 0)
       };
     } catch (error) {
+      console.error('Balance fetch error:', error);
       throw new Error('Failed to get balance');
     }
   }
