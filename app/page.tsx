@@ -206,6 +206,9 @@ export default function EngiPayLanding() {
               <Link href="/faq" className="text-black hover:text-purple-500 transition-colors font-medium">
                 FAQ
               </Link>
+              <Link href="/help" className="text-black hover:text-purple-500 transition-colors font-medium">
+                Help
+              </Link>
               <div className="flex items-center space-x-2">
                 {isConnected ? (
                   <Button
@@ -283,6 +286,13 @@ export default function EngiPayLanding() {
                 onClick={() => setMobileMenuOpen(false)}
               >
                 FAQ
+              </Link>
+              <Link
+                href="/help"
+                className="block text-black hover:text-purple-500 transition-colors font-medium w-full text-left"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                Help
               </Link>
               <div className="flex space-x-2">
                 {isConnected ? (
