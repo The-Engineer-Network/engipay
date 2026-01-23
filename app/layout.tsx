@@ -5,6 +5,7 @@ import { Analytics } from "@vercel/analytics/next";
 import { WalletProvider } from "@/contexts/WalletContext";
 import { ChipiPayProviderWrapper } from "@/contexts/ChipiPayContext";
 import { Toaster } from "@/components/ui/toaster";
+import { UserOnboarding } from "@/components/onboarding/UserOnboarding";
 import { Suspense } from "react";
 import "./globals.css";
 
@@ -44,6 +45,7 @@ export default function RootLayout({
           <WalletProvider>
             <ChipiPayProviderWrapper>
               {children}
+              <UserOnboarding />
               <Toaster />
               <Analytics />
             </ChipiPayProviderWrapper>
