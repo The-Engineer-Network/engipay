@@ -1,59 +1,98 @@
-#[contract]
+#[starknet::contract]
 mod EngiToken {
     use starknet::ContractAddress;
     use starknet::get_caller_address;
-    use array::ArrayTrait;
-    use option::OptionTrait;
-    use traits::Into;
-    use traits::TryInto;
+    use starknet::get_block_timestamp;
+    use starknet::storage::{
+        Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
+        StoragePointerWriteAccess
+    };
+    use super::interfaces::IERC20::{IERC20, IERC20Metadata, IERC20Camel};
+    use super::libraries::SafeMath::{SafeMath, SafeMathTrait};
+    use super::libraries::AccessControl::{
+        AccessControlComponent, DEFAULT_ADMIN_ROLE, MINTER_ROLE, PAUSER_ROLE
+    };
+    use super::libraries::ReentrancyGuard::{ReentrancyGuardComponent};
 
-    // ERC20 Standard Events
+    component!(path: AccessControlComponent, storage: access_control, event: AccessControlEvent);
+    component!(path: ReentrancyGuardComponent, storage: reentrancy_guard, event: ReentrancyGuardEvent);
+
+    #[abi(embed_v0)]
+    impl AccessControlImpl = AccessControlComponent::InternalImpl<ContractState>;
+    #[abi(embed_v0)]
+    impl ReentrancyGuardImpl = ReentrancyGuardComponent::InternalImpl<ContractState>;
+
+    // ERC20 Events
     #[event]
-    fn Transfer(from: ContractAddress, to: ContractAddress, value: u256) {}
+    #[derive(Drop, starknet::Event)]
+    enum Event {
+        Transfer: Transfer,
+        Approval: Approval,
+        Staked: Staked,
+        Unstaked: Unstaked,
+        RewardsClaimed: RewardsClaimed,
+        ProposalCreated: ProposalCreated,
+        Voted: Voted,
+        AccessControlEvent: AccessControlComponent::Event,
+        ReentrancyGuardEvent: ReentrancyGuardComponent::Event,
+    }
 
-    #[event]
-    fn Approval(owner: ContractAddress, spender: ContractAddress, value: u256) {}
+    #[derive(Drop, starknet::Event)]
+    struct Transfer {
+        #[key]
+        from: ContractAddress,
+        #[key]
+        to: ContractAddress,
+        value: u256,
+    }
 
-    // Governance Events
-    #[event]
-    fn Staked(account: ContractAddress, amount: u256) {}
-
-    #[event]
-    fn Unstaked(account: ContractAddress, amount: u256) {}
-
-    #[event]
-    fn RewardsClaimed(account: ContractAddress, amount: u256) {}
-
-    #[event]
-    fn ProposalCreated(proposal_id: u256, proposer: ContractAddress, description: felt252) {}
-
-    #[event]
-    fn Voted(proposal_id: u256, voter: ContractAddress, option: u8, votes: u256) {}
-
-    // ERC20 Storage
-    struct Storage {
-        name: felt252,
-        symbol: felt252,
-        decimals: u8,
-        total_supply: u256,
-        balances: LegacyMap<ContractAddress, u256>,
-        allowances: LegacyMap<(ContractAddress, ContractAddress), u256>,
-
-        // Governance Storage
+    #[derive(Drop, starknet::Event)]
+    struct Approval {
+        #[key]
         owner: ContractAddress,
-        staking_total: u256,
-        staking_balances: LegacyMap<ContractAddress, u256>,
-        staking_timestamps: LegacyMap<ContractAddress, u64>,
-        reward_rate: u256, // Rewards per second per staked token
-        last_update_time: u64,
-        reward_per_token_stored: u256,
-        user_reward_per_token_paid: LegacyMap<ContractAddress, u256>,
-        rewards: LegacyMap<ContractAddress, u256>,
+        #[key]
+        spender: ContractAddress,
+        value: u256,
+    }
 
-        // Proposal Storage
-        proposal_count: u256,
-        proposals: LegacyMap<u256, Proposal>,
-        votes: LegacyMap<(u256, ContractAddress), u8>, // proposal_id -> voter -> option
+    #[derive(Drop, starknet::Event)]
+    struct Staked {
+        #[key]
+        account: ContractAddress,
+        amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct Unstaked {
+        #[key]
+        account: ContractAddress,
+        amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct RewardsClaimed {
+        #[key]
+        account: ContractAddress,
+        amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct ProposalCreated {
+        #[key]
+        proposal_id: u256,
+        #[key]
+        proposer: ContractAddress,
+        description: ByteArray,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct Voted {
+        #[key]
+        proposal_id: u256,
+        #[key]
+        voter: ContractAddress,
+        option: u8,
+        votes: u256,
     }
 
     // Proposal Structure
@@ -61,7 +100,7 @@ mod EngiToken {
     struct Proposal {
         id: u256,
         proposer: ContractAddress,
-        description: felt252,
+        description: ByteArray,
         start_time: u64,
         end_time: u64,
         executed: bool,
@@ -70,11 +109,48 @@ mod EngiToken {
         votes_abstain: u256,
     }
 
+    // Storage
+    #[storage]
+    struct Storage {
+        // ERC20 Storage
+        name: ByteArray,
+        symbol: ByteArray,
+        decimals: u8,
+        total_supply: u256,
+        balances: Map<ContractAddress, u256>,
+        allowances: Map<(ContractAddress, ContractAddress), u256>,
+
+        // Governance Storage
+        staking_total: u256,
+        staking_balances: Map<ContractAddress, u256>,
+        staking_timestamps: Map<ContractAddress, u64>,
+        reward_rate: u256, // Rewards per second per staked token
+        last_update_time: u64,
+        reward_per_token_stored: u256,
+        user_reward_per_token_paid: Map<ContractAddress, u256>,
+        rewards: Map<ContractAddress, u256>,
+
+        // Proposal Storage
+        proposal_count: u256,
+        proposals: Map<u256, Proposal>,
+        votes: Map<(u256, ContractAddress), u8>, // proposal_id -> voter -> option
+
+        // Pausable
+        paused: bool,
+
+        // Components
+        #[substorage(v0)]
+        access_control: AccessControlComponent::Storage,
+        #[substorage(v0)]
+        reentrancy_guard: ReentrancyGuardComponent::Storage,
+    }
+
     // Constructor
     #[constructor]
     fn constructor(
-        name: felt252,
-        symbol: felt252,
+        ref self: ContractState,
+        name: ByteArray,
+        symbol: ByteArray,
         initial_supply: u256,
         owner: ContractAddress
     ) {
@@ -83,67 +159,89 @@ mod EngiToken {
         self.decimals.write(18);
         self.total_supply.write(initial_supply);
         self.balances.write(owner, initial_supply);
-        self.owner.write(owner);
-        self.last_update_time.write(starknet::get_block_timestamp());
+        self.last_update_time.write(get_block_timestamp());
+        self.paused.write(false);
 
-        Transfer(0.try_into().unwrap(), owner, initial_supply);
+        // Initialize components
+        self.access_control.initializer(owner);
+        self.reentrancy_guard.initializer();
+
+        // Grant roles to owner
+        self.access_control.grant_role(DEFAULT_ADMIN_ROLE, owner);
+        self.access_control.grant_role(MINTER_ROLE, owner);
+        self.access_control.grant_role(PAUSER_ROLE, owner);
+
+        self.emit(Transfer { from: Zeroable::zero(), to: owner, value: initial_supply });
     }
 
-    // ERC20 Functions
-    #[view]
-    fn get_name() -> felt252 {
-        self.name.read()
+    // ERC20 Implementation
+    #[abi(embed_v0)]
+    impl ERC20Impl of IERC20<ContractState> {
+        fn name(self: @ContractState) -> ByteArray {
+            self.name.read()
+        }
+
+        fn symbol(self: @ContractState) -> ByteArray {
+            self.symbol.read()
+        }
+
+        fn decimals(self: @ContractState) -> u8 {
+            self.decimals.read()
+        }
+
+        fn total_supply(self: @ContractState) -> u256 {
+            self.total_supply.read()
+        }
+
+        fn balance_of(self: @ContractState, account: ContractAddress) -> u256 {
+            self.balances.read(account)
+        }
+
+        fn allowance(self: @ContractState, owner: ContractAddress, spender: ContractAddress) -> u256 {
+            self.allowances.read((owner, spender))
+        }
+
+        fn transfer(ref self: ContractState, recipient: ContractAddress, amount: u256) -> bool {
+            let sender = get_caller_address();
+            self._transfer(sender, recipient, amount);
+            true
+        }
+
+        fn approve(ref self: ContractState, spender: ContractAddress, amount: u256) -> bool {
+            let owner = get_caller_address();
+            self._approve(owner, spender, amount);
+            true
+        }
+
+        fn transfer_from(
+            ref self: ContractState, sender: ContractAddress, recipient: ContractAddress, amount: u256
+        ) -> bool {
+            let caller = get_caller_address();
+            let current_allowance = self.allowances.read((sender, caller));
+            assert(current_allowance >= amount, 'ERC20: insufficient allowance');
+
+            self._approve(sender, caller, SafeMath::sub(current_allowance, amount));
+            self._transfer(sender, recipient, amount);
+            true
+        }
     }
 
-    #[view]
-    fn get_symbol() -> felt252 {
-        self.symbol.read()
-    }
+    // ERC20 Camel Case Implementation
+    #[abi(embed_v0)]
+    impl ERC20CamelImpl of IERC20Camel<ContractState> {
+        fn totalSupply(self: @ContractState) -> u256 {
+            self.total_supply()
+        }
 
-    #[view]
-    fn get_decimals() -> u8 {
-        self.decimals.read()
-    }
+        fn balanceOf(self: @ContractState, account: ContractAddress) -> u256 {
+            self.balance_of(account)
+        }
 
-    #[view]
-    fn get_total_supply() -> u256 {
-        self.total_supply.read()
-    }
-
-    #[view]
-    fn balance_of(account: ContractAddress) -> u256 {
-        self.balances.read(account)
-    }
-
-    #[view]
-    fn allowance(owner: ContractAddress, spender: ContractAddress) -> u256 {
-        self.allowances.read((owner, spender))
-    }
-
-    #[external]
-    fn transfer(recipient: ContractAddress, amount: u256) -> bool {
-        let sender = get_caller_address();
-        self._transfer(sender, recipient, amount);
-        true
-    }
-
-    #[external]
-    fn approve(spender: ContractAddress, amount: u256) -> bool {
-        let owner = get_caller_address();
-        self.allowances.write((owner, spender), amount);
-        Approval(owner, spender, amount);
-        true
-    }
-
-    #[external]
-    fn transfer_from(sender: ContractAddress, recipient: ContractAddress, amount: u256) -> bool {
-        let caller = get_caller_address();
-        let current_allowance = self.allowances.read((sender, caller));
-        assert(current_allowance >= amount, 'Insufficient allowance');
-
-        self.allowances.write((sender, caller), current_allowance - amount);
-        self._transfer(sender, recipient, amount);
-        true
+        fn transferFrom(
+            ref self: ContractState, sender: ContractAddress, recipient: ContractAddress, amount: u256
+        ) -> bool {
+            self.transfer_from(sender, recipient, amount)
+        }
     }
 
     // Internal transfer function
