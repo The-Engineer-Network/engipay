@@ -2,78 +2,79 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const { Portfolio, Transaction } = require('../models');
 const { Op } = require('sequelize');
+const blockchainService = require('../services/blockchainService');
 
 const router = express.Router();
 
-// GET /api/portfolio/balances
+// GET /api/portfolio/balances - REAL BLOCKCHAIN DATA
 router.get('/balances', authenticateToken, async (req, res) => {
   try {
     const { chain, include_zero, refresh } = req.query;
 
-    // Build where clause
-    const whereClause = {
-      user_id: req.user.id
-    };
+    // Get user's wallet address
+    const walletAddress = req.user.walletAddress;
+    
+    if (!walletAddress) {
+      return res.status(400).json({
+        error: {
+          code: 'NO_WALLET',
+          message: 'No wallet address connected'
+        }
+      });
+    }
 
-    if (chain) whereClause.network = chain;
+    // Fetch REAL balances from blockchain
+    const network = chain || 'all';
+    const realBalances = await blockchainService.getPortfolioBalances(walletAddress, network);
 
-    // Get portfolio assets from database
-    const portfolioAssets = await Portfolio.findAll({
-      where: whereClause,
-      attributes: [
-        'asset_symbol',
-        'asset_name',
-        'balance',
-        'value_usd',
-        'change_24h',
-        'network',
-        'contract_address',
-        'decimals',
-        'icon_url',
-        'last_updated'
-      ]
-    });
+    // Update database with real balances
+    for (const asset of realBalances.assets) {
+      await Portfolio.upsert({
+        user_id: req.user.id,
+        asset_symbol: asset.symbol,
+        asset_name: asset.name,
+        balance: asset.balance,
+        value_usd: asset.value_usd,
+        network: asset.chain,
+        contract_address: asset.contract_address,
+        decimals: asset.decimals,
+        last_updated: new Date()
+      });
+    }
 
     // Filter zero balances if not requested
-    let assets = portfolioAssets;
+    let assets = realBalances.assets;
     if (include_zero !== 'true') {
       assets = assets.filter(asset => parseFloat(asset.balance) > 0);
     }
 
     // Calculate totals
-    const totalValue = assets.reduce((sum, asset) => sum + parseFloat(asset.value_usd || 0), 0);
-    const totalChange24h = assets.reduce((sum, asset) => {
-      const changePercent = parseFloat(asset.change_24h || 0);
-      const value = parseFloat(asset.value_usd || 0);
-      return sum + (changePercent * value / 100);
-    }, 0);
-
-    // Format response
-    const formattedAssets = assets.map(asset => ({
-      symbol: asset.asset_symbol,
-      name: asset.asset_name,
-      balance: asset.balance,
-      value_usd: parseFloat(asset.value_usd || 0),
-      change_24h: parseFloat(asset.change_24h || 0),
-      icon: asset.icon_url,
-      chain: asset.network,
-      contract_address: asset.contract_address,
-      decimals: asset.decimals,
-      last_updated: asset.last_updated
-    }));
+    const totalValue = assets.reduce((sum, asset) => sum + asset.value_usd, 0);
 
     res.json({
       total_value_usd: totalValue,
-      total_change_24h: totalChange24h,
-      assets: formattedAssets,
-      last_updated: new Date().toISOString()
+      total_change_24h: 0, // TODO: Calculate from price history
+      assets: assets.map(asset => ({
+        symbol: asset.symbol,
+        name: asset.name,
+        balance: asset.balance,
+        value_usd: asset.value_usd,
+        change_24h: 0, // TODO: Get from price API
+        icon: `https://cryptoicons.org/api/icon/${asset.symbol.toLowerCase()}/32`,
+        chain: asset.chain,
+        contract_address: asset.contract_address,
+        decimals: asset.decimals,
+        price_usd: asset.price_usd
+      })),
+      last_updated: realBalances.last_updated
     });
   } catch (error) {
     console.error('Portfolio balances error:', error);
     res.status(500).json({
       error: {
         code: 'INTERNAL_ERROR',
-        message: 'Failed to fetch portfolio balances'
+        message: 'Failed to fetch portfolio balances',
+        details: error.message
       }
     });
   }
