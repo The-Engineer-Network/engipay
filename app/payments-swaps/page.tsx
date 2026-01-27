@@ -5,12 +5,11 @@ import { useRouter } from "next/navigation"
 import { useWallet } from "@/contexts/WalletContext"
 import { ServicePurchase } from "@/components/payments/ServicePurchase"
 import { BtcSwap } from "@/components/payments/BtcSwap"
-import Link from "next/link"
+import { PaymentModals } from "@/components/payments/PaymentModals"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Send,
@@ -19,12 +18,10 @@ import {
   Building2,
   Zap,
   Bitcoin,
-  Coins,
   Clock,
   Filter,
   Calendar,
   DollarSign,
-  ArrowLeft,
 } from "lucide-react"
 import { getBitcoinBalance, sendBitcoin } from "@/lib/xverse"
 import { toast } from "@/hooks/use-toast"
@@ -42,8 +39,9 @@ export default function PaymentsSwapsPage() {
   const [btcSendAmount, setBtcSendAmount] = useState("")
   const [isSendingBtc, setIsSendingBtc] = useState(false)
   const [isClient, setIsClient] = useState(false)
+  const [activeModal, setActiveModal] = useState<'send' | 'request' | 'qr' | 'merchant' | null>(null)
   const router = useRouter()
-  const { isConnected, walletName } = useWallet()
+  const { isConnected, walletName, walletAddress } = useWallet()
 
   useEffect(() => {
     // Set client flag to prevent hydration issues
@@ -106,31 +104,34 @@ export default function PaymentsSwapsPage() {
       icon: <Send className="w-6 h-6" />,
       title: "Send Payment",
       description: "Transfer funds to another wallet",
-      action: () => console.log("Send Payment"),
+      action: () => setActiveModal('send'),
     },
     {
       icon: <ArrowLeftRight className="w-6 h-6" />,
       title: "Request Payment",
       description: "Ask for payment from contacts",
-      action: () => console.log("Request Payment"),
+      action: () => setActiveModal('request'),
     },
     {
       icon: <QrCode className="w-6 h-6" />,
       title: "Scan QR",
       description: "Scan QR code to pay",
-      action: () => console.log("Scan QR"),
+      action: () => setActiveModal('qr'),
     },
     {
       icon: <Building2 className="w-6 h-6" />,
       title: "Merchant Payments",
       description: "Pay merchants wallet-to-wallet",
-      action: () => console.log("Merchant Payments"),
+      action: () => setActiveModal('merchant'),
     },
     {
       icon: <Zap className="w-6 h-6" />,
       title: "Chipi Pay",
       description: "Powered by Chipi Pay SDK",
-      action: () => console.log("Chipi Pay"),
+      action: () => {
+        // Scroll to ChipiPay section
+        document.getElementById('chipipay-section')?.scrollIntoView({ behavior: 'smooth' })
+      },
       isSdk: true,
     },
   ]
@@ -327,7 +328,7 @@ export default function PaymentsSwapsPage() {
         )}
 
         {/* Chipi Pay Service Purchase */}
-        <section className="mb-12">
+        <section className="mb-12" id="chipipay-section">
           <ServicePurchase />
         </section>
 
@@ -393,6 +394,9 @@ export default function PaymentsSwapsPage() {
             </CardContent>
           </Card>
         </section>
+
+        {/* Payment Modals */}
+        <PaymentModals activeModal={activeModal} onClose={() => setActiveModal(null)} />
       </div>
     </div>
   )

@@ -288,3 +288,96 @@ export const getStarknetProvider = () => provider;
 export const createStarknetAccount = (address: string, privateKey: string) => {
   return new Account(provider, address, privateKey);
 };
+
+
+// Payment Service for direct transfers
+export class PaymentService {
+  private provider = provider;
+
+  /**
+   * Get token contract address by symbol
+   */
+  getTokenAddress(asset: string): string {
+    const addresses: Record<string, string> = {
+      'ENGI': CONTRACT_ADDRESSES.engiToken,
+      'ETH': '0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7',
+      'STRK': '0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d',
+      'USDC': '0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8'
+    };
+    return addresses[asset.toUpperCase()] || CONTRACT_ADDRESSES.engiToken;
+  }
+
+  /**
+   * Transfer tokens (works with any ERC20 on Starknet)
+   */
+  async transferToken(
+    tokenAddress: string,
+    recipient: string,
+    amount: string,
+    signer: Account
+  ): Promise<{ transaction_hash: string }> {
+    try {
+      // Standard ERC20 transfer
+      const transferCall = {
+        contractAddress: tokenAddress,
+        entrypoint: 'transfer',
+        calldata: CallData.compile({
+          recipient,
+          amount: cairo.uint256(amount)
+        })
+      };
+
+      const result = await signer.execute(transferCall);
+      await this.provider.waitForTransaction(result.transaction_hash);
+
+      return { transaction_hash: result.transaction_hash };
+    } catch (error) {
+      console.error('Error transferring token:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Send payment (convenience method)
+   */
+  async sendPayment(
+    recipient: string,
+    amount: string,
+    asset: string,
+    signer: Account
+  ): Promise<{ transaction_hash: string; explorer_url: string }> {
+    try {
+      const tokenAddress = this.getTokenAddress(asset);
+      const result = await this.transferToken(tokenAddress, recipient, amount, signer);
+
+      return {
+        transaction_hash: result.transaction_hash,
+        explorer_url: `https://starkscan.co/tx/${result.transaction_hash}`
+      };
+    } catch (error) {
+      console.error('Error sending payment:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Parse amount to wei (18 decimals)
+   */
+  parseUnits(value: string, decimals: number = 18): string {
+    const [integer, fraction = ''] = value.split('.');
+    const paddedFraction = fraction.padEnd(decimals, '0').slice(0, decimals);
+    return integer + paddedFraction;
+  }
+
+  /**
+   * Format amount from wei to decimal
+   */
+  formatUnits(value: string, decimals: number = 18): string {
+    const str = value.padStart(decimals + 1, '0');
+    const integer = str.slice(0, -decimals) || '0';
+    const fraction = str.slice(-decimals).replace(/0+$/, '');
+    return fraction ? `${integer}.${fraction}` : integer;
+  }
+}
+
+export const paymentService = new PaymentService();
