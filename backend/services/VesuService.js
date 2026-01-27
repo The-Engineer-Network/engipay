@@ -853,6 +853,574 @@ class VesuService {
       lastUpdated: position.last_updated
     };
   }
+
+  // ============================================================================
+  // BORROW OPERATIONS
+  // ============================================================================
+
+  /**
+   * Borrow assets against collateral in a Vesu lending pool
+   * 
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} collateralAsset - Collateral asset symbol
+   * @param {string} debtAsset - Debt asset symbol to borrow
+   * @param {string|number|Decimal} amount - Amount to borrow
+   * @param {string} walletAddress - User's wallet address
+   * @param {string} userId - User ID for database tracking
+   * @returns {Promise<Object>} Borrow operation result
+   */
+  async borrow(poolAddress, collateralAsset, debtAsset, amount, walletAddress, userId) {
+    console.log('VesuService.borrow called', {
+      poolAddress,
+      collateralAsset,
+      debtAsset,
+      amount,
+      walletAddress,
+      userId
+    });
+
+    // Task 8.1.1: Validate borrow parameters
+    this.validateAddress(poolAddress, 'poolAddress');
+    this.validateAsset(collateralAsset);
+    this.validateAsset(debtAsset);
+    const amountDecimal = this.validateAmount(amount, 'amount');
+    this.validateAddress(walletAddress, 'walletAddress');
+
+    if (!userId) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        'userId is required',
+        { userId }
+      );
+    }
+
+    // Validate pool and get pool configuration
+    const pool = await this.validatePool(poolAddress);
+
+    // Verify assets match pool configuration
+    if (collateralAsset !== pool.collateral_asset) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ASSET,
+        `Collateral asset ${collateralAsset} does not match pool's collateral asset ${pool.collateral_asset}`,
+        { collateralAsset, poolCollateralAsset: pool.collateral_asset }
+      );
+    }
+
+    if (debtAsset !== pool.debt_asset) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ASSET,
+        `Debt asset ${debtAsset} does not match pool's debt asset ${pool.debt_asset}`,
+        { debtAsset, poolDebtAsset: pool.debt_asset }
+      );
+    }
+
+    // Find or create position for this user and pool
+    let position = await this._withDatabaseErrorHandling(async () => {
+      return await VesuPosition.findOne({
+        where: {
+          user_id: userId,
+          pool_address: poolAddress,
+          status: 'active'
+        }
+      });
+    });
+
+    // If no position exists, user must supply collateral first
+    if (!position) {
+      throw new VesuError(
+        ErrorCodes.INSUFFICIENT_BALANCE,
+        'No active position found. Please supply collateral first.',
+        { userId, poolAddress }
+      );
+    }
+
+    // Ensure position has collateral
+    const currentCollateral = new Decimal(position.collateral_amount || 0);
+    if (currentCollateral.isZero()) {
+      throw new VesuError(
+        ErrorCodes.INSUFFICIENT_BALANCE,
+        'Position has no collateral. Please supply collateral first.',
+        { positionId: position.id }
+      );
+    }
+
+    // Task 8.1.2: Fetch collateral and debt asset prices from PragmaOracleService
+    const prices = await this._withOracleErrorHandling(async () => {
+      return await this.oracle.getPrices([collateralAsset, debtAsset]);
+    });
+
+    console.log('Fetched prices', { prices });
+
+    // Calculate current debt (including any existing debt)
+    const currentDebt = new Decimal(position.debt_amount || 0);
+    const newTotalDebt = currentDebt.add(amountDecimal);
+
+    // Create position object for calculations
+    const positionForCalc = {
+      collateralAsset: collateralAsset,
+      debtAsset: debtAsset,
+      collateralAmount: currentCollateral.toString(),
+      debtAmount: newTotalDebt.toString()
+    };
+
+    // Task 8.1.3: Calculate current LTV ratio
+    const ltv = this.calculateLTV(positionForCalc, prices);
+    console.log('Calculated LTV', { ltv: ltv.toString() });
+
+    // Task 8.1.4: Validate LTV is within pool limits
+    const maxLTV = new Decimal(pool.max_ltv);
+    if (ltv.gt(maxLTV)) {
+      throw new VesuError(
+        ErrorCodes.LTV_EXCEEDED,
+        `Borrow would exceed maximum LTV ratio. Current: ${ltv.toString()}, Max: ${maxLTV.toString()}`,
+        {
+          currentLTV: ltv.toString(),
+          maxLTV: maxLTV.toString(),
+          collateralValue: currentCollateral.mul(new Decimal(prices[collateralAsset])).toString(),
+          requestedDebtValue: newTotalDebt.mul(new Decimal(prices[debtAsset])).toString()
+        }
+      );
+    }
+
+    // Task 8.1.5: Calculate health factor after borrow
+    const healthFactor = this.calculateHealthFactor(positionForCalc, prices);
+    console.log('Calculated health factor', {
+      healthFactor: healthFactor ? healthFactor.toString() : 'infinite'
+    });
+
+    // Task 8.1.6: Reject borrow if health factor would be < 1.0
+    if (healthFactor && healthFactor.lt(new Decimal(1.0))) {
+      throw new VesuError(
+        ErrorCodes.HEALTH_FACTOR_TOO_LOW,
+        `Borrow would result in health factor below 1.0: ${healthFactor.toString()}`,
+        {
+          healthFactor: healthFactor.toString(),
+          collateralAmount: currentCollateral.toString(),
+          debtAmount: newTotalDebt.toString()
+        }
+      );
+    }
+
+    // Task 8.1.7: Check pool liquidity availability
+    const totalSupply = new Decimal(pool.total_supply || 0);
+    const totalBorrow = new Decimal(pool.total_borrow || 0);
+    const availableLiquidity = totalSupply.sub(totalBorrow);
+
+    console.log('Pool liquidity check', {
+      totalSupply: totalSupply.toString(),
+      totalBorrow: totalBorrow.toString(),
+      availableLiquidity: availableLiquidity.toString(),
+      requestedAmount: amountDecimal.toString()
+    });
+
+    if (amountDecimal.gt(availableLiquidity)) {
+      throw new VesuError(
+        ErrorCodes.INSUFFICIENT_LIQUIDITY,
+        `Insufficient pool liquidity. Available: ${availableLiquidity.toString()}, Requested: ${amountDecimal.toString()}`,
+        {
+          availableLiquidity: availableLiquidity.toString(),
+          requestedAmount: amountDecimal.toString()
+        }
+      );
+    }
+
+    // Task 8.1.8: Execute borrow transaction via TransactionManager
+    let transactionHash;
+    try {
+      transactionHash = await this.txManager.executeBorrow(
+        poolAddress,
+        collateralAsset,
+        debtAsset,
+        amountDecimal.toString(),
+        walletAddress
+      );
+      console.log('Borrow transaction submitted', { transactionHash });
+    } catch (error) {
+      throw new VesuError(
+        ErrorCodes.TRANSACTION_FAILED,
+        `Failed to execute borrow transaction: ${error.message}`,
+        { poolAddress, collateralAsset, debtAsset, amount: amountDecimal.toString(), walletAddress }
+      );
+    }
+
+    // Task 8.1.9: Update VesuPosition in database with new debt amount and health factor
+    await this._withDatabaseErrorHandling(async () => {
+      await position.update({
+        debt_amount: newTotalDebt.toString(),
+        health_factor: healthFactor ? healthFactor.toString() : null,
+        last_updated: new Date()
+      });
+    });
+
+    console.log('Updated position with new debt', {
+      positionId: position.id,
+      newDebtAmount: newTotalDebt.toString(),
+      healthFactor: healthFactor ? healthFactor.toString() : null
+    });
+
+    // Task 8.1.10: Create VesuTransaction record with type='borrow' and status='pending'
+    const transaction = await this._withDatabaseErrorHandling(async () => {
+      return await VesuTransaction.create({
+        position_id: position.id,
+        user_id: userId,
+        transaction_hash: transactionHash,
+        type: 'borrow',
+        asset: debtAsset,
+        amount: amountDecimal.toString(),
+        status: 'pending',
+        timestamp: new Date()
+      });
+    });
+
+    console.log('Created borrow transaction record', {
+      transactionId: transaction.id,
+      transactionHash: transactionHash
+    });
+
+    // Return borrow operation result
+    return {
+      success: true,
+      transactionHash: transactionHash,
+      borrowedAmount: amountDecimal.toString(),
+      position: {
+        id: position.id,
+        collateralAmount: position.collateral_amount,
+        debtAmount: position.debt_amount,
+        healthFactor: position.health_factor,
+        ltv: ltv.toString()
+      },
+      transaction: {
+        id: transaction.id,
+        status: transaction.status
+      }
+    };
+  }
+
+  /**
+   * Get maximum borrowable amount for a position
+   * Task 8.2.1: Implement getMaxBorrowable() method
+   * 
+   * @param {string} positionId - Position ID
+   * @returns {Promise<Object>} Maximum borrowable amount and details
+   */
+  async getMaxBorrowable(positionId) {
+    console.log('VesuService.getMaxBorrowable called', { positionId });
+
+    // Fetch position from database
+    const position = await this._withDatabaseErrorHandling(async () => {
+      const pos = await VesuPosition.findByPk(positionId);
+      if (!pos) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+      return pos;
+    });
+
+    // Get pool configuration
+    const pool = await this.validatePool(position.pool_address);
+
+    // Fetch current prices
+    const prices = await this._withOracleErrorHandling(async () => {
+      return await this.oracle.getPrices([position.collateral_asset, position.debt_asset]);
+    });
+
+    // Get current amounts
+    const collateralAmount = new Decimal(position.collateral_amount || 0);
+    const currentDebt = new Decimal(position.debt_amount || 0);
+
+    // Calculate maximum borrowable using helper method
+    const collateralPrice = new Decimal(prices[position.collateral_asset]);
+    const debtPrice = new Decimal(prices[position.debt_asset]);
+    const maxLTV = new Decimal(pool.max_ltv);
+
+    const maxTotalBorrowable = this.calculateMaxBorrowable(
+      collateralAmount,
+      collateralPrice,
+      debtPrice,
+      maxLTV
+    );
+
+    // Subtract current debt to get additional borrowable amount
+    const additionalBorrowable = Decimal.max(
+      maxTotalBorrowable.sub(currentDebt),
+      new Decimal(0)
+    );
+
+    // Check pool liquidity
+    const totalSupply = new Decimal(pool.total_supply || 0);
+    const totalBorrow = new Decimal(pool.total_borrow || 0);
+    const availableLiquidity = totalSupply.sub(totalBorrow);
+
+    // Actual max borrowable is limited by pool liquidity
+    const actualMaxBorrowable = Decimal.min(additionalBorrowable, availableLiquidity);
+
+    console.log('Max borrowable calculated', {
+      positionId: position.id,
+      collateralAmount: collateralAmount.toString(),
+      currentDebt: currentDebt.toString(),
+      maxTotalBorrowable: maxTotalBorrowable.toString(),
+      additionalBorrowable: additionalBorrowable.toString(),
+      availableLiquidity: availableLiquidity.toString(),
+      actualMaxBorrowable: actualMaxBorrowable.toString()
+    });
+
+    return {
+      positionId: position.id,
+      maxBorrowable: actualMaxBorrowable.toString(),
+      currentDebt: currentDebt.toString(),
+      availableLiquidity: availableLiquidity.toString(),
+      collateralAmount: collateralAmount.toString(),
+      maxLTV: maxLTV.toString()
+    };
+  }
+
+  /**
+   * Get total debt with accrued interest for a position
+   * Task 8.2.2: Implement getTotalDebt() method
+   * 
+   * @param {string} positionId - Position ID
+   * @returns {Promise<Object>} Total debt with accrued interest
+   */
+  async getTotalDebt(positionId) {
+    console.log('VesuService.getTotalDebt called', { positionId });
+
+    // Fetch position from database
+    const position = await this._withDatabaseErrorHandling(async () => {
+      const pos = await VesuPosition.findByPk(positionId);
+      if (!pos) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+      return pos;
+    });
+
+    // Get current debt from database (this is the principal)
+    const principalDebt = new Decimal(position.debt_amount || 0);
+
+    // In a full implementation, we would fetch the actual debt with accrued interest
+    // from the contract. For now, we'll use the stored value.
+    // TODO: Implement contract call to get actual debt with interest
+    // const actualDebt = await this.contracts.getPositionDebt(position.pool_address, walletAddress);
+
+    console.log('Total debt fetched', {
+      positionId: position.id,
+      principalDebt: principalDebt.toString()
+    });
+
+    return {
+      positionId: position.id,
+      principalDebt: principalDebt.toString(),
+      totalDebt: principalDebt.toString(), // Would include accrued interest in full implementation
+      debtAsset: position.debt_asset
+    };
+  }
+
+  /**
+   * Get current borrow APY for a pool
+   * Task 8.2.3: Implement getPoolInterestRate() method
+   * 
+   * @param {string} poolAddress - Pool contract address
+   * @returns {Promise<Object>} Pool interest rate information
+   */
+  async getPoolInterestRate(poolAddress) {
+    console.log('VesuService.getPoolInterestRate called', { poolAddress });
+
+    this.validateAddress(poolAddress, 'poolAddress');
+
+    // Get pool from database
+    const pool = await this.validatePool(poolAddress);
+
+    // In a full implementation, we would fetch the current interest rate from the contract
+    // For now, we'll use the stored value from the database
+    // TODO: Implement contract call to get real-time interest rate
+    // const currentRate = await this.contracts.getPoolBorrowRate(poolAddress);
+
+    const borrowAPY = new Decimal(pool.borrow_apy || 0);
+    const supplyAPY = new Decimal(pool.supply_apy || 0);
+
+    console.log('Pool interest rates fetched', {
+      poolAddress: poolAddress,
+      borrowAPY: borrowAPY.toString(),
+      supplyAPY: supplyAPY.toString()
+    });
+
+    return {
+      poolAddress: poolAddress,
+      borrowAPY: borrowAPY.toString(),
+      supplyAPY: supplyAPY.toString(),
+      collateralAsset: pool.collateral_asset,
+      debtAsset: pool.debt_asset
+    };
+  }
+
+  // ============================================================================
+  // REPAY OPERATIONS
+  // ============================================================================
+
+  /**
+   * Repay borrowed assets to reduce debt
+   * 
+   * @param {string} positionId - Position ID
+   * @param {string|number|Decimal} amount - Amount to repay
+   * @param {string} walletAddress - User's wallet address
+   * @returns {Promise<Object>} Repay operation result
+   */
+  async repay(positionId, amount, walletAddress) {
+    console.log('VesuService.repay called', { positionId, amount, walletAddress });
+
+    // Task 9.1.1: Validate repay parameters (positionId, amount, walletAddress)
+    if (!positionId) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        'positionId is required',
+        { positionId }
+      );
+    }
+
+    const amountDecimal = this.validateAmount(amount, 'amount');
+    this.validateAddress(walletAddress, 'walletAddress');
+
+    // Task 9.1.2: Fetch current VesuPosition from database using VesuPosition.findByPk()
+    const position = await this._withDatabaseErrorHandling(async () => {
+      const pos = await VesuPosition.findByPk(positionId);
+      if (!pos) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+      return pos;
+    });
+
+    // Verify position is active
+    if (position.status !== 'active') {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        `Position is not active: ${position.status}`,
+        { positionId, status: position.status }
+      );
+    }
+
+    // Task 9.1.3: Calculate total debt including accrued interest using getTotalDebt() method
+    const debtInfo = await this.getTotalDebt(positionId);
+    const totalDebt = new Decimal(debtInfo.totalDebt);
+
+    console.log('Total debt calculated', {
+      positionId: position.id,
+      totalDebt: totalDebt.toString(),
+      repayAmount: amountDecimal.toString()
+    });
+
+    // Task 9.1.4: Validate repayment amount <= total debt (throw INVALID_AMOUNT error if exceeded)
+    if (amountDecimal.gt(totalDebt)) {
+      throw new VesuError(
+        ErrorCodes.INVALID_AMOUNT,
+        `Repayment amount exceeds total debt. Total debt: ${totalDebt.toString()}, Repayment: ${amountDecimal.toString()}`,
+        {
+          totalDebt: totalDebt.toString(),
+          repaymentAmount: amountDecimal.toString()
+        }
+      );
+    }
+
+    // Task 9.1.5: Execute repay transaction via TransactionManager.executeRepay()
+    let transactionHash;
+    try {
+      transactionHash = await this.txManager.executeRepay(
+        position.pool_address,
+        position.debt_asset,
+        amountDecimal.toString(),
+        positionId,
+        walletAddress
+      );
+      console.log('Repay transaction submitted', { transactionHash });
+    } catch (error) {
+      throw new VesuError(
+        ErrorCodes.TRANSACTION_FAILED,
+        `Failed to execute repay transaction: ${error.message}`,
+        { positionId, amount: amountDecimal.toString(), walletAddress }
+      );
+    }
+
+    // Task 9.1.6: Update VesuPosition debt_amount in database (subtract repayment amount)
+    const currentDebt = new Decimal(position.debt_amount || 0);
+    const newDebtAmount = Decimal.max(currentDebt.sub(amountDecimal), new Decimal(0));
+
+    console.log('Calculating new debt amount', {
+      currentDebt: currentDebt.toString(),
+      repayAmount: amountDecimal.toString(),
+      newDebtAmount: newDebtAmount.toString()
+    });
+
+    // Task 9.1.7: Recalculate and update health factor using calculateHealthFactor()
+    let newHealthFactor = null;
+    if (!newDebtAmount.isZero()) {
+      // Fetch current prices for health factor calculation
+      const prices = await this._withOracleErrorHandling(async () => {
+        return await this.oracle.getPrices([position.collateral_asset, position.debt_asset]);
+      });
+
+      const positionForCalc = {
+        collateralAsset: position.collateral_asset,
+        debtAsset: position.debt_asset,
+        collateralAmount: position.collateral_amount,
+        debtAmount: newDebtAmount.toString()
+      };
+
+      newHealthFactor = this.calculateHealthFactor(positionForCalc, prices);
+      console.log('Recalculated health factor', {
+        healthFactor: newHealthFactor ? newHealthFactor.toString() : 'infinite'
+      });
+    }
+
+    // Update position in database
+    await this._withDatabaseErrorHandling(async () => {
+      await position.update({
+        debt_amount: newDebtAmount.toString(),
+        health_factor: newHealthFactor ? newHealthFactor.toString() : null,
+        last_updated: new Date()
+      });
+    });
+
+    console.log('Updated position with new debt', {
+      positionId: position.id,
+      newDebtAmount: newDebtAmount.toString(),
+      healthFactor: newHealthFactor ? newHealthFactor.toString() : null
+    });
+
+    // Task 9.1.8: Create VesuTransaction record with type='repay' and status='pending'
+    const transaction = await this._withDatabaseErrorHandling(async () => {
+      return await VesuTransaction.create({
+        position_id: position.id,
+        user_id: position.user_id,
+        transaction_hash: transactionHash,
+        type: 'repay',
+        asset: position.debt_asset,
+        amount: amountDecimal.toString(),
+        status: 'pending',
+        timestamp: new Date()
+      });
+    });
+
+    console.log('Created repay transaction record', {
+      transactionId: transaction.id,
+      transactionHash: transactionHash
+    });
+
+    // Return repay operation result
+    return {
+      success: true,
+      transactionHash: transactionHash,
+      repaidAmount: amountDecimal.toString(),
+      remainingDebt: newDebtAmount.toString(),
+      newHealthFactor: newHealthFactor ? newHealthFactor.toString() : null,
+      position: {
+        id: position.id,
+        collateralAmount: position.collateral_amount,
+        debtAmount: newDebtAmount.toString(),
+        healthFactor: newHealthFactor ? newHealthFactor.toString() : null
+      },
+      transaction: {
+        id: transaction.id,
+        status: transaction.status
+      }
+    };
+  }
 }
 
 module.exports = {
