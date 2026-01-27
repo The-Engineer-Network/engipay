@@ -370,6 +370,54 @@ class TransactionManager {
       throw new Error(`Estimate and submit failed: ${error.message}`);
     }
   }
+
+  /**
+   * Execute supply transaction on Vesu Pool contract
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} asset - Asset symbol to supply
+   * @param {string} amount - Amount to supply (as string to preserve precision)
+   * @param {string} walletAddress - User's wallet address
+   * @returns {Promise<string>} Transaction hash
+   */
+  async executeSupply(poolAddress, asset, amount, walletAddress) {
+    try {
+      console.log('TransactionManager.executeSupply called', {
+        poolAddress,
+        asset,
+        amount,
+        walletAddress
+      });
+
+      // Convert amount to contract format (typically uint256)
+      // For Starknet, we need to handle felt252 format
+      const amountFelt = CallData.compile([amount]);
+
+      // Prepare parameters for supply call
+      // The exact parameters depend on Vesu V2 Pool contract interface
+      // Typical supply signature: supply(asset, amount, onBehalfOf)
+      const params = CallData.compile([
+        asset,
+        amount,
+        walletAddress
+      ]);
+
+      console.log('Submitting supply transaction', { poolAddress, params });
+
+      // Submit transaction
+      const result = await this.submitTransaction(
+        poolAddress,
+        'supply', // Method name in Vesu Pool contract
+        params
+      );
+
+      console.log('Supply transaction submitted', { transactionHash: result.transaction_hash });
+
+      return result.transaction_hash;
+    } catch (error) {
+      console.error('Execute supply failed:', error.message);
+      throw new Error(`Execute supply failed: ${error.message}`);
+    }
+  }
 }
 
 module.exports = TransactionManager;
