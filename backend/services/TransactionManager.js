@@ -418,6 +418,103 @@ class TransactionManager {
       throw new Error(`Execute supply failed: ${error.message}`);
     }
   }
+
+  /**
+   * Execute borrow transaction on Vesu Pool contract
+   * Task 8.3.1: Add executeBorrow() method similar to executeSupply()
+   * 
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} collateralAsset - Collateral asset symbol
+   * @param {string} debtAsset - Debt asset symbol to borrow
+   * @param {string} borrowAmount - Amount to borrow (as string to preserve precision)
+   * @param {string} walletAddress - User's wallet address
+   * @returns {Promise<string>} Transaction hash
+   */
+  async executeBorrow(poolAddress, collateralAsset, debtAsset, borrowAmount, walletAddress) {
+    try {
+      console.log('TransactionManager.executeBorrow called', {
+        poolAddress,
+        collateralAsset,
+        debtAsset,
+        borrowAmount,
+        walletAddress
+      });
+
+      // Task 8.3.2: Prepare calldata for borrow transaction
+      // The exact parameters depend on Vesu V2 Pool contract interface
+      // Typical borrow signature: borrow(collateralAsset, debtAsset, borrowAmount, onBehalfOf)
+      const params = CallData.compile([
+        collateralAsset,
+        debtAsset,
+        borrowAmount,
+        walletAddress
+      ]);
+
+      console.log('Submitting borrow transaction', { poolAddress, params });
+
+      // Task 8.3.3: Submit transaction to pool contract's borrow() method
+      const result = await this.submitTransaction(
+        poolAddress,
+        'borrow', // Method name in Vesu Pool contract
+        params
+      );
+
+      console.log('Borrow transaction submitted', { transactionHash: result.transaction_hash });
+
+      return result.transaction_hash;
+    } catch (error) {
+      console.error('Execute borrow failed:', error.message);
+      throw new Error(`Execute borrow failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Execute repay transaction on Vesu Pool contract
+   * Task 9.2.1: Add executeRepay() method to TransactionManager class
+   * 
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} debtAsset - Debt asset symbol to repay
+   * @param {string} repayAmount - Amount to repay (as string to preserve precision)
+   * @param {string} positionId - Position ID for tracking
+   * @param {string} walletAddress - User's wallet address
+   * @returns {Promise<string>} Transaction hash
+   */
+  async executeRepay(poolAddress, debtAsset, repayAmount, positionId, walletAddress) {
+    try {
+      console.log('TransactionManager.executeRepay called', {
+        poolAddress,
+        debtAsset,
+        repayAmount,
+        positionId,
+        walletAddress
+      });
+
+      // Task 9.2.2: Prepare calldata for repay transaction (debtAsset, repayAmount, positionId)
+      // The exact parameters depend on Vesu V2 Pool contract interface
+      // Typical repay signature: repay(debtAsset, repayAmount, onBehalfOf)
+      const params = CallData.compile([
+        debtAsset,
+        repayAmount,
+        walletAddress
+      ]);
+
+      console.log('Submitting repay transaction', { poolAddress, params });
+
+      // Task 9.2.3: Submit transaction to pool contract's repay() method
+      const result = await this.submitTransaction(
+        poolAddress,
+        'repay', // Method name in Vesu Pool contract
+        params
+      );
+
+      console.log('Repay transaction submitted', { transactionHash: result.transaction_hash });
+
+      return result.transaction_hash;
+    } catch (error) {
+      console.error('Execute repay failed:', error.message);
+      throw new Error(`Execute repay failed: ${error.message}`);
+    }
+  }
 }
 
 module.exports = TransactionManager;
