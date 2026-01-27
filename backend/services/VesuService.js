@@ -1421,6 +1421,225 @@ class VesuService {
       }
     };
   }
+
+  // ============================================================================
+  // WITHDRAW OPERATIONS
+  // ============================================================================
+
+  /**
+   * Withdraw supplied assets from a Vesu lending pool
+   * 
+   * @param {string} positionId - Position ID
+   * @param {string|number|Decimal} amount - Amount to withdraw
+   * @param {string} walletAddress - User's wallet address
+   * @returns {Promise<Object>} Withdraw operation result
+   */
+  async withdraw(positionId, amount, walletAddress) {
+    console.log('VesuService.withdraw called', { positionId, amount, walletAddress });
+
+    // Task 10.1.1: Validate withdraw parameters (positionId, amount, walletAddress)
+    if (!positionId) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        'positionId is required',
+        { positionId }
+      );
+    }
+
+    const amountDecimal = this.validateAmount(amount, 'amount');
+    this.validateAddress(walletAddress, 'walletAddress');
+
+    // Task 10.1.2: Fetch current VesuPosition from database using VesuPosition.findByPk()
+    const position = await this._withDatabaseErrorHandling(async () => {
+      const pos = await VesuPosition.findByPk(positionId);
+      if (!pos) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+      return pos;
+    });
+
+    // Verify position is active
+    if (position.status !== 'active') {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        `Position is not active: ${position.status}`,
+        { positionId, status: position.status }
+      );
+    }
+
+    // Get current collateral amount
+    const currentCollateral = new Decimal(position.collateral_amount || 0);
+
+    // Verify position has sufficient collateral
+    if (amountDecimal.gt(currentCollateral)) {
+      throw new VesuError(
+        ErrorCodes.INSUFFICIENT_BALANCE,
+        `Insufficient collateral. Available: ${currentCollateral.toString()}, Requested: ${amountDecimal.toString()}`,
+        {
+          availableCollateral: currentCollateral.toString(),
+          requestedAmount: amountDecimal.toString()
+        }
+      );
+    }
+
+    // Task 10.1.3: Calculate maximum withdrawable amount using calculateMaxWithdrawable() helper
+    // Fetch current prices for calculations
+    const prices = await this._withOracleErrorHandling(async () => {
+      return await this.oracle.getPrices([position.collateral_asset, position.debt_asset]);
+    });
+
+    const maxWithdrawable = this.calculateMaxWithdrawable(position, prices);
+
+    console.log('Maximum withdrawable calculated', {
+      positionId: position.id,
+      maxWithdrawable: maxWithdrawable.toString(),
+      requestedAmount: amountDecimal.toString()
+    });
+
+    // Task 10.1.4: Validate withdrawal amount <= max withdrawable (throw POSITION_UNDERCOLLATERALIZED if exceeded)
+    if (amountDecimal.gt(maxWithdrawable)) {
+      throw new VesuError(
+        ErrorCodes.POSITION_UNDERCOLLATERALIZED,
+        `Withdrawal would undercollateralize position. Max withdrawable: ${maxWithdrawable.toString()}, Requested: ${amountDecimal.toString()}`,
+        {
+          maxWithdrawable: maxWithdrawable.toString(),
+          requestedAmount: amountDecimal.toString(),
+          currentCollateral: currentCollateral.toString(),
+          currentDebt: position.debt_amount
+        }
+      );
+    }
+
+    // Task 10.1.5: Calculate health factor after withdrawal using calculateHealthFactor()
+    const newCollateralAmount = currentCollateral.sub(amountDecimal);
+    const currentDebt = new Decimal(position.debt_amount || 0);
+
+    let newHealthFactor = null;
+    if (!currentDebt.isZero()) {
+      const positionAfterWithdraw = {
+        collateralAsset: position.collateral_asset,
+        debtAsset: position.debt_asset,
+        collateralAmount: newCollateralAmount.toString(),
+        debtAmount: currentDebt.toString()
+      };
+
+      newHealthFactor = this.calculateHealthFactor(positionAfterWithdraw, prices);
+
+      console.log('Health factor after withdrawal', {
+        newHealthFactor: newHealthFactor ? newHealthFactor.toString() : 'infinite'
+      });
+
+      // Task 10.1.6: Reject withdrawal if health factor would be < 1.0 (throw HEALTH_FACTOR_TOO_LOW)
+      if (newHealthFactor && newHealthFactor.lt(new Decimal(1.0))) {
+        throw new VesuError(
+          ErrorCodes.HEALTH_FACTOR_TOO_LOW,
+          `Withdrawal would result in health factor below 1.0: ${newHealthFactor.toString()}`,
+          {
+            newHealthFactor: newHealthFactor.toString(),
+            newCollateralAmount: newCollateralAmount.toString(),
+            currentDebt: currentDebt.toString()
+          }
+        );
+      }
+    }
+
+    // Task 10.1.7: Calculate vTokens to burn using calculateVTokensToReceive() in reverse
+    // Get current exchange rate
+    const exchangeRate = await this._withContractErrorHandling(async () => {
+      return await this.contracts.getVTokenExchangeRateForPool(
+        position.pool_address,
+        position.collateral_asset
+      );
+    });
+
+    const exchangeRateDecimal = new Decimal(exchangeRate);
+    
+    // vTokens to burn = amount / exchangeRate (same formula as calculateVTokensToReceive)
+    const vTokensToBurn = this.calculateVTokensToReceive(amountDecimal, exchangeRateDecimal);
+
+    console.log('vTokens to burn calculated', {
+      withdrawAmount: amountDecimal.toString(),
+      exchangeRate: exchangeRateDecimal.toString(),
+      vTokensToBurn: vTokensToBurn.toString()
+    });
+
+    // Task 10.1.8: Execute withdraw transaction via TransactionManager.executeWithdraw()
+    let transactionHash;
+    try {
+      transactionHash = await this.txManager.executeWithdraw(
+        position.pool_address,
+        position.collateral_asset,
+        amountDecimal.toString(),
+        walletAddress
+      );
+      console.log('Withdraw transaction submitted', { transactionHash });
+    } catch (error) {
+      throw new VesuError(
+        ErrorCodes.TRANSACTION_FAILED,
+        `Failed to execute withdraw transaction: ${error.message}`,
+        { positionId, amount: amountDecimal.toString(), walletAddress }
+      );
+    }
+
+    // Task 10.1.9: Update VesuPosition collateral_amount and vtoken_balance in database
+    const currentVTokenBalance = new Decimal(position.vtoken_balance || 0);
+    const newVTokenBalance = Decimal.max(currentVTokenBalance.sub(vTokensToBurn), new Decimal(0));
+
+    await this._withDatabaseErrorHandling(async () => {
+      await position.update({
+        collateral_amount: newCollateralAmount.toString(),
+        vtoken_balance: newVTokenBalance.toString(),
+        health_factor: newHealthFactor ? newHealthFactor.toString() : null,
+        last_updated: new Date()
+      });
+    });
+
+    console.log('Updated position after withdrawal', {
+      positionId: position.id,
+      newCollateralAmount: newCollateralAmount.toString(),
+      newVTokenBalance: newVTokenBalance.toString(),
+      healthFactor: newHealthFactor ? newHealthFactor.toString() : null
+    });
+
+    // Task 10.1.10: Create VesuTransaction record with type='withdraw' and status='pending'
+    const transaction = await this._withDatabaseErrorHandling(async () => {
+      return await VesuTransaction.create({
+        position_id: position.id,
+        user_id: position.user_id,
+        transaction_hash: transactionHash,
+        type: 'withdraw',
+        asset: position.collateral_asset,
+        amount: amountDecimal.toString(),
+        status: 'pending',
+        timestamp: new Date()
+      });
+    });
+
+    console.log('Created withdraw transaction record', {
+      transactionId: transaction.id,
+      transactionHash: transactionHash
+    });
+
+    // Return withdraw operation result
+    return {
+      success: true,
+      transactionHash: transactionHash,
+      withdrawnAmount: amountDecimal.toString(),
+      vTokensBurned: vTokensToBurn.toString(),
+      newHealthFactor: newHealthFactor ? newHealthFactor.toString() : null,
+      position: {
+        id: position.id,
+        collateralAmount: newCollateralAmount.toString(),
+        vTokenBalance: newVTokenBalance.toString(),
+        debtAmount: position.debt_amount,
+        healthFactor: newHealthFactor ? newHealthFactor.toString() : null
+      },
+      transaction: {
+        id: transaction.id,
+        status: transaction.status
+      }
+    };
+  }
 }
 
 module.exports = {

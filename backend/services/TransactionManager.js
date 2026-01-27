@@ -515,6 +515,52 @@ class TransactionManager {
       throw new Error(`Execute repay failed: ${error.message}`);
     }
   }
+
+  /**
+   * Execute withdraw transaction on Vesu Pool contract
+   * Task 10.2.1: Add executeWithdraw() method to TransactionManager class
+   * 
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} asset - Asset symbol to withdraw
+   * @param {string} amount - Amount to withdraw (as string to preserve precision)
+   * @param {string} walletAddress - User's wallet address
+   * @returns {Promise<string>} Transaction hash
+   */
+  async executeWithdraw(poolAddress, asset, amount, walletAddress) {
+    try {
+      console.log('TransactionManager.executeWithdraw called', {
+        poolAddress,
+        asset,
+        amount,
+        walletAddress
+      });
+
+      // Task 10.2.2: Prepare calldata for withdraw transaction (asset, amount, walletAddress)
+      // The exact parameters depend on Vesu V2 Pool contract interface
+      // Typical withdraw signature: withdraw(asset, amount, to)
+      const params = CallData.compile([
+        asset,
+        amount,
+        walletAddress
+      ]);
+
+      console.log('Submitting withdraw transaction', { poolAddress, params });
+
+      // Task 10.2.3: Submit transaction to pool contract's withdraw() method
+      const result = await this.submitTransaction(
+        poolAddress,
+        'withdraw', // Method name in Vesu Pool contract
+        params
+      );
+
+      console.log('Withdraw transaction submitted', { transactionHash: result.transaction_hash });
+
+      return result.transaction_hash;
+    } catch (error) {
+      console.error('Execute withdraw failed:', error.message);
+      throw new Error(`Execute withdraw failed: ${error.message}`);
+    }
+  }
 }
 
 module.exports = TransactionManager;
