@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const { authenticateToken } = require('../middleware/auth');
 const { Transaction, User } = require('../models');
 const { Op } = require('sequelize');
+const blockchainService = require('../services/blockchainService');
 
 const router = express.Router();
 
@@ -259,3 +260,188 @@ router.post('/send', authenticateToken, [
 });
 
 module.exports = router;
+
+
+// POST /api/transactions/broadcast - REAL BLOCKCHAIN BROADCASTING
+router.post('/broadcast', authenticateToken, [
+  body('network').isIn(['ethereum', 'starknet', 'bitcoin']).withMessage('Invalid network'),
+  body('signedTransaction').isString().notEmpty().withMessage('Signed transaction is required'),
+  body('to').isString().notEmpty().withMessage('Recipient address is required'),
+  body('amount').isString().notEmpty().withMessage('Amount is required'),
+  body('asset').isString().notEmpty().withMessage('Asset is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid input data',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { network, signedTransaction, to, amount, asset, memo } = req.body;
+
+    // Generate transaction ID
+    const transactionId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    // Broadcast transaction to blockchain
+    const result = await blockchainService.broadcastTransaction({
+      network,
+      signedTransaction,
+      from: req.user.walletAddress,
+      to,
+      amount,
+      asset
+    });
+
+    // Create transaction record in database
+    const transaction = await Transaction.create({
+      transaction_id: transactionId,
+      user_id: req.user.id,
+      transaction_type: 'send',
+      description: memo || `Send ${amount} ${asset}`,
+      amount: parseFloat(amount),
+      asset_symbol: asset,
+      status: 'pending',
+      network: network,
+      to_address: to,
+      from_address: req.user.walletAddress,
+      tx_hash: result.tx_hash,
+      metadata: {
+        initiated_at: new Date().toISOString(),
+        user_agent: req.headers['user-agent'],
+        ip_address: req.ip
+      }
+    });
+
+    res.json({
+      transaction_id: transaction.transaction_id,
+      tx_hash: result.tx_hash,
+      status: result.status,
+      network: result.network,
+      amount: amount,
+      asset: asset,
+      to_address: to,
+      timestamp: result.timestamp
+    });
+  } catch (error) {
+    console.error('Transaction broadcast error:', error);
+    res.status(500).json({
+      error: {
+        code: 'BROADCAST_ERROR',
+        message: 'Failed to broadcast transaction',
+        details: error.message
+      }
+    });
+  }
+});
+
+// GET /api/transactions/:hash/status - REAL BLOCKCHAIN STATUS TRACKING
+router.get('/:hash/status', authenticateToken, async (req, res) => {
+  try {
+    const { hash } = req.params;
+    const { network } = req.query;
+
+    if (!network) {
+      return res.status(400).json({
+        error: {
+          code: 'MISSING_NETWORK',
+          message: 'Network parameter is required'
+        }
+      });
+    }
+
+    // Get transaction status from blockchain
+    const status = await blockchainService.getTransactionStatus(hash, network);
+
+    // Update database if transaction exists
+    const transaction = await Transaction.findOne({
+      where: { tx_hash: hash, user_id: req.user.id }
+    });
+
+    if (transaction) {
+      await transaction.update({
+        status: status.status,
+        confirmations: status.confirmations,
+        block_number: status.block_number,
+        gas_used: status.gas_used,
+        gas_price: status.gas_price
+      });
+    }
+
+    res.json({
+      tx_hash: hash,
+      status: status.status,
+      confirmations: status.confirmations,
+      block_number: status.block_number,
+      gas_used: status.gas_used,
+      gas_price: status.gas_price,
+      transaction_fee: status.transaction_fee,
+      network: network,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Transaction status error:', error);
+    res.status(500).json({
+      error: {
+        code: 'STATUS_ERROR',
+        message: 'Failed to get transaction status',
+        details: error.message
+      }
+    });
+  }
+});
+
+// POST /api/transactions/estimate-gas - GAS ESTIMATION
+router.post('/estimate-gas', authenticateToken, [
+  body('network').isIn(['ethereum', 'starknet']).withMessage('Invalid network'),
+  body('to').isString().notEmpty().withMessage('Recipient address is required'),
+  body('value').optional().isString().withMessage('Value must be a string'),
+  body('data').optional().isString().withMessage('Data must be a string')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid input data',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { network, to, value, data } = req.body;
+
+    // Estimate gas
+    const gasEstimate = await blockchainService.estimateGas({
+      from: req.user.walletAddress,
+      to,
+      value,
+      data,
+      network
+    });
+
+    res.json({
+      network,
+      gas_limit: gasEstimate.gas_limit,
+      gas_price: gasEstimate.gas_price,
+      max_fee: gasEstimate.max_fee,
+      max_priority_fee: gasEstimate.max_priority_fee,
+      estimated_cost_eth: gasEstimate.estimated_cost_eth,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Gas estimation error:', error);
+    res.status(500).json({
+      error: {
+        code: 'ESTIMATION_ERROR',
+        message: 'Failed to estimate gas',
+        details: error.message
+      }
+    });
+  }
+});
