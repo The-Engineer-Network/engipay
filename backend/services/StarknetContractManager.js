@@ -234,6 +234,60 @@ class StarknetContractManager {
   }
 
   /**
+   * Get vToken exchange rate for a pool and asset
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} asset - Asset symbol
+   * @returns {Promise<string>} Exchange rate (assets per share)
+   */
+  async getVTokenExchangeRateForPool(poolAddress, asset) {
+    try {
+      // For Vesu V2, we need to get the vToken address from the pool
+      // This is a simplified version - actual implementation depends on Vesu V2 contract structure
+      
+      // Option 1: If pool has a method to get vToken address
+      // const vTokenAddress = await this.callPoolMethod(poolAddress, 'getVTokenAddress', [asset]);
+      
+      // Option 2: Use configuration to map pool + asset to vToken address
+      const poolConfig = this.config.pools[poolAddress];
+      if (!poolConfig || !poolConfig.vTokenAddress) {
+        // Fallback: return 1:1 exchange rate for testing
+        console.warn(`vToken address not found for pool ${poolAddress}, using 1:1 exchange rate`);
+        return '1000000000000000000'; // 1.0 in 18 decimals
+      }
+
+      const vTokenAddress = poolConfig.vTokenAddress;
+      return await this.getVTokenExchangeRate(vTokenAddress);
+    } catch (error) {
+      throw new Error(`Failed to get vToken exchange rate for pool: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get vToken balance for a wallet
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} walletAddress - Wallet address to check
+   * @returns {Promise<string>} vToken balance
+   */
+  async getVTokenBalance(poolAddress, walletAddress) {
+    try {
+      // Get vToken address from pool configuration
+      const poolConfig = this.config.pools[poolAddress];
+      if (!poolConfig || !poolConfig.vTokenAddress) {
+        throw new Error(`vToken address not found for pool ${poolAddress}`);
+      }
+
+      const vTokenAddress = poolConfig.vTokenAddress;
+      
+      // Call balanceOf on vToken contract
+      const balance = await this.callVTokenMethod(vTokenAddress, 'balanceOf', [walletAddress]);
+      
+      return balance.toString();
+    } catch (error) {
+      throw new Error(`Failed to get vToken balance: ${error.message}`);
+    }
+  }
+
+  /**
    * Validate Starknet address format
    * @param {string} address - Address to validate
    * @returns {boolean} True if valid

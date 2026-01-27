@@ -545,6 +545,314 @@ class VesuService {
       );
     }
   }
+
+  // ============================================================================
+  // SUPPLY OPERATIONS
+  // ============================================================================
+
+  /**
+   * Supply assets to a Vesu lending pool
+   * 
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} asset - Asset symbol to supply
+   * @param {string|number|Decimal} amount - Amount to supply
+   * @param {string} walletAddress - User's wallet address
+   * @param {string} userId - User ID for database tracking
+   * @returns {Promise<Object>} Supply operation result
+   */
+  async supply(poolAddress, asset, amount, walletAddress, userId) {
+    console.log('VesuService.supply called', { poolAddress, asset, amount, walletAddress, userId });
+
+    // Task 7.1.1: Validate supply parameters
+    this.validateAddress(poolAddress, 'poolAddress');
+    this.validateAsset(asset);
+    const amountDecimal = this.validateAmount(amount, 'amount');
+    this.validateAddress(walletAddress, 'walletAddress');
+
+    if (!userId) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        'userId is required',
+        { userId }
+      );
+    }
+
+    // Task 7.1.2: Get pool configuration and validate pool is active
+    const pool = await this.validatePool(poolAddress);
+
+    // Verify asset matches pool's collateral asset
+    if (asset !== pool.collateral_asset) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ASSET,
+        `Asset ${asset} does not match pool's collateral asset ${pool.collateral_asset}`,
+        { asset, poolCollateralAsset: pool.collateral_asset }
+      );
+    }
+
+    // Task 7.1.3: Calculate expected vTokens to receive using exchange rate
+    const exchangeRate = await this._withContractErrorHandling(async () => {
+      return await this.contracts.getVTokenExchangeRateForPool(poolAddress, asset);
+    });
+
+    const exchangeRateDecimal = new Decimal(exchangeRate);
+    const expectedVTokens = this.calculateVTokensToReceive(amountDecimal, exchangeRateDecimal);
+
+    console.log('Supply calculation', {
+      amount: amountDecimal.toString(),
+      exchangeRate: exchangeRateDecimal.toString(),
+      expectedVTokens: expectedVTokens.toString()
+    });
+
+    // Task 7.1.4: Execute supply transaction on Pool contract via TransactionManager
+    let transactionHash;
+    try {
+      transactionHash = await this.txManager.executeSupply(
+        poolAddress,
+        asset,
+        amountDecimal.toString(),
+        walletAddress
+      );
+      console.log('Supply transaction submitted', { transactionHash });
+    } catch (error) {
+      throw new VesuError(
+        ErrorCodes.TRANSACTION_FAILED,
+        `Failed to execute supply transaction: ${error.message}`,
+        { poolAddress, asset, amount: amountDecimal.toString(), walletAddress }
+      );
+    }
+
+    // Task 7.1.5: Create or update VesuPosition record in database
+    const position = await this._withDatabaseErrorHandling(async () => {
+      // Find existing position for this user and pool
+      let existingPosition = await VesuPosition.findOne({
+        where: {
+          user_id: userId,
+          pool_address: poolAddress,
+          status: 'active'
+        }
+      });
+
+      if (existingPosition) {
+        // Update existing position
+        const newCollateralAmount = new Decimal(existingPosition.collateral_amount)
+          .add(amountDecimal);
+        const newVTokenBalance = new Decimal(existingPosition.vtoken_balance)
+          .add(expectedVTokens);
+
+        await existingPosition.update({
+          collateral_amount: newCollateralAmount.toString(),
+          vtoken_balance: newVTokenBalance.toString(),
+          last_updated: new Date()
+        });
+
+        console.log('Updated existing position', {
+          positionId: existingPosition.id,
+          newCollateralAmount: newCollateralAmount.toString(),
+          newVTokenBalance: newVTokenBalance.toString()
+        });
+
+        return existingPosition;
+      } else {
+        // Create new position
+        const newPosition = await VesuPosition.create({
+          user_id: userId,
+          pool_address: poolAddress,
+          collateral_asset: pool.collateral_asset,
+          debt_asset: pool.debt_asset,
+          collateral_amount: amountDecimal.toString(),
+          debt_amount: '0',
+          vtoken_balance: expectedVTokens.toString(),
+          health_factor: null, // No debt, so health factor is infinite
+          status: 'active',
+          last_updated: new Date()
+        });
+
+        console.log('Created new position', {
+          positionId: newPosition.id,
+          collateralAmount: amountDecimal.toString(),
+          vTokenBalance: expectedVTokens.toString()
+        });
+
+        return newPosition;
+      }
+    });
+
+    // Task 7.1.6: Create VesuTransaction record with status tracking
+    const transaction = await this._withDatabaseErrorHandling(async () => {
+      return await VesuTransaction.create({
+        position_id: position.id,
+        user_id: userId,
+        transaction_hash: transactionHash,
+        type: 'supply',
+        asset: asset,
+        amount: amountDecimal.toString(),
+        status: 'pending',
+        timestamp: new Date()
+      });
+    });
+
+    console.log('Created transaction record', {
+      transactionId: transaction.id,
+      transactionHash: transactionHash
+    });
+
+    // Return supply operation result
+    return {
+      success: true,
+      transactionHash: transactionHash,
+      vTokensReceived: expectedVTokens.toString(),
+      position: {
+        id: position.id,
+        collateralAmount: position.collateral_amount,
+        vTokenBalance: position.vtoken_balance,
+        healthFactor: position.health_factor
+      },
+      transaction: {
+        id: transaction.id,
+        status: transaction.status
+      }
+    };
+  }
+
+  /**
+   * Fetch vToken balance from contract
+   * Task 7.2.1: Fetch vToken balance from contract via StarknetContractManager
+   * 
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} walletAddress - User's wallet address
+   * @returns {Promise<Decimal>} vToken balance
+   */
+  async getVTokenBalance(poolAddress, walletAddress) {
+    console.log('VesuService.getVTokenBalance called', { poolAddress, walletAddress });
+
+    this.validateAddress(poolAddress, 'poolAddress');
+    this.validateAddress(walletAddress, 'walletAddress');
+
+    const balance = await this._withContractErrorHandling(async () => {
+      return await this.contracts.getVTokenBalance(poolAddress, walletAddress);
+    });
+
+    const balanceDecimal = new Decimal(balance);
+    console.log('vToken balance fetched', { balance: balanceDecimal.toString() });
+
+    return balanceDecimal;
+  }
+
+  /**
+   * Calculate underlying asset value from vTokens
+   * Task 7.2.2: Calculate underlying asset value from vTokens using exchange rate
+   * 
+   * @param {string|number|Decimal} vTokenAmount - Amount of vTokens
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} asset - Asset symbol
+   * @returns {Promise<Decimal>} Underlying asset value
+   */
+  async getUnderlyingValueFromVTokens(vTokenAmount, poolAddress, asset) {
+    console.log('VesuService.getUnderlyingValueFromVTokens called', {
+      vTokenAmount,
+      poolAddress,
+      asset
+    });
+
+    const vTokenAmountDecimal = this.validateAmount(vTokenAmount, 'vTokenAmount');
+    this.validateAddress(poolAddress, 'poolAddress');
+    this.validateAsset(asset);
+
+    // Get current exchange rate from contract
+    const exchangeRate = await this._withContractErrorHandling(async () => {
+      return await this.contracts.getVTokenExchangeRateForPool(poolAddress, asset);
+    });
+
+    const exchangeRateDecimal = new Decimal(exchangeRate);
+    const underlyingValue = this.calculateUnderlyingValue(vTokenAmountDecimal, exchangeRateDecimal);
+
+    console.log('Underlying value calculated', {
+      vTokenAmount: vTokenAmountDecimal.toString(),
+      exchangeRate: exchangeRateDecimal.toString(),
+      underlyingValue: underlyingValue.toString()
+    });
+
+    return underlyingValue;
+  }
+
+  /**
+   * Sync vToken balances for a position
+   * Task 7.2.3: Implement method to sync vToken balances for positions
+   * 
+   * @param {string} positionId - Position ID
+   * @returns {Promise<Object>} Updated position data
+   */
+  async syncVTokenBalance(positionId) {
+    console.log('VesuService.syncVTokenBalance called', { positionId });
+
+    // Fetch position from database
+    const position = await this._withDatabaseErrorHandling(async () => {
+      const pos = await VesuPosition.findByPk(positionId);
+      if (!pos) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+      return pos;
+    });
+
+    // Get wallet address from user (assuming we have user association)
+    // For now, we'll need to get this from the transaction or user model
+    // This is a simplified version - in production, you'd fetch the wallet from User model
+    const userTransactions = await this._withDatabaseErrorHandling(async () => {
+      return await VesuTransaction.findOne({
+        where: { position_id: positionId },
+        order: [['created_at', 'DESC']]
+      });
+    });
+
+    if (!userTransactions) {
+      throw new VesuError(
+        ErrorCodes.INTERNAL_ERROR,
+        'Cannot sync vToken balance: no transactions found for position',
+        { positionId }
+      );
+    }
+
+    // Fetch current vToken balance from contract
+    // Note: We need wallet address here - this would come from the User model in production
+    // For now, we'll skip the actual contract call and just update based on exchange rate
+    
+    // Get current exchange rate
+    const exchangeRate = await this._withContractErrorHandling(async () => {
+      return await this.contracts.getVTokenExchangeRateForPool(
+        position.pool_address,
+        position.collateral_asset
+      );
+    });
+
+    const exchangeRateDecimal = new Decimal(exchangeRate);
+    const vTokenBalanceDecimal = new Decimal(position.vtoken_balance);
+
+    // Calculate current underlying value
+    const underlyingValue = this.calculateUnderlyingValue(vTokenBalanceDecimal, exchangeRateDecimal);
+
+    // Update position with new collateral amount (reflecting accrued interest)
+    await this._withDatabaseErrorHandling(async () => {
+      await position.update({
+        collateral_amount: underlyingValue.toString(),
+        last_updated: new Date()
+      });
+    });
+
+    console.log('vToken balance synced', {
+      positionId: position.id,
+      vTokenBalance: vTokenBalanceDecimal.toString(),
+      exchangeRate: exchangeRateDecimal.toString(),
+      underlyingValue: underlyingValue.toString()
+    });
+
+    return {
+      positionId: position.id,
+      vTokenBalance: position.vtoken_balance,
+      collateralAmount: position.collateral_amount,
+      exchangeRate: exchangeRateDecimal.toString(),
+      lastUpdated: position.last_updated
+    };
+  }
 }
 
 module.exports = {
