@@ -21,7 +21,7 @@
 const express = require('express');
 const { body, query, param, validationResult } = require('express-validator');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
-const { supplyRateLimit, borrowRateLimit, repayRateLimit } = require('../middleware/rateLimit');
+const { supplyRateLimit, borrowRateLimit, repayRateLimit, withdrawRateLimit } = require('../middleware/rateLimit');
 const { VesuService, VesuError } = require('../services/VesuService');
 const LiquidationEngine = require('../services/LiquidationEngine');
 const StarknetContractManager = require('../services/StarknetContractManager');
@@ -470,6 +470,96 @@ router.get('/repay/total',
         principalDebt: result.principalDebt,
         totalDebt: result.totalDebt,
         debtAsset: result.debtAsset
+      });
+    } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+// ============================================================================
+// WITHDRAW ENDPOINTS
+// ============================================================================
+
+/**
+ * POST /api/vesu/withdraw
+ * Withdraw supplied assets
+ * 
+ * Task 18.1: POST /api/vesu/withdraw - Withdraw supplied assets
+ */
+router.post('/withdraw',
+  withdrawRateLimit, // Task 18.3: Add rate limiting
+  authenticateToken, // Task 18.1.1: Add authentication middleware
+  [
+    // Task 18.1.2: Add input validation (positionId, amount, walletAddress required)
+    body('positionId').notEmpty().withMessage('positionId is required')
+      .isString().withMessage('positionId must be a string'),
+    body('amount').notEmpty().withMessage('amount is required')
+      .isNumeric().withMessage('amount must be numeric'),
+    body('walletAddress').notEmpty().withMessage('walletAddress is required')
+      .isString().withMessage('walletAddress must be a string'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const { positionId, amount, walletAddress } = req.body;
+
+    try {
+      // Task 18.1.3: Call VesuService.withdraw(positionId, amount, walletAddress)
+      const result = await vesuService.withdraw(positionId, amount, walletAddress);
+
+      // Task 18.1.4: Return 200 with { success, transactionHash, withdrawnAmount, vTokensBurned, newHealthFactor, position }
+      res.status(200).json({
+        success: result.success,
+        transactionHash: result.transactionHash,
+        withdrawnAmount: result.withdrawnAmount,
+        vTokensBurned: result.vTokensBurned,
+        newHealthFactor: result.newHealthFactor,
+        position: result.position
+      });
+    } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * GET /api/vesu/withdraw/max
+ * Calculate maximum withdrawable amount for a position
+ * 
+ * Task 18.2: GET /api/vesu/withdraw/max - Calculate maximum withdrawable amount
+ */
+router.get('/withdraw/max',
+  withdrawRateLimit, // Task 18.3: Add rate limiting
+  authenticateToken, // Task 18.2.1: Add authentication middleware
+  [
+    // Task 18.2.2: Add input validation for query params (positionId required)
+    query('positionId').notEmpty().withMessage('positionId is required')
+      .isString().withMessage('positionId must be a string'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const { positionId } = req.query;
+
+    try {
+      // Task 18.2.3: Fetch position and call VesuService.calculateMaxWithdrawable()
+      const result = await vesuService.calculateMaxWithdrawable(positionId);
+
+      // Task 18.2.4: Return 200 with { positionId, maxWithdrawable, currentCollateral, currentDebt }
+      res.status(200).json({
+        positionId: result.positionId,
+        maxWithdrawable: result.maxWithdrawable,
+        currentCollateral: result.currentCollateral,
+        currentDebt: result.currentDebt
       });
     } catch (error) {
       handleVesuError(error, res);
