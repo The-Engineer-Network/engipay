@@ -14,7 +14,17 @@ const quoteRateLimit = rateLimit({
   message: 'Too many quote requests, please try again later',
 });
 
+// Task 15.3: Add rate limiting to supply endpoints (100 requests per 15 minutes per IP)
+const supplyRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 supply requests per windowMs
+  message: 'Too many supply requests from this IP, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 module.exports = {
   swapRateLimit,
-  quoteRateLimit
+  quoteRateLimit,
+  supplyRateLimit
 };
