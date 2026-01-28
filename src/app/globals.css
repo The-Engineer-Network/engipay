@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-glow: var(--primary-glow);
+  --color-secondary: var(--secondary);
+  --color-card: var(--card-bg);
+  --color-muted: var(--text-muted);
+  --color-border: var(--border);
+
+  --font-sans: var(--font-sans);
+}
+
+:root {
+  --background: #0b0e14;
+  --foreground: #ffffff;
+  --primary: #00f28a;
+  /* Neon Green */
+  --primary-glow: rgba(0, 242, 138, 0.4);
+  --secondary: #1a1e26;
+  --card-bg: #13161c;
+  --text-muted: #8890a0;
+  --border: #2a2e36;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Oxygen, Ubuntu, Cantarell, Fira Sans, Droid Sans, Helvetica Neue, sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Utilities for effects in the design */
+.neon-text {
+  color: var(--primary);
+  text-shadow: 0 0 10px var(--primary-glow);
+}
+
+.glass-panel {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.gradient-bg {
+  background: radial-gradient(circle at 50% 0%, rgba(0, 242, 138, 0.15), transparent 60%);
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
