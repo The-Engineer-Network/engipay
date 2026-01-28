@@ -1640,6 +1640,408 @@ class VesuService {
       }
     };
   }
+
+  // ============================================================================
+  // POSITION MANAGEMENT OPERATIONS
+  // ============================================================================
+
+  /**
+   * Get detailed position information with calculated metrics
+   * Task 11.1.1: Implement getPosition(positionId) method
+   * 
+   * @param {string} positionId - Position ID
+   * @returns {Promise<Object>} Position with calculated metrics (HF, LTV, max borrowable, max withdrawable)
+   */
+  async getPosition(positionId) {
+    console.log('VesuService.getPosition called', { positionId });
+
+    if (!positionId) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        'positionId is required',
+        { positionId }
+      );
+    }
+
+    // Fetch position from database
+    const position = await this._withDatabaseErrorHandling(async () => {
+      const pos = await VesuPosition.findByPk(positionId);
+      if (!pos) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+      return pos;
+    });
+
+    // Get pool information
+    const pool = await this.validatePool(position.pool_address);
+
+    // Fetch current prices
+    const prices = await this._withOracleErrorHandling(async () => {
+      return await this.oracle.getPrices([position.collateral_asset, position.debt_asset]);
+    });
+
+    // Get current amounts
+    const collateralAmount = new Decimal(position.collateral_amount || 0);
+    const debtAmount = new Decimal(position.debt_amount || 0);
+    const vTokenBalance = new Decimal(position.vtoken_balance || 0);
+
+    // Calculate collateral value in USD
+    const collateralPrice = new Decimal(prices[position.collateral_asset]);
+    const collateralValueUSD = collateralAmount.mul(collateralPrice);
+
+    // Calculate debt value in USD
+    const debtPrice = new Decimal(prices[position.debt_asset]);
+    const debtValueUSD = debtAmount.mul(debtPrice);
+
+    // Calculate health factor
+    const healthFactor = this.calculateHealthFactor(position, prices);
+
+    // Calculate LTV
+    const ltv = this.calculateLTV(position, prices);
+
+    // Calculate max borrowable
+    let maxBorrowable = new Decimal(0);
+    if (!collateralAmount.isZero()) {
+      const maxLTV = new Decimal(pool.max_ltv);
+      const maxTotalBorrowable = this.calculateMaxBorrowable(
+        collateralAmount,
+        collateralPrice,
+        debtPrice,
+        maxLTV
+      );
+      maxBorrowable = Decimal.max(maxTotalBorrowable.sub(debtAmount), new Decimal(0));
+
+      // Limit by pool liquidity
+      const totalSupply = new Decimal(pool.total_supply || 0);
+      const totalBorrow = new Decimal(pool.total_borrow || 0);
+      const availableLiquidity = totalSupply.sub(totalBorrow);
+      maxBorrowable = Decimal.min(maxBorrowable, availableLiquidity);
+    }
+
+    // Calculate max withdrawable
+    const maxWithdrawable = this.calculateMaxWithdrawable(position, prices);
+
+    console.log('Position fetched with metrics', {
+      positionId: position.id,
+      collateralAmount: collateralAmount.toString(),
+      debtAmount: debtAmount.toString(),
+      healthFactor: healthFactor ? healthFactor.toString() : 'infinite',
+      ltv: ltv.toString(),
+      maxBorrowable: maxBorrowable.toString(),
+      maxWithdrawable: maxWithdrawable.toString()
+    });
+
+    return {
+      position: {
+        id: position.id,
+        userId: position.user_id,
+        poolAddress: position.pool_address,
+        collateralAsset: position.collateral_asset,
+        collateralAmount: collateralAmount.toString(),
+        collateralValueUSD: collateralValueUSD.toString(),
+        debtAsset: position.debt_asset,
+        debtAmount: debtAmount.toString(),
+        debtValueUSD: debtValueUSD.toString(),
+        healthFactor: healthFactor ? healthFactor.toString() : null,
+        ltv: ltv.toString(),
+        maxBorrowable: maxBorrowable.toString(),
+        maxWithdrawable: maxWithdrawable.toString(),
+        vTokenBalance: vTokenBalance.toString(),
+        status: position.status,
+        createdAt: position.created_at,
+        lastUpdated: position.last_updated
+      },
+      prices: {
+        [position.collateral_asset]: collateralPrice.toString(),
+        [position.debt_asset]: debtPrice.toString()
+      }
+    };
+  }
+
+  /**
+   * Get all positions for a user with optional status filter and pagination
+   * Task 11.1.2: Implement getUserPositions(userId, status) method
+   * 
+   * @param {string} userId - User ID
+   * @param {string} status - Optional status filter ('active', 'liquidated', 'closed')
+   * @param {Object} options - Pagination options { limit, offset }
+   * @returns {Promise<Object>} User positions with pagination info
+   */
+  async getUserPositions(userId, status = null, options = {}) {
+    console.log('VesuService.getUserPositions called', { userId, status, options });
+
+    if (!userId) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        'userId is required',
+        { userId }
+      );
+    }
+
+    // Set default pagination
+    const limit = options.limit || 50;
+    const offset = options.offset || 0;
+
+    // Build query conditions
+    const whereConditions = { user_id: userId };
+    if (status) {
+      whereConditions.status = status;
+    }
+
+    // Fetch positions from database with pagination
+    const result = await this._withDatabaseErrorHandling(async () => {
+      return await VesuPosition.findAndCountAll({
+        where: whereConditions,
+        limit: limit,
+        offset: offset,
+        order: [['created_at', 'DESC']]
+      });
+    });
+
+    const positions = result.rows;
+    const totalCount = result.count;
+
+    // If no positions found, return empty result
+    if (positions.length === 0) {
+      return {
+        positions: [],
+        pagination: {
+          total: 0,
+          limit: limit,
+          offset: offset,
+          hasMore: false
+        }
+      };
+    }
+
+    // Fetch prices for all unique assets
+    const uniqueAssets = new Set();
+    positions.forEach(pos => {
+      uniqueAssets.add(pos.collateral_asset);
+      uniqueAssets.add(pos.debt_asset);
+    });
+
+    const prices = await this._withOracleErrorHandling(async () => {
+      return await this.oracle.getPrices(Array.from(uniqueAssets));
+    });
+
+    // Calculate metrics for each position
+    const positionsWithMetrics = positions.map(position => {
+      const collateralAmount = new Decimal(position.collateral_amount || 0);
+      const debtAmount = new Decimal(position.debt_amount || 0);
+      const vTokenBalance = new Decimal(position.vtoken_balance || 0);
+
+      // Calculate values
+      const collateralPrice = new Decimal(prices[position.collateral_asset]);
+      const debtPrice = new Decimal(prices[position.debt_asset]);
+      const collateralValueUSD = collateralAmount.mul(collateralPrice);
+      const debtValueUSD = debtAmount.mul(debtPrice);
+
+      // Calculate health factor
+      const healthFactor = this.calculateHealthFactor(position, prices);
+
+      // Calculate LTV
+      const ltv = this.calculateLTV(position, prices);
+
+      return {
+        id: position.id,
+        poolAddress: position.pool_address,
+        collateralAsset: position.collateral_asset,
+        collateralAmount: collateralAmount.toString(),
+        collateralValueUSD: collateralValueUSD.toString(),
+        debtAsset: position.debt_asset,
+        debtAmount: debtAmount.toString(),
+        debtValueUSD: debtValueUSD.toString(),
+        healthFactor: healthFactor ? healthFactor.toString() : null,
+        ltv: ltv.toString(),
+        vTokenBalance: vTokenBalance.toString(),
+        status: position.status,
+        createdAt: position.created_at,
+        lastUpdated: position.last_updated
+      };
+    });
+
+    console.log('User positions fetched', {
+      userId: userId,
+      count: positionsWithMetrics.length,
+      total: totalCount
+    });
+
+    return {
+      positions: positionsWithMetrics,
+      pagination: {
+        total: totalCount,
+        limit: limit,
+        offset: offset,
+        hasMore: offset + positions.length < totalCount
+      }
+    };
+  }
+
+  /**
+   * Update position health factor using latest prices
+   * Task 11.1.3: Implement updatePositionHealth(positionId) method
+   * 
+   * @param {string} positionId - Position ID
+   * @returns {Promise<Object>} Updated position health metrics
+   */
+  async updatePositionHealth(positionId) {
+    console.log('VesuService.updatePositionHealth called', { positionId });
+
+    if (!positionId) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        'positionId is required',
+        { positionId }
+      );
+    }
+
+    // Fetch position from database
+    const position = await this._withDatabaseErrorHandling(async () => {
+      const pos = await VesuPosition.findByPk(positionId);
+      if (!pos) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+      return pos;
+    });
+
+    // Fetch latest prices
+    const prices = await this._withOracleErrorHandling(async () => {
+      return await this.oracle.getPrices([position.collateral_asset, position.debt_asset]);
+    });
+
+    // Recalculate health factor with latest prices
+    const healthFactor = this.calculateHealthFactor(position, prices);
+
+    // Recalculate LTV
+    const ltv = this.calculateLTV(position, prices);
+
+    // Update position in database
+    await this._withDatabaseErrorHandling(async () => {
+      await position.update({
+        health_factor: healthFactor ? healthFactor.toString() : null,
+        last_updated: new Date()
+      });
+    });
+
+    console.log('Position health updated', {
+      positionId: position.id,
+      healthFactor: healthFactor ? healthFactor.toString() : 'infinite',
+      ltv: ltv.toString()
+    });
+
+    return {
+      positionId: position.id,
+      healthFactor: healthFactor ? healthFactor.toString() : null,
+      ltv: ltv.toString(),
+      collateralAmount: position.collateral_amount,
+      debtAmount: position.debt_amount,
+      prices: {
+        [position.collateral_asset]: prices[position.collateral_asset].toString(),
+        [position.debt_asset]: prices[position.debt_asset].toString()
+      },
+      lastUpdated: position.last_updated
+    };
+  }
+
+  /**
+   * Sync position data from blockchain contract state
+   * Task 11.1.4: Implement syncPositionFromChain(positionId, walletAddress) method
+   * 
+   * @param {string} positionId - Position ID
+   * @param {string} walletAddress - User's wallet address
+   * @returns {Promise<Object>} Updated position data
+   */
+  async syncPositionFromChain(positionId, walletAddress) {
+    console.log('VesuService.syncPositionFromChain called', { positionId, walletAddress });
+
+    if (!positionId) {
+      throw new VesuError(
+        ErrorCodes.INVALID_ADDRESS,
+        'positionId is required',
+        { positionId }
+      );
+    }
+
+    this.validateAddress(walletAddress, 'walletAddress');
+
+    // Fetch position from database
+    const position = await this._withDatabaseErrorHandling(async () => {
+      const pos = await VesuPosition.findByPk(positionId);
+      if (!pos) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+      return pos;
+    });
+
+    // Fetch vToken balance from contract
+    const vTokenBalance = await this._withContractErrorHandling(async () => {
+      return await this.contracts.getVTokenBalance(position.pool_address, walletAddress);
+    });
+
+    const vTokenBalanceDecimal = new Decimal(vTokenBalance);
+
+    // Get current exchange rate to calculate underlying collateral value
+    const exchangeRate = await this._withContractErrorHandling(async () => {
+      return await this.contracts.getVTokenExchangeRateForPool(
+        position.pool_address,
+        position.collateral_asset
+      );
+    });
+
+    const exchangeRateDecimal = new Decimal(exchangeRate);
+
+    // Calculate underlying collateral amount
+    const underlyingCollateral = this.calculateUnderlyingValue(vTokenBalanceDecimal, exchangeRateDecimal);
+
+    // In a full implementation, we would also fetch debt amount from contract
+    // For now, we'll keep the existing debt amount
+    // TODO: Implement contract call to get actual debt with accrued interest
+    // const actualDebt = await this.contracts.getPositionDebt(position.pool_address, walletAddress);
+
+    // Fetch latest prices for health factor calculation
+    const prices = await this._withOracleErrorHandling(async () => {
+      return await this.oracle.getPrices([position.collateral_asset, position.debt_asset]);
+    });
+
+    // Recalculate health factor with updated collateral
+    const positionForCalc = {
+      collateralAsset: position.collateral_asset,
+      debtAsset: position.debt_asset,
+      collateralAmount: underlyingCollateral.toString(),
+      debtAmount: position.debt_amount
+    };
+
+    const healthFactor = this.calculateHealthFactor(positionForCalc, prices);
+
+    // Update position in database
+    await this._withDatabaseErrorHandling(async () => {
+      await position.update({
+        vtoken_balance: vTokenBalanceDecimal.toString(),
+        collateral_amount: underlyingCollateral.toString(),
+        health_factor: healthFactor ? healthFactor.toString() : null,
+        last_updated: new Date()
+      });
+    });
+
+    console.log('Position synced from chain', {
+      positionId: position.id,
+      vTokenBalance: vTokenBalanceDecimal.toString(),
+      collateralAmount: underlyingCollateral.toString(),
+      exchangeRate: exchangeRateDecimal.toString(),
+      healthFactor: healthFactor ? healthFactor.toString() : 'infinite'
+    });
+
+    return {
+      positionId: position.id,
+      vTokenBalance: vTokenBalanceDecimal.toString(),
+      collateralAmount: underlyingCollateral.toString(),
+      debtAmount: position.debt_amount,
+      healthFactor: healthFactor ? healthFactor.toString() : null,
+      exchangeRate: exchangeRateDecimal.toString(),
+      lastUpdated: position.last_updated
+    };
+  }
 }
 
 module.exports = {
