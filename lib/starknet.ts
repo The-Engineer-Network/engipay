@@ -1,10 +1,4 @@
-// StarkNet Contract Integration
-import { Contract, Account, Provider, CallData, cairo } from 'starknet';
-
-// Contract ABIs
-import EngiTokenABI from '../smart-contracts/contracts/EngiTokenABI.json';
-import EscrowABI from '../smart-contracts/contracts/EscrowABI.json';
-import RewardDistributorABI from '../smart-contracts/contracts/RewardDistributorABI.json';
+// StarkNet Contract Integration - Lazy loaded to improve performance
 
 // Contract Addresses
 const CONTRACT_ADDRESSES = {
@@ -13,27 +7,72 @@ const CONTRACT_ADDRESSES = {
   rewardDistributor: process.env.REWARD_DISTRIBUTOR_CONTRACT || '0x0',
 };
 
-// Provider setup
-const provider = new Provider({
-  rpc: {
-    nodeUrl: process.env.STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io',
-  },
-});
+// Lazy provider initialization
+let providerInstance: any = null;
 
-// Contract instances
+const getProvider = async () => {
+  if (providerInstance) return providerInstance;
+  
+  const { RpcProvider } = await import('starknet');
+  providerInstance = new RpcProvider({
+    nodeUrl: process.env.NEXT_PUBLIC_STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io',
+  });
+  return providerInstance;
+};
+
+// Lazy contract initialization
+let contractsCache: any = null;
+
+const getContracts = async () => {
+  if (contractsCache) return contractsCache;
+  
+  const { Contract } = await import('starknet');
+  const provider = await getProvider();
+  
+  // Dynamically import ABIs
+  const [EngiTokenABI, EscrowABI, RewardDistributorABI] = await Promise.all([
+    import('../smart-contracts/contracts/EngiTokenABI.json'),
+    import('../smart-contracts/contracts/EscrowABI.json'),
+    import('../smart-contracts/contracts/RewardDistributorABI.json'),
+  ]);
+  
+  contractsCache = {
+    engiToken: new Contract(EngiTokenABI.abi, CONTRACT_ADDRESSES.engiToken, provider),
+    escrow: new Contract(EscrowABI.abi, CONTRACT_ADDRESSES.escrow, provider),
+    rewardDistributor: new Contract(RewardDistributorABI.abi, CONTRACT_ADDRESSES.rewardDistributor, provider),
+  };
+  
+  return contractsCache;
+};
+
+// Export for backward compatibility
 export const contracts = {
-  engiToken: new Contract(EngiTokenABI.abi, CONTRACT_ADDRESSES.engiToken, provider),
-  escrow: new Contract(EscrowABI.abi, CONTRACT_ADDRESSES.escrow, provider),
-  rewardDistributor: new Contract(RewardDistributorABI.abi, CONTRACT_ADDRESSES.rewardDistributor, provider),
+  get engiToken() {
+    throw new Error('Use getContracts() instead for lazy loading');
+  },
+  get escrow() {
+    throw new Error('Use getContracts() instead for lazy loading');
+  },
+  get rewardDistributor() {
+    throw new Error('Use getContracts() instead for lazy loading');
+  },
 };
 
 // EngiToken Contract Functions
 export class EngiTokenService {
-  private contract = contracts.engiToken;
+  private contract: any = null;
+
+  async getContract() {
+    if (this.contract) return this.contract;
+    const contracts = await getContracts();
+    this.contract = contracts.engiToken;
+    return this.contract;
+  }
 
   async getBalance(address: string): Promise<string> {
     try {
-      const result = await this.contract.balance_of(address);
+      const contract = await this.getContract();
+      const result = await contract.balance_of(address);
       return result.toString();
     } catch (error) {
       console.error('Error getting EngiToken balance:', error);
@@ -41,10 +80,14 @@ export class EngiTokenService {
     }
   }
 
-  async transfer(recipient: string, amount: string, signer: Account): Promise<string> {
+  async transfer(recipient: string, amount: string, signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.transfer(recipient, cairo.uint256(amount));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.transfer(recipient, cairo.uint256(amount));
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -53,10 +96,14 @@ export class EngiTokenService {
     }
   }
 
-  async stake(amount: string, signer: Account): Promise<string> {
+  async stake(amount: string, signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.stake(cairo.uint256(amount));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.stake(cairo.uint256(amount));
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -65,10 +112,14 @@ export class EngiTokenService {
     }
   }
 
-  async unstake(amount: string, signer: Account): Promise<string> {
+  async unstake(amount: string, signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.unstake(cairo.uint256(amount));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.unstake(cairo.uint256(amount));
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -77,10 +128,13 @@ export class EngiTokenService {
     }
   }
 
-  async claimRewards(signer: Account): Promise<string> {
+  async claimRewards(signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.claim_rewards();
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.claim_rewards();
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -91,7 +145,8 @@ export class EngiTokenService {
 
   async getStakedBalance(address: string): Promise<string> {
     try {
-      const result = await this.contract.get_staked_balance(address);
+      const contract = await this.getContract();
+      const result = await contract.get_staked_balance(address);
       return result.toString();
     } catch (error) {
       console.error('Error getting staked balance:', error);
@@ -101,7 +156,8 @@ export class EngiTokenService {
 
   async getPendingRewards(address: string): Promise<string> {
     try {
-      const result = await this.contract.get_pending_rewards(address);
+      const contract = await this.getContract();
+      const result = await contract.get_pending_rewards(address);
       return result.toString();
     } catch (error) {
       console.error('Error getting pending rewards:', error);
@@ -112,7 +168,15 @@ export class EngiTokenService {
 
 // Escrow Contract Functions
 export class EscrowService {
-  private contract = contracts.escrow;
+  private contract: any = null;
+
+  async getContract() {
+    if (this.contract) return this.contract;
+    
+    const { Contract } = await import('starknet');
+    this.contract = new Contract(EscrowABI.abi, CONTRACT_ADDRESSES.escrow, provider);
+    return this.contract;
+  }
 
   async createPaymentRequest(
     recipient: string,
@@ -120,11 +184,15 @@ export class EscrowService {
     tokenAddress: string,
     expiryHours: number,
     memo: string,
-    signer: Account
+    signer: any
   ): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.create_payment_request(
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.create_payment_request(
         recipient,
         cairo.uint256(amount),
         tokenAddress,
@@ -139,10 +207,14 @@ export class EscrowService {
     }
   }
 
-  async acceptPayment(requestId: string, signer: Account): Promise<string> {
+  async acceptPayment(requestId: string, signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.accept_payment(cairo.uint256(requestId));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.accept_payment(cairo.uint256(requestId));
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -151,10 +223,14 @@ export class EscrowService {
     }
   }
 
-  async rejectPayment(requestId: string, signer: Account): Promise<string> {
+  async rejectPayment(requestId: string, signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.reject_payment(cairo.uint256(requestId));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.reject_payment(cairo.uint256(requestId));
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -163,10 +239,14 @@ export class EscrowService {
     }
   }
 
-  async cancelPayment(requestId: string, signer: Account): Promise<string> {
+  async cancelPayment(requestId: string, signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.cancel_payment(cairo.uint256(requestId));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.cancel_payment(cairo.uint256(requestId));
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -177,7 +257,9 @@ export class EscrowService {
 
   async getPaymentRequest(requestId: string): Promise<any> {
     try {
-      const result = await this.contract.get_payment_request(cairo.uint256(requestId));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const result = await contract.get_payment_request(cairo.uint256(requestId));
       return result;
     } catch (error) {
       console.error('Error getting payment request:', error);
@@ -187,7 +269,9 @@ export class EscrowService {
 
   async getPaymentStatus(requestId: string): Promise<number> {
     try {
-      const result = await this.contract.get_payment_status(cairo.uint256(requestId));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const result = await contract.get_payment_status(cairo.uint256(requestId));
       return Number(result);
     } catch (error) {
       console.error('Error getting payment status:', error);
@@ -198,12 +282,23 @@ export class EscrowService {
 
 // Reward Distributor Contract Functions
 export class RewardDistributorService {
-  private contract = contracts.rewardDistributor;
+  private contract: any = null;
 
-  async stake(poolId: string, amount: string, signer: Account): Promise<string> {
+  async getContract() {
+    if (this.contract) return this.contract;
+    const contracts = await getContracts();
+    this.contract = contracts.rewardDistributor;
+    return this.contract;
+  }
+
+  async stake(poolId: string, amount: string, signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.stake(cairo.uint256(poolId), cairo.uint256(amount));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.stake(cairo.uint256(poolId), cairo.uint256(amount));
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -212,10 +307,14 @@ export class RewardDistributorService {
     }
   }
 
-  async unstake(poolId: string, amount: string, signer: Account): Promise<string> {
+  async unstake(poolId: string, amount: string, signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.unstake(cairo.uint256(poolId), cairo.uint256(amount));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.unstake(cairo.uint256(poolId), cairo.uint256(amount));
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -224,10 +323,14 @@ export class RewardDistributorService {
     }
   }
 
-  async claimRewards(poolId: string, signer: Account): Promise<string> {
+  async claimRewards(poolId: string, signer: any): Promise<string> {
     try {
-      this.contract.connect(signer);
-      const result = await this.contract.claim_rewards(cairo.uint256(poolId));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const provider = await getProvider();
+      
+      contract.connect(signer);
+      const result = await contract.claim_rewards(cairo.uint256(poolId));
       await provider.waitForTransaction(result.transaction_hash);
       return result.transaction_hash;
     } catch (error) {
@@ -238,7 +341,9 @@ export class RewardDistributorService {
 
   async getPendingRewards(poolId: string, userAddress: string): Promise<string> {
     try {
-      const result = await this.contract.get_pending_rewards(cairo.uint256(poolId), userAddress);
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const result = await contract.get_pending_rewards(cairo.uint256(poolId), userAddress);
       return result.toString();
     } catch (error) {
       console.error('Error getting pending rewards:', error);
@@ -248,7 +353,9 @@ export class RewardDistributorService {
 
   async getUserStake(poolId: string, userAddress: string): Promise<any> {
     try {
-      const result = await this.contract.get_user_stake(cairo.uint256(poolId), userAddress);
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const result = await contract.get_user_stake(cairo.uint256(poolId), userAddress);
       return result;
     } catch (error) {
       console.error('Error getting user stake:', error);
@@ -258,7 +365,9 @@ export class RewardDistributorService {
 
   async getPoolInfo(poolId: string): Promise<any> {
     try {
-      const result = await this.contract.get_pool_info(cairo.uint256(poolId));
+      const { cairo } = await import('starknet');
+      const contract = await this.getContract();
+      const result = await contract.get_pool_info(cairo.uint256(poolId));
       return result;
     } catch (error) {
       console.error('Error getting pool info:', error);
@@ -268,7 +377,8 @@ export class RewardDistributorService {
 
   async getTotalPools(): Promise<string> {
     try {
-      const result = await this.contract.get_total_pools();
+      const contract = await this.getContract();
+      const result = await contract.get_total_pools();
       return result.toString();
     } catch (error) {
       console.error('Error getting total pools:', error);
@@ -283,16 +393,29 @@ export const escrowService = new EscrowService();
 export const rewardDistributorService = new RewardDistributorService();
 
 // Utility functions
-export const getStarknetProvider = () => provider;
+export const getStarknetProvider = async () => await getProvider();
 
-export const createStarknetAccount = (address: string, privateKey: string) => {
+export const createStarknetAccount = async (address: string, privateKey: string) => {
+  const { Account } = await import('starknet');
+  const provider = await getProvider();
   return new Account(provider, address, privateKey);
 };
 
 
 // Payment Service for direct transfers
 export class PaymentService {
-  private provider = provider;
+  private provider: any = null;
+
+  async getProvider() {
+    if (this.provider) return this.provider;
+    
+    // Lazy load starknet only when needed
+    const { RpcProvider } = await import('starknet');
+    this.provider = new RpcProvider({
+      nodeUrl: process.env.NEXT_PUBLIC_STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io',
+    });
+    return this.provider;
+  }
 
   /**
    * Get token contract address by symbol
@@ -314,9 +437,12 @@ export class PaymentService {
     tokenAddress: string,
     recipient: string,
     amount: string,
-    signer: Account
+    signer: any
   ): Promise<{ transaction_hash: string }> {
     try {
+      const { CallData, cairo } = await import('starknet');
+      const provider = await this.getProvider();
+      
       // Standard ERC20 transfer
       const transferCall = {
         contractAddress: tokenAddress,
@@ -328,7 +454,7 @@ export class PaymentService {
       };
 
       const result = await signer.execute(transferCall);
-      await this.provider.waitForTransaction(result.transaction_hash);
+      await provider.waitForTransaction(result.transaction_hash);
 
       return { transaction_hash: result.transaction_hash };
     } catch (error) {
@@ -344,7 +470,7 @@ export class PaymentService {
     recipient: string,
     amount: string,
     asset: string,
-    signer: Account
+    signer: any
   ): Promise<{ transaction_hash: string; explorer_url: string }> {
     try {
       const tokenAddress = this.getTokenAddress(asset);
