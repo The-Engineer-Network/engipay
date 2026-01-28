@@ -561,6 +561,52 @@ class TransactionManager {
       throw new Error(`Execute withdraw failed: ${error.message}`);
     }
   }
+
+  /**
+   * Execute liquidation transaction on Vesu Pool contract
+   * Task 13.3.1: Add executeLiquidation() method to TransactionManager class
+   * 
+   * @param {string} poolAddress - Pool contract address
+   * @param {string} positionId - Position ID to liquidate
+   * @param {string} debtToCover - Amount of debt to cover (as string to preserve precision)
+   * @param {string} liquidatorAddress - Address of the liquidator
+   * @returns {Promise<string>} Transaction hash
+   */
+  async executeLiquidation(poolAddress, positionId, debtToCover, liquidatorAddress) {
+    try {
+      console.log('TransactionManager.executeLiquidation called', {
+        poolAddress,
+        positionId,
+        debtToCover,
+        liquidatorAddress
+      });
+
+      // Task 13.3.2: Prepare calldata for liquidation transaction (positionId, debtToCover, liquidatorAddress)
+      // The exact parameters depend on Vesu V2 Pool contract interface
+      // Typical liquidate signature: liquidate(positionId, debtToCover, liquidator)
+      const params = CallData.compile([
+        positionId,
+        debtToCover,
+        liquidatorAddress
+      ]);
+
+      console.log('Submitting liquidation transaction', { poolAddress, params });
+
+      // Task 13.3.3: Submit transaction to pool contract's liquidate() method
+      const result = await this.submitTransaction(
+        poolAddress,
+        'liquidate', // Method name in Vesu Pool contract
+        params
+      );
+
+      console.log('Liquidation transaction submitted', { transactionHash: result.transaction_hash });
+
+      return result.transaction_hash;
+    } catch (error) {
+      console.error('Execute liquidation failed:', error.message);
+      throw new Error(`Execute liquidation failed: ${error.message}`);
+    }
+  }
 }
 
 module.exports = TransactionManager;
