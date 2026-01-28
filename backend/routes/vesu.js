@@ -21,7 +21,7 @@
 const express = require('express');
 const { body, query, param, validationResult } = require('express-validator');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
-const { supplyRateLimit, borrowRateLimit } = require('../middleware/rateLimit');
+const { supplyRateLimit, borrowRateLimit, repayRateLimit } = require('../middleware/rateLimit');
 const { VesuService, VesuError } = require('../services/VesuService');
 const LiquidationEngine = require('../services/LiquidationEngine');
 const StarknetContractManager = require('../services/StarknetContractManager');
@@ -380,6 +380,96 @@ router.get('/borrow/max',
         maxBorrowable: result.maxBorrowable,
         currentDebt: result.currentDebt,
         availableLiquidity: result.availableLiquidity
+      });
+    } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+// ============================================================================
+// REPAY ENDPOINTS
+// ============================================================================
+
+/**
+ * POST /api/vesu/repay
+ * Repay borrowed assets
+ * 
+ * Task 17.1: POST /api/vesu/repay - Repay borrowed assets
+ */
+router.post('/repay',
+  repayRateLimit, // Task 17.3: Add rate limiting
+  authenticateToken, // Task 17.1.1: Add authentication middleware
+  [
+    // Task 17.1.2: Add input validation (positionId, amount, walletAddress required)
+    body('positionId').notEmpty().withMessage('positionId is required')
+      .isString().withMessage('positionId must be a string'),
+    body('amount').notEmpty().withMessage('amount is required')
+      .isNumeric().withMessage('amount must be numeric'),
+    body('walletAddress').notEmpty().withMessage('walletAddress is required')
+      .isString().withMessage('walletAddress must be a string'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const { positionId, amount, walletAddress } = req.body;
+
+    try {
+      // Task 17.1.3: Call VesuService.repay(positionId, amount, walletAddress)
+      const result = await vesuService.repay(positionId, amount, walletAddress);
+
+      // Task 17.1.4: Return 200 with { success, transactionHash, repaidAmount, remainingDebt, newHealthFactor, position }
+      res.status(200).json({
+        success: result.success,
+        transactionHash: result.transactionHash,
+        repaidAmount: result.repaidAmount,
+        remainingDebt: result.remainingDebt,
+        newHealthFactor: result.newHealthFactor,
+        position: result.position
+      });
+    } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * GET /api/vesu/repay/total
+ * Get total debt with interest for a position
+ * 
+ * Task 17.2: GET /api/vesu/repay/total - Get total debt with interest
+ */
+router.get('/repay/total',
+  repayRateLimit, // Task 17.3: Add rate limiting
+  authenticateToken, // Task 17.2.1: Add authentication middleware
+  [
+    // Task 17.2.2: Add input validation for query params (positionId required)
+    query('positionId').notEmpty().withMessage('positionId is required')
+      .isString().withMessage('positionId must be a string'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const { positionId } = req.query;
+
+    try {
+      // Task 17.2.3: Call VesuService.getTotalDebt(positionId)
+      const result = await vesuService.getTotalDebt(positionId);
+
+      // Task 17.2.4: Return 200 with { positionId, principalDebt, totalDebt, debtAsset }
+      res.status(200).json({
+        positionId: result.positionId,
+        principalDebt: result.principalDebt,
+        totalDebt: result.totalDebt,
+        debtAsset: result.debtAsset
       });
     } catch (error) {
       handleVesuError(error, res);

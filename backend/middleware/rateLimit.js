@@ -14,7 +14,6 @@ const quoteRateLimit = rateLimit({
   message: 'Too many quote requests, please try again later',
 });
 
-// Task 15.3: Add rate limiting to supply endpoints (100 requests per 15 minutes per IP)
 const supplyRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // limit each IP to 100 supply requests per windowMs
@@ -23,7 +22,6 @@ const supplyRateLimit = rateLimit({
   legacyHeaders: false,
 });
 
-// Task 16.3: Add rate limiting to borrow endpoints (50 requests per 15 minutes per IP)
 const borrowRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 50, // limit each IP to 50 borrow requests per windowMs
@@ -32,9 +30,18 @@ const borrowRateLimit = rateLimit({
   legacyHeaders: false,
 });
 
+const repayRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 repay requests per windowMs
+  message: 'Too many repay requests from this IP, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 module.exports = {
   swapRateLimit,
   quoteRateLimit,
   supplyRateLimit,
-  borrowRateLimit
+  borrowRateLimit,
+  repayRateLimit
 };
