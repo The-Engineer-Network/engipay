@@ -24,15 +24,43 @@ export interface SwapQuote {
   estimatedTime: string;
 }
 
+// Atomiq SDK instance (lazy initialized)
+let atomiqInstance: any = null;
+
 // Initialize Atomiq SDK with real implementation
-export const atomiq = new AtomiqSDK({
-  environment: (process.env.ATOMIQ_SDK_ENV as 'testnet' | 'mainnet') || 'testnet',
-  signer: xverseWallet
-});
+export const initAtomiqSDK = () => {
+  if (typeof window === 'undefined') return null;
+  
+  if (atomiqInstance) return atomiqInstance;
+  
+  try {
+    atomiqInstance = new AtomiqSDK({
+      environment: (process.env.NEXT_PUBLIC_ATOMIQ_SDK_ENV as 'testnet' | 'mainnet') || 'testnet',
+      signer: xverseWallet
+    });
+    return atomiqInstance;
+  } catch (error) {
+    console.error('Failed to initialize AtomiqSDK:', error);
+    return null;
+  }
+};
+
+// Export atomiq with safe getter
+export const getAtomiq = () => {
+  if (!atomiqInstance) {
+    atomiqInstance = initAtomiqSDK();
+  }
+  return atomiqInstance;
+};
 
 // Export utility functions using real SDK
 export const getSwapQuote = async (params: SwapParams): Promise<SwapQuote> => {
   try {
+    const atomiq = getAtomiq();
+    if (!atomiq) {
+      throw new Error('Atomiq SDK not initialized');
+    }
+
     const quote = await atomiq.getQuote({
       fromToken: params.fromToken,
       toToken: params.toToken,
@@ -49,13 +77,18 @@ export const getSwapQuote = async (params: SwapParams): Promise<SwapQuote> => {
       estimatedTime: quote.estimatedTime
     };
   } catch (error) {
+    console.error('Failed to get swap quote:', error);
     throw new Error('Failed to get swap quote');
   }
 };
 
-// Add swap method to atomiq instance for compatibility
-(atomiq as any).swap = async (params: SwapParams): Promise<SwapResult> => {
+export const executeSwap = async (params: SwapParams): Promise<SwapResult> => {
   try {
+    const atomiq = getAtomiq();
+    if (!atomiq) {
+      throw new Error('Atomiq SDK not initialized');
+    }
+
     // Check if wallet is connected
     const isConnected = await xverseWallet.isConnected();
     if (!isConnected) {
@@ -70,6 +103,7 @@ export const getSwapQuote = async (params: SwapParams): Promise<SwapQuote> => {
       details: result.details
     };
   } catch (error) {
+    console.error('Swap failed:', error);
     return {
       txHash: '',
       status: 'failed',
@@ -82,16 +116,24 @@ export const getSwapQuote = async (params: SwapParams): Promise<SwapQuote> => {
 
 export const checkSwapStatus = async (txHash: string): Promise<'pending' | 'confirmed' | 'failed'> => {
   try {
+    const atomiq = getAtomiq();
+    if (!atomiq) return 'failed';
+    
     return await atomiq.getSwapStatus(txHash);
   } catch (error) {
+    console.error('Failed to check swap status:', error);
     return 'failed';
   }
 };
 
 export const cancelPendingSwap = async (txHash: string): Promise<boolean> => {
   try {
+    const atomiq = getAtomiq();
+    if (!atomiq) return false;
+    
     return await atomiq.cancelSwap(txHash);
   } catch (error) {
+    console.error('Failed to cancel swap:', error);
     return false;
   }
 };

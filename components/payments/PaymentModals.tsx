@@ -10,7 +10,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { toast } from '@/hooks/use-toast'
 import { Send, ArrowLeftRight, QrCode, Building2, Copy, Check, X } from 'lucide-react'
 import { paymentService, escrowService } from '@/lib/starknet'
-import { Account } from 'starknet'
 
 interface PaymentModalsProps {
   activeModal: 'send' | 'request' | 'qr' | 'merchant' | null
@@ -66,7 +65,7 @@ export function PaymentModals({ activeModal, onClose }: PaymentModalsProps) {
         modalRecipient,
         amountInWei,
         modalAsset,
-        starknetAccount as Account
+        starknetAccount
       )
 
       // Notify backend of successful transaction
@@ -146,7 +145,7 @@ export function PaymentModals({ activeModal, onClose }: PaymentModalsProps) {
         tokenAddress,
         parseInt(modalExpiry),
         modalMemo || '',
-        starknetAccount as Account
+        starknetAccount
       )
 
       const requestId = `req_${Date.now()}_${txHash.slice(2, 10)}`
@@ -214,7 +213,7 @@ export function PaymentModals({ activeModal, onClose }: PaymentModalsProps) {
         merchantAddress,
         amountInWei,
         modalAsset,
-        starknetAccount as Account
+        starknetAccount
       )
 
       // Notify backend
