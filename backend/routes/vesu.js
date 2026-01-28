@@ -6,11 +6,13 @@
  * Implemented Endpoints:
  * - POST /api/vesu/supply - Supply assets to a lending pool
  * - GET /api/vesu/supply/estimate - Estimate vTokens for a supply amount
+ * - POST /api/vesu/borrow - Borrow assets against collateral
+ * - GET /api/vesu/borrow/max - Calculate maximum borrowable amount
  * 
  * All endpoints include:
  * - Authentication via JWT (where required)
  * - Input validation using express-validator
- * - Rate limiting (100 requests per 15 minutes per IP for supply endpoints)
+ * - Rate limiting (100 requests per 15 minutes for supply, 50 for borrow)
  * - Comprehensive error handling with appropriate HTTP status codes
  * 
  * @module routes/vesu
@@ -19,7 +21,7 @@
 const express = require('express');
 const { body, query, param, validationResult } = require('express-validator');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
-const { supplyRateLimit } = require('../middleware/rateLimit');
+const { supplyRateLimit, borrowRateLimit } = require('../middleware/rateLimit');
 const { VesuService, VesuError } = require('../services/VesuService');
 const LiquidationEngine = require('../services/LiquidationEngine');
 const StarknetContractManager = require('../services/StarknetContractManager');
@@ -183,11 +185,10 @@ router.get('/health', asyncHandler(async (req, res) => {
  * POST /api/vesu/supply
  * Supply assets to a lending pool
  * 
- * Task 15.1: POST /api/vesu/supply - Supply assets to pool
  */
 router.post('/supply',
-  supplyRateLimit, // Task 15.3: Add rate limiting
-  authenticateToken, // Task 15.1.1: Add authentication middleware
+  supplyRateLimit, 
+  authenticateToken, 
   [
     // Task 15.1.2: Add input validation middleware
     body('poolAddress').notEmpty().withMessage('poolAddress is required')
@@ -210,7 +211,7 @@ router.post('/supply',
     const userId = req.user.id; // From JWT authentication
 
     try {
-      // Task 15.1.3: Call VesuService.supply()
+      //  Call VesuService.supply()
       const result = await vesuService.supply(
         poolAddress,
         asset,
@@ -219,7 +220,7 @@ router.post('/supply',
         userId
       );
 
-      // Task 15.1.4: Return 200 with success response
+      //  Return 200 with success response
       res.status(200).json({
         success: true,
         transactionHash: result.transactionHash,
@@ -227,7 +228,7 @@ router.post('/supply',
         position: result.position
       });
     } catch (error) {
-      // Task 15.1.5: Handle errors with appropriate status codes
+      //  Handle errors with appropriate status codes
       handleVesuError(error, res);
     }
   })
@@ -237,12 +238,12 @@ router.post('/supply',
  * GET /api/vesu/supply/estimate
  * Estimate vTokens to receive for a supply amount
  * 
- * Task 15.2: GET /api/vesu/supply/estimate - Estimate vTokens for supply amount
+ *  GET /api/vesu/supply/estimate - Estimate vTokens for supply amount
  */
 router.get('/supply/estimate',
-  supplyRateLimit, // Task 15.3: Add rate limiting
+  supplyRateLimit, //  Add rate limiting
   [
-    // Task 15.2.1: Add input validation for query params
+    //  Add input validation for query params
     query('poolAddress').notEmpty().withMessage('poolAddress is required')
       .isString().withMessage('poolAddress must be a string'),
     query('asset').notEmpty().withMessage('asset is required')
@@ -260,24 +261,125 @@ router.get('/supply/estimate',
     const { poolAddress, asset, amount } = req.query;
 
     try {
-      // Task 15.2.2: Fetch exchange rate using StarknetContractManager.getVTokenExchangeRateForPool()
+      //  Fetch exchange rate using StarknetContractManager.getVTokenExchangeRateForPool()
       const exchangeRate = await vesuService.contractManager.getVTokenExchangeRateForPool(
         poolAddress,
         asset
       );
 
-      // Task 15.2.3: Calculate vTokens using VesuService.calculateVTokensToReceive()
+      //  Calculate vTokens using VesuService.calculateVTokensToReceive()
       const estimatedVTokens = vesuService.calculateVTokensToReceive(
         amount,
         exchangeRate
       );
 
-      // Task 15.2.4: Return 200 with estimation response
+      //  Return 200 with estimation response
       res.status(200).json({
         asset,
         amount,
         estimatedVTokens: estimatedVTokens.toString(),
         exchangeRate
+      });
+    } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+// ============================================================================
+// BORROW ENDPOINTS
+// ============================================================================
+
+/**
+ * POST /api/vesu/borrow
+ * Borrow assets against collateral
+ * 
+ * POST /api/vesu/borrow - Borrow assets against collateral
+ */
+router.post('/borrow',
+  borrowRateLimit, //  Add rate limiting
+  authenticateToken, //  Add authentication middleware
+  [
+    // Task 16.1.2: Add input validation middleware
+    body('poolAddress').notEmpty().withMessage('poolAddress is required')
+      .isString().withMessage('poolAddress must be a string'),
+    body('collateralAsset').notEmpty().withMessage('collateralAsset is required')
+      .isString().withMessage('collateralAsset must be a string'),
+    body('debtAsset').notEmpty().withMessage('debtAsset is required')
+      .isString().withMessage('debtAsset must be a string'),
+    body('borrowAmount').notEmpty().withMessage('borrowAmount is required')
+      .isNumeric().withMessage('borrowAmount must be numeric'),
+    body('walletAddress').notEmpty().withMessage('walletAddress is required')
+      .isString().withMessage('walletAddress must be a string'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const { poolAddress, collateralAsset, debtAsset, borrowAmount, walletAddress } = req.body;
+    const userId = req.user.id; // From JWT authentication
+
+    try {
+      //  Call VesuService.borrow()
+      const result = await vesuService.borrow(
+        poolAddress,
+        collateralAsset,
+        debtAsset,
+        borrowAmount,
+        walletAddress,
+        userId
+      );
+
+      //  Return 200 with success response
+      res.status(200).json({
+        success: true,
+        transactionHash: result.transactionHash,
+        borrowedAmount: result.borrowedAmount,
+        position: result.position
+      });
+    } catch (error) {
+      //  Handle LTV_EXCEEDED and HEALTH_FACTOR_TOO_LOW errors with 422 status
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * GET /api/vesu/borrow/max
+ * Calculate maximum borrowable amount for a position
+ * 
+ *  GET /api/vesu/borrow/max - Calculate maximum borrowable amount
+ */
+router.get('/borrow/max',
+  borrowRateLimit, // Task 16.3: Add rate limiting
+  authenticateToken, // Task 16.2.1: Add authentication middleware
+  [
+    // Task 16.2.2: Add input validation for query params
+    query('positionId').notEmpty().withMessage('positionId is required')
+      .isString().withMessage('positionId must be a string'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const { positionId } = req.query;
+
+    try {
+      //  Fetch position and call VesuService.getMaxBorrowable()
+      const result = await vesuService.getMaxBorrowable(positionId);
+
+      //  Return 200 with response
+      res.status(200).json({
+        positionId: result.positionId,
+        maxBorrowable: result.maxBorrowable,
+        currentDebt: result.currentDebt,
+        availableLiquidity: result.availableLiquidity
       });
     } catch (error) {
       handleVesuError(error, res);
