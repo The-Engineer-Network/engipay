@@ -180,6 +180,20 @@ export function WalletProvider({ children }: WalletProviderProps) {
           description: "Successfully connected to Xverse Bitcoin wallet",
         });
 
+        // Register wallet connection with backend
+        try {
+          await fetch('/api/auth/wallet-connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              wallet_address: address,
+              wallet_type: 'xverse'
+            })
+          });
+        } catch (err) {
+          console.error('Failed to register wallet with backend:', err);
+        }
+
         // Fetch balances after connection
         await fetchBalances();
       } else {
@@ -216,6 +230,20 @@ export function WalletProvider({ children }: WalletProviderProps) {
           title: "Wallet connected",
           description: `Successfully connected to ${walletName}`,
         });
+
+        // Register wallet connection with backend
+        try {
+          await fetch('/api/auth/wallet-connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              wallet_address: address,
+              wallet_type: walletName.toLowerCase()
+            })
+          });
+        } catch (err) {
+          console.error('Failed to register wallet with backend:', err);
+        }
 
         // Fetch balances after connection
         await fetchBalances();

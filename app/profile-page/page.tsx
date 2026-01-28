@@ -4,16 +4,29 @@ import '@/styles/profile-page.css'
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useWallet } from "@/contexts/WalletContext"
+import dynamic from "next/dynamic"
 import { ArrowLeft, TrendingUp, Wallet, Settings, Award, PieChart } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import Link from "next/link"
-import { PortfolioOverview } from "@/components/defi/portfolio-overview"
-import { LendingBorrowing } from "@/components/defi/lending-borrowing"
-import { YieldFarming } from "@/components/defi/yield-farming"
-import { ClaimRewards } from "@/components/defi/claim-rewards"
-import { ProfileSettings } from "@/components/defi/profile-settings"
+
+// Dynamically import heavy components
+const PortfolioOverview = dynamic(() => import("@/components/defi/portfolio-overview").then(mod => ({ default: mod.PortfolioOverview })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const LendingBorrowing = dynamic(() => import("@/components/defi/lending-borrowing").then(mod => ({ default: mod.LendingBorrowing })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const YieldFarming = dynamic(() => import("@/components/defi/yield-farming").then(mod => ({ default: mod.YieldFarming })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const ClaimRewards = dynamic(() => import("@/components/defi/claim-rewards").then(mod => ({ default: mod.ClaimRewards })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const ProfileSettings = dynamic(() => import("@/components/defi/profile-settings").then(mod => ({ default: mod.ProfileSettings })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
 
 export default function ProfilePage() {
   const [activeTab, setActiveTab] = useState("portfolio")
@@ -21,13 +34,9 @@ export default function ProfilePage() {
   const { isConnected } = useWallet()
 
   useEffect(() => {
-    // Check wallet connection - check both context and localStorage
     const savedWallet = localStorage.getItem("engipay-wallet")
-    const hasWalletConnection = isConnected || savedWallet
-
-    if (!hasWalletConnection) {
+    if (!isConnected && !savedWallet) {
       router.push('/')
-      return
     }
   }, [isConnected, router])
 

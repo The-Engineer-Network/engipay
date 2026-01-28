@@ -1,13 +1,13 @@
 "use client";
 import { useState } from 'react';
-import Navbar from '@/src/app/components/Navbar';
-import Hero from '@/src/app/components/Hero';
-import Features from '@/src/app/components/Features';
-import Workflow from '@/src/app/components/Workflow';
-import Stats from '@/src/app/components/Stats';
-import CTA from '@/src/app/components/CTA';
-import Footer from '@/src/app/components/Footer';
-import AuthModal from '@/src/app/components/LandingAuthModal';
+import Navbar from './components/Navbar';
+import Hero from './components/Hero';
+import Features from './components/Features';
+import Workflow from './components/Workflow';
+import Stats from './components/Stats';
+import CTA from './components/CTA';
+import Footer from './components/Footer';
+import AuthModal from './components/LandingAuthModal';
 
 export default function LandingPage() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -31,3 +31,4 @@ export default function LandingPage() {
     </main>
   );
 }
+
