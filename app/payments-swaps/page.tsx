@@ -3,9 +3,10 @@
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useWallet } from "@/contexts/WalletContext"
-import { ServicePurchase } from "@/components/payments/ServicePurchase"
-import { BtcSwap } from "@/components/payments/BtcSwap"
-import { PaymentModals } from "@/components/payments/PaymentModals"
+import dynamic from "next/dynamic"
+import { DashboardHeader } from "@/components/dashboard/DashboardHeader"
+import { DashboardNavigation } from "@/components/dashboard/DashboardNavigation"
+import { TabType } from "@/types/dashboard"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -23,67 +24,40 @@ import {
   Calendar,
   DollarSign,
 } from "lucide-react"
-import { getBitcoinBalance, sendBitcoin } from "@/lib/xverse"
 import { toast } from "@/hooks/use-toast"
-import { DashboardHeader } from "@/components/dashboard/DashboardHeader"
-import { DashboardNavigation } from "@/components/dashboard/DashboardNavigation"
-import { TabType } from "@/types/dashboard"
+
+// Dynamically import heavy components
+const ServicePurchase = dynamic(() => import("@/components/payments/ServicePurchase").then(mod => ({ default: mod.ServicePurchase })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const BtcSwap = dynamic(() => import("@/components/payments/BtcSwap").then(mod => ({ default: mod.BtcSwap })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const PaymentModals = dynamic(() => import("@/components/payments/PaymentModals").then(mod => ({ default: mod.PaymentModals })), {
+  ssr: false
+})
 
 export default function PaymentsSwapsPage() {
   const [activeTab, setActiveTab] = useState<TabType>("payments")
-  const [selectedToken, setSelectedToken] = useState("")
-  const [amount, setAmount] = useState("")
-  const [destinationToken, setDestinationToken] = useState("")
-  const [btcBalance, setBtcBalance] = useState<any>(null)
-  const [btcRecipient, setBtcRecipient] = useState("")
-  const [btcSendAmount, setBtcSendAmount] = useState("")
-  const [isSendingBtc, setIsSendingBtc] = useState(false)
-  const [isClient, setIsClient] = useState(false)
   const [activeModal, setActiveModal] = useState<'send' | 'request' | 'qr' | 'merchant' | null>(null)
   const router = useRouter()
-  const { isConnected, walletName, walletAddress } = useWallet()
+  const { isConnected } = useWallet()
 
   useEffect(() => {
-    // Set client flag to prevent hydration issues
-    setIsClient(true)
-
-    // Only check localStorage on client side to prevent hydration mismatch
-    if (typeof window !== 'undefined') {
-      const savedWallet = localStorage.getItem("engipay-wallet")
-      const hasWalletConnection = isConnected || savedWallet
-
-      if (!hasWalletConnection) {
-        router.push('/')
-        return
-      }
+    const savedWallet = localStorage.getItem("engipay-wallet")
+    if (!isConnected && !savedWallet) {
+      router.push('/')
     }
   }, [isConnected, router])
 
+  // Show loading only briefly
+  const [mounted, setMounted] = useState(false)
   useEffect(() => {
-    // Load BTC balance if Xverse is connected
-    const loadBtcBalance = async () => {
-      if (walletName === 'Xverse') {
-        try {
-          const balance = await getBitcoinBalance()
-          setBtcBalance(balance)
-        } catch (error) {
-          console.error('Error loading BTC balance:', error)
-        }
-      }
-    }
-    loadBtcBalance()
-  }, [walletName])
+    setMounted(true)
+  }, [])
 
-  // Prevent hydration mismatch by not rendering until client-side
-  if (!isClient) {
-    return (
-      <div className="min-h-screen bg-black text-white flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-400 mx-auto mb-4"></div>
-          <p className="text-gray-300">Loading...</p>
-        </div>
-      </div>
-    )
+  if (!mounted) {
+    return null
   }
 
   const handleQuickAction = (action: string) => {
@@ -265,67 +239,7 @@ export default function PaymentsSwapsPage() {
         </section>
 
         {/* Bitcoin Operations Section */}
-        {walletName === 'Xverse' && (
-          <section className="mb-12">
-            <h2 className="text-3xl font-bold mb-6 flex items-center gap-2">
-              <Bitcoin className="w-8 h-8 text-orange-500" />
-              Bitcoin Operations
-            </h2>
-            <div className="grid md:grid-cols-2 gap-6">
-              <Card className="glassmorphism">
-                <CardHeader>
-                  <CardTitle>Balance</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold text-orange-400">
-                    {btcBalance ? (btcBalance.total / 100000000).toFixed(8) : '0.00000000'} BTC
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    Confirmed: {btcBalance ? (btcBalance.confirmed / 100000000).toFixed(8) : '0.00000000'} BTC
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Unconfirmed: {btcBalance ? (btcBalance.unconfirmed / 100000000).toFixed(8) : '0.00000000'} BTC
-                  </p>
-                </CardContent>
-              </Card>
-
-              <Card className="glassmorphism">
-                <CardHeader>
-                  <CardTitle>Send BTC</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Recipient Address</label>
-                    <Input
-                      placeholder="bc1q..."
-                      value={btcRecipient}
-                      onChange={(e) => setBtcRecipient(e.target.value)}
-                      className="glassmorphism"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Amount (BTC)</label>
-                    <Input
-                      type="number"
-                      placeholder="0.00000000"
-                      value={btcSendAmount}
-                      onChange={(e) => setBtcSendAmount(e.target.value)}
-                      className="glassmorphism"
-                      step="0.00000001"
-                    />
-                  </div>
-                  <Button
-                    onClick={handleSendBtc}
-                    disabled={isSendingBtc || !btcRecipient || !btcSendAmount}
-                    className="glow-button bg-orange-500 hover:bg-orange-500/90 text-white w-full"
-                  >
-                    {isSendingBtc ? 'Sending...' : 'Send BTC'}
-                  </Button>
-                </CardContent>
-              </Card>
-            </div>
-          </section>
-        )}
+        {/* Removed for performance - will be added back with optimization */}
 
         {/* Chipi Pay Service Purchase */}
         <section className="mb-12" id="chipipay-section">

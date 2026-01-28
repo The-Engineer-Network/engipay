@@ -14,36 +14,23 @@ import { TabType } from "@/types/dashboard"
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<TabType>("overview")
-  const [isClient, setIsClient] = useState(false)
   const router = useRouter()
   const { isConnected, balances, isLoadingBalances } = useWallet()
 
   useEffect(() => {
-    // Set client flag to prevent hydration issues
-    setIsClient(true)
-
-    // Only check localStorage on client side to prevent hydration mismatch
-    if (typeof window !== 'undefined') {
-      const savedWallet = localStorage.getItem("engipay-wallet")
-      const hasWalletConnection = isConnected || savedWallet
-
-      if (!hasWalletConnection) {
-        router.push('/')
-        return
-      }
+    const savedWallet = localStorage.getItem("engipay-wallet")
+    if (!isConnected && !savedWallet) {
+      router.push('/')
     }
   }, [isConnected, router])
 
-  // Prevent hydration mismatch by not rendering until client-side
-  if (!isClient) {
-    return (
-      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-400 mx-auto mb-4"></div>
-          <p className="text-gray-300">Loading...</p>
-        </div>
-      </div>
-    )
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  if (!mounted) {
+    return null
   }
 
 

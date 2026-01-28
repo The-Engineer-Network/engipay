@@ -7,10 +7,10 @@ interface HeroProps {
 export default function Hero({ onGetStarted }: HeroProps) {
     return (
         <section className="pt-40 pb-25 relative overflow-hidden">
-            <div className="container mx-auto px-5 flex flex-col lg:flex-row items-center gap-10 lg:gap-15">
-                <div className="flex-1 text-center lg:text-left">
+            <div className="container mx-auto px-5 lg:px-8 flex flex-col lg:flex-row items-center gap-10 lg:gap-8">
+                <div className="flex-1 text-center lg:text-left lg:pl-8 lg:pr-4">
                     <div className="inline-flex items-center gap-2 bg-[rgba(0,242,138,0.1)] text-primary px-3 py-1.5 rounded-full text-xs font-medium mb-6 border border-[#00BF63]">
-                        <span>Built on StarkNet🚀</span>
+                        <span>Built on StarkNet</span>
 
                     </div>
                     <h1 className="text-4xl lg:text-6xl font-bold leading-[1.1] mb-6 bg-clip-text text-transparent bg-gradient-to-r from-white to-[#00FF87]">
@@ -54,9 +54,9 @@ export default function Hero({ onGetStarted }: HeroProps) {
                     </div>
                 </div>
 
-                <div className="flex-1 flex justify-center items-center relative w-full lg:w-auto mt-10 lg:mt-0">
+                <div className="flex-1 flex justify-center items-center relative w-full lg:w-auto mt-10 lg:mt-0 lg:pr-0">
                     <div className="absolute inset-0 bg-primary/20 blur-[100px] rounded-full opacity-30 transform translate-x-1/2 translate-y-1/2 z-0" />
-                    <div className="relative w-full max-w-[400px] lg:max-w-[600px] aspect-[3/4] lg:h-[800px] animate-fade-in-up z-10">
+                    <div className="relative w-full max-w-[400px] lg:max-w-[500px] aspect-[3/4] lg:h-[700px] animate-fade-in-up z-10">
                         <Image
                             src="/phone.png"
                             alt="NexaPay Logic"
