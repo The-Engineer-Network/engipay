@@ -25,6 +25,7 @@ const paymentRoutes = require('./routes/payments');
 const analyticsRoutes = require('./routes/analytics');
 const webhookRoutes = require('./routes/webhooks');
 const chipiPayRoutes = require('./routes/chipipay');
+const vesuRoutes = require('./routes/vesu');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -138,6 +139,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/chipipay', chipiPayRoutes);
+app.use('/api/vesu', vesuRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
