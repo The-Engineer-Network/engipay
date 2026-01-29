@@ -862,7 +862,7 @@ router.get('/pools',
  *  GET /api/vesu/pools/:address - Get detailed pool info
  */
 router.get('/pools/:address',
-  poolRateLimit, // Task 20.4: Add rate limiting
+  poolRateLimit, //  Add rate limiting
   [
     param('address').notEmpty().withMessage('Pool address is required')
       .isString().withMessage('Pool address must be a string')
@@ -892,7 +892,7 @@ router.get('/pools/:address',
         });
       }
 
-      // Task 20.2.3: Return 200 with detailed pool information
+      //  Return 200 with detailed pool information
       const utilizationRate = pool.getUtilizationRate();
       const availableLiquidity = pool.getAvailableLiquidity();
       const isHealthy = pool.isHealthy();
@@ -933,7 +933,7 @@ router.get('/pools/:address',
  *  GET /api/vesu/pools/:address/interest-rate - Get pool interest rates
  */
 router.get('/pools/:address/interest-rate',
-  poolRateLimit, // Task 20.4: Add rate limiting
+  poolRateLimit, //  Add rate limiting
   [
     param('address').notEmpty().withMessage('Pool address is required')
       .isString().withMessage('Pool address must be a string')
@@ -968,7 +968,7 @@ router.get('/pools/:address/interest-rate',
       //  Call VesuService.getPoolInterestRate(poolAddress)
       const interestRateData = await vesuService.getPoolInterestRate(poolAddress);
 
-      // Task 20.3.2: Return 200 with { poolAddress, borrowAPY, supplyAPY, collateralAsset, debtAsset }
+      //  Return 200 with { poolAddress, borrowAPY, supplyAPY, collateralAsset, debtAsset }
       res.status(200).json({
         poolAddress: interestRateData.poolAddress,
         borrowAPY: interestRateData.borrowAPY,
@@ -994,7 +994,7 @@ router.get('/pools/:address/interest-rate',
  *  GET /api/vesu/liquidations/opportunities - Get liquidatable positions
  */
 router.get('/liquidations/opportunities',
-  liquidationRateLimit, // Task 21.4: Add stricter rate limiting
+  liquidationRateLimit, //  Add stricter rate limiting
   optionalAuth, //  Add authentication middleware (optional - can be public)
   asyncHandler(async (req, res) => {
     // Check services availability
