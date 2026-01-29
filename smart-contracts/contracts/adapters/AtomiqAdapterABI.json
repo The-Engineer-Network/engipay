@@ -1,0 +1,288 @@
+[
+  {
+    "type": "constructor",
+    "name": "constructor",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "fee_recipient",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "platform_fee",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "swap_timeout",
+        "type": "core::integer::u64"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "initiate_strk_to_btc_swap",
+    "inputs": [
+      {
+        "name": "strk_amount",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "bitcoin_address",
+        "type": "core::byte_array::ByteArray"
+      },
+      {
+        "name": "min_btc_amount",
+        "type": "core::integer::u256"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "core::integer::u256"
+      }
+    ],
+    "state_mutability": "external"
+  },
+  {
+    "type": "function",
+    "name": "confirm_swap",
+    "inputs": [
+      {
+        "name": "swap_id",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "tx_hash",
+        "type": "core::felt252"
+      }
+    ],
+    "outputs": [],
+    "state_mutability": "external"
+  },
+  {
+    "type": "function",
+    "name": "complete_swap",
+    "inputs": [
+      {
+        "name": "swap_id",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "bitcoin_tx_hash",
+        "type": "core::byte_array::ByteArray"
+      }
+    ],
+    "outputs": [],
+    "state_mutability": "external"
+  },
+  {
+    "type": "function",
+    "name": "refund_swap",
+    "inputs": [
+      {
+        "name": "swap_id",
+        "type": "core::integer::u256"
+      }
+    ],
+    "outputs": [],
+    "state_mutability": "external"
+  },
+  {
+    "type": "function",
+    "name": "get_swap",
+    "inputs": [
+      {
+        "name": "swap_id",
+        "type": "core::integer::u256"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "AtomiqSwap"
+      }
+    ],
+    "state_mutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "get_user_swaps",
+    "inputs": [
+      {
+        "name": "user",
+        "type": "core::starknet::contract_address::ContractAddress"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "core::array::Array<core::integer::u256>"
+      }
+    ],
+    "state_mutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "get_swap_count",
+    "inputs": [],
+    "outputs": [
+      {
+        "type": "core::integer::u256"
+      }
+    ],
+    "state_mutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "add_supported_token",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "fee",
+        "type": "core::integer::u256"
+      }
+    ],
+    "outputs": [],
+    "state_mutability": "external"
+  },
+  {
+    "type": "function",
+    "name": "remove_supported_token",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      }
+    ],
+    "outputs": [],
+    "state_mutability": "external"
+  },
+  {
+    "type": "function",
+    "name": "update_platform_fee",
+    "inputs": [
+      {
+        "name": "new_fee",
+        "type": "core::integer::u256"
+      }
+    ],
+    "outputs": [],
+    "state_mutability": "external"
+  },
+  {
+    "type": "function",
+    "name": "emergency_pause",
+    "inputs": [],
+    "outputs": [],
+    "state_mutability": "external"
+  },
+  {
+    "type": "function",
+    "name": "emergency_unpause",
+    "inputs": [],
+    "outputs": [],
+    "state_mutability": "external"
+  },
+  {
+    "type": "event",
+    "name": "SwapInitiated",
+    "keys": [],
+    "data": [
+      {
+        "name": "swap_id",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "user",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "from_token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "from_amount",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "to_amount",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "bitcoin_address",
+        "type": "core::byte_array::ByteArray"
+      },
+      {
+        "name": "expires_at",
+        "type": "core::integer::u64"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "SwapConfirmed",
+    "keys": [],
+    "data": [
+      {
+        "name": "swap_id",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "starknet_tx_hash",
+        "type": "core::felt252"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "SwapCompleted",
+    "keys": [],
+    "data": [
+      {
+        "name": "swap_id",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "bitcoin_tx_hash",
+        "type": "core::byte_array::ByteArray"
+      },
+      {
+        "name": "settled_at",
+        "type": "core::integer::u64"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "SwapFailed",
+    "keys": [],
+    "data": [
+      {
+        "name": "swap_id",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "reason",
+        "type": "core::byte_array::ByteArray"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "SwapRefunded",
+    "keys": [],
+    "data": [
+      {
+        "name": "swap_id",
+        "type": "core::integer::u256"
+      },
+      {
+        "name": "refund_amount",
+        "type": "core::integer::u256"
+      }
+    ]
+  }
+]

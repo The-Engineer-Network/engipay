@@ -146,52 +146,9 @@ export default function PaymentsSwapsPage() {
     },
   ]
 
-  const handleSwap = () => {
-    console.log("Swap initiated", { selectedToken, amount, destinationToken })
-  }
-
-  const handleSendBtc = async () => {
-    if (!btcRecipient || !btcSendAmount) {
-      toast({
-        title: "Missing Information",
-        description: "Please enter recipient address and amount",
-        variant: "destructive",
-      })
-      return
-    }
-
-    const amountSatoshis = Math.floor(parseFloat(btcSendAmount) * 100000000) // Convert BTC to satoshis
-
-    setIsSendingBtc(true)
-    try {
-      const result = await sendBitcoin({
-        to: btcRecipient,
-        amount: amountSatoshis,
-        feeRate: 1, // 1 sat/vB
-      })
-
-      if (result.success) {
-        toast({
-          title: "BTC Sent Successfully",
-          description: `Transaction ID: ${result.txId}`,
-        })
-        setBtcRecipient("")
-        setBtcSendAmount("")
-        // Refresh balance
-        const balance = await getBitcoinBalance()
-        setBtcBalance(balance)
-      } else {
-        throw new Error(result.error)
-      }
-    } catch (error: any) {
-      toast({
-        title: "Send Failed",
-        description: error.message || "Failed to send BTC",
-        variant: "destructive",
-      })
-    } finally {
-      setIsSendingBtc(false)
-    }
+  const handleQuickPayment = (type: string) => {
+    console.log(`Payment action: ${type}`)
+    // Payment actions are handled by the modal system
   }
 
   return (

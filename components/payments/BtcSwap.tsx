@@ -7,8 +7,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeftRight, Bitcoin, Coins, Zap, Loader2 } from 'lucide-react';
-import { getAtomiq, executeSwap, getSwapQuote, checkSwapStatus, SwapParams, SwapResult, SwapQuote } from '@/lib/atomiq';
-import { xverseWallet } from '@/lib/xverse';
 import { useWallet } from '@/contexts/WalletContext';
 import { toast } from '@/hooks/use-toast';
 
