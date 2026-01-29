@@ -21,7 +21,7 @@
 const express = require('express');
 const { body, query, param, validationResult } = require('express-validator');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
-const { supplyRateLimit, borrowRateLimit, repayRateLimit, withdrawRateLimit } = require('../middleware/rateLimit');
+const { supplyRateLimit, borrowRateLimit, repayRateLimit, withdrawRateLimit, positionRateLimit } = require('../middleware/rateLimit');
 const { VesuService, VesuError } = require('../services/VesuService');
 const LiquidationEngine = require('../services/LiquidationEngine');
 const StarknetContractManager = require('../services/StarknetContractManager');
@@ -560,6 +560,216 @@ router.get('/withdraw/max',
         maxWithdrawable: result.maxWithdrawable,
         currentCollateral: result.currentCollateral,
         currentDebt: result.currentDebt
+      });
+    } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+// ============================================================================
+// POSITION MANAGEMENT ENDPOINTS
+// ============================================================================
+
+/**
+ * GET /api/vesu/positions
+ * Get all positions for a user
+ * 
+ * Task 19.1: GET /api/vesu/positions - Get all user positions
+ */
+router.get('/positions',
+  positionRateLimit, // Task 19.5: Add rate limiting
+  authenticateToken, // Task 19.1.1: Add authentication middleware
+  [
+    // Task 19.1.2: Add pagination support (limit, offset query params)
+    query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be between 1 and 100'),
+    query('offset').optional().isInt({ min: 0 }).withMessage('offset must be a non-negative integer'),
+    // Task 19.1.3: Add status filter query parameter (optional)
+    query('status').optional().isIn(['active', 'liquidated', 'closed']).withMessage('status must be active, liquidated, or closed'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const userId = req.user.id; // From JWT authentication
+    const status = req.query.status || null;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = parseInt(req.query.offset) || 0;
+
+    try {
+      // Task 19.1.4: Call VesuService.getUserPositions(req.user.id, status, { limit, offset })
+      const result = await vesuService.getUserPositions(userId, status, { limit, offset });
+
+      // Task 19.1.5: Return 200 with { positions, pagination: { total, limit, offset, hasMore } }
+      res.status(200).json({
+        positions: result.positions,
+        pagination: {
+          total: result.total,
+          limit: result.limit,
+          offset: result.offset,
+          hasMore: result.hasMore
+        }
+      });
+    } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * GET /api/vesu/positions/:id
+ * Get detailed position information
+ * 
+ * Task 19.2: GET /api/vesu/positions/:id - Get detailed position info
+ */
+router.get('/positions/:id',
+  positionRateLimit, // Task 19.5: Add rate limiting
+  authenticateToken, // Task 19.2.1: Add authentication middleware
+  [
+    param('id').notEmpty().withMessage('Position ID is required')
+      .isString().withMessage('Position ID must be a string'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const positionId = req.params.id;
+    const userId = req.user.id; // From JWT authentication
+
+    try {
+      // Task 19.2.3: Call VesuService.getPosition(positionId)
+      const position = await vesuService.getPosition(positionId);
+
+      // Task 19.2.2: Validate position belongs to authenticated user
+      if (position.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You do not have permission to access this position',
+            details: {}
+          }
+        });
+      }
+
+      // Task 19.2.4: Return 200 with detailed position including calculated metrics
+      res.status(200).json({
+        position: position
+      });
+    } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * POST /api/vesu/positions/:id/sync
+ * Sync position data from blockchain
+ * 
+ * Task 19.3: POST /api/vesu/positions/:id/sync - Sync position from blockchain
+ */
+router.post('/positions/:id/sync',
+  positionRateLimit, // Task 19.5: Add rate limiting
+  authenticateToken, // Task 19.3.1: Add authentication middleware
+  [
+    param('id').notEmpty().withMessage('Position ID is required')
+      .isString().withMessage('Position ID must be a string'),
+    // Task 19.3.2: Add input validation (walletAddress required in body)
+    body('walletAddress').notEmpty().withMessage('walletAddress is required')
+      .isString().withMessage('walletAddress must be a string'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const positionId = req.params.id;
+    const { walletAddress } = req.body;
+    const userId = req.user.id; // From JWT authentication
+
+    try {
+      // Verify position belongs to user before syncing
+      const position = await vesuService.getPosition(positionId);
+      if (position.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You do not have permission to sync this position',
+            details: {}
+          }
+        });
+      }
+
+      // Task 19.3.3: Call VesuService.syncPositionFromChain(positionId, walletAddress)
+      const updatedPosition = await vesuService.syncPositionFromChain(positionId, walletAddress);
+
+      // Task 19.3.4: Return 200 with updated position data
+      res.status(200).json({
+        success: true,
+        position: updatedPosition
+      });
+    } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * GET /api/vesu/positions/:id/health
+ * Get position health metrics
+ * 
+ * Task 19.4: GET /api/vesu/positions/:id/health - Get position health metrics
+ */
+router.get('/positions/:id/health',
+  positionRateLimit, // Task 19.5: Add rate limiting
+  authenticateToken, // Task 19.4.1: Add authentication middleware
+  [
+    param('id').notEmpty().withMessage('Position ID is required')
+      .isString().withMessage('Position ID must be a string'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const positionId = req.params.id;
+    const userId = req.user.id; // From JWT authentication
+
+    try {
+      // Verify position belongs to user
+      const position = await vesuService.getPosition(positionId);
+      if (position.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You do not have permission to access this position',
+            details: {}
+          }
+        });
+      }
+
+      // Task 19.4.2: Call VesuService.updatePositionHealth(positionId)
+      const healthUpdate = await vesuService.updatePositionHealth(positionId);
+
+      // Task 19.4.3: Return 200 with { positionId, healthFactor, ltv, prices, lastUpdated }
+      res.status(200).json({
+        positionId: healthUpdate.positionId,
+        healthFactor: healthUpdate.healthFactor,
+        ltv: healthUpdate.ltv,
+        prices: healthUpdate.prices,
+        lastUpdated: healthUpdate.lastUpdated
       });
     } catch (error) {
       handleVesuError(error, res);
