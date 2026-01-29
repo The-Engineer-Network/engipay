@@ -46,11 +46,20 @@ const withdrawRateLimit = rateLimit({
   legacyHeaders: false,
 });
 
+const positionRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 position requests per windowMs
+  message: 'Too many position requests from this IP, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 module.exports = {
   swapRateLimit,
   quoteRateLimit,
   supplyRateLimit,
   borrowRateLimit,
   repayRateLimit,
-  withdrawRateLimit
+  withdrawRateLimit,
+  positionRateLimit
 };
