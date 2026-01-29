@@ -21,13 +21,15 @@
 const express = require('express');
 const { body, query, param, validationResult } = require('express-validator');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
-const { supplyRateLimit, borrowRateLimit, repayRateLimit, withdrawRateLimit, positionRateLimit, poolRateLimit } = require('../middleware/rateLimit');
+const { supplyRateLimit, borrowRateLimit, repayRateLimit, withdrawRateLimit, positionRateLimit, poolRateLimit, liquidationRateLimit } = require('../middleware/rateLimit');
 const { VesuService, VesuError } = require('../services/VesuService');
 const LiquidationEngine = require('../services/LiquidationEngine');
 const StarknetContractManager = require('../services/StarknetContractManager');
 const { PragmaOracleService } = require('../services/PragmaOracleService');
 const TransactionManager = require('../services/TransactionManager');
 const VesuPool = require('../models/VesuPool');
+const VesuPosition = require('../models/VesuPosition');
+const VesuLiquidation = require('../models/VesuLiquidation');
 
 const router = express.Router();
 
@@ -191,7 +193,7 @@ router.post('/supply',
   supplyRateLimit, 
   authenticateToken, 
   [
-    // Task 15.1.2: Add input validation middleware
+    //  Add input validation middleware
     body('poolAddress').notEmpty().withMessage('poolAddress is required')
       .isString().withMessage('poolAddress must be a string'),
     body('asset').notEmpty().withMessage('asset is required')
@@ -301,7 +303,7 @@ router.post('/borrow',
   borrowRateLimit, //  Add rate limiting
   authenticateToken, //  Add authentication middleware
   [
-    // Task 16.1.2: Add input validation middleware
+    //  Add input validation middleware
     body('poolAddress').notEmpty().withMessage('poolAddress is required')
       .isString().withMessage('poolAddress must be a string'),
     body('collateralAsset').notEmpty().withMessage('collateralAsset is required')
@@ -355,10 +357,10 @@ router.post('/borrow',
  *  GET /api/vesu/borrow/max - Calculate maximum borrowable amount
  */
 router.get('/borrow/max',
-  borrowRateLimit, // Task 16.3: Add rate limiting
-  authenticateToken, // Task 16.2.1: Add authentication middleware
+  borrowRateLimit, //Add rate limiting
+  authenticateToken, //  Add authentication middleware
   [
-    // Task 16.2.2: Add input validation for query params
+    //  Add input validation for query params
     query('positionId').notEmpty().withMessage('positionId is required')
       .isString().withMessage('positionId must be a string'),
   ],
@@ -396,13 +398,13 @@ router.get('/borrow/max',
  * POST /api/vesu/repay
  * Repay borrowed assets
  * 
- * Task 17.1: POST /api/vesu/repay - Repay borrowed assets
+ *  POST /api/vesu/repay - Repay borrowed assets
  */
 router.post('/repay',
-  repayRateLimit, // Task 17.3: Add rate limiting
-  authenticateToken, // Task 17.1.1: Add authentication middleware
+  repayRateLimit, // Add rate limiting
+  authenticateToken, //  Add authentication middleware
   [
-    // Task 17.1.2: Add input validation (positionId, amount, walletAddress required)
+    //  Add input validation (positionId, amount, walletAddress required)
     body('positionId').notEmpty().withMessage('positionId is required')
       .isString().withMessage('positionId must be a string'),
     body('amount').notEmpty().withMessage('amount is required')
@@ -420,10 +422,10 @@ router.post('/repay',
     const { positionId, amount, walletAddress } = req.body;
 
     try {
-      // Task 17.1.3: Call VesuService.repay(positionId, amount, walletAddress)
+      //  Call VesuService.repay(positionId, amount, walletAddress)
       const result = await vesuService.repay(positionId, amount, walletAddress);
 
-      // Task 17.1.4: Return 200 with { success, transactionHash, repaidAmount, remainingDebt, newHealthFactor, position }
+      //  Return 200 with { success, transactionHash, repaidAmount, remainingDebt, newHealthFactor, position }
       res.status(200).json({
         success: result.success,
         transactionHash: result.transactionHash,
@@ -442,13 +444,13 @@ router.post('/repay',
  * GET /api/vesu/repay/total
  * Get total debt with interest for a position
  * 
- * Task 17.2: GET /api/vesu/repay/total - Get total debt with interest
+ * GET /api/vesu/repay/total - Get total debt with interest
  */
 router.get('/repay/total',
-  repayRateLimit, // Task 17.3: Add rate limiting
-  authenticateToken, // Task 17.2.1: Add authentication middleware
+  repayRateLimit, //  Add rate limiting
+  authenticateToken, //  Add authentication middleware
   [
-    // Task 17.2.2: Add input validation for query params (positionId required)
+    // : Add input validation for query params (positionId required)
     query('positionId').notEmpty().withMessage('positionId is required')
       .isString().withMessage('positionId must be a string'),
   ],
@@ -462,10 +464,10 @@ router.get('/repay/total',
     const { positionId } = req.query;
 
     try {
-      // Task 17.2.3: Call VesuService.getTotalDebt(positionId)
+      //  Call VesuService.getTotalDebt(positionId)
       const result = await vesuService.getTotalDebt(positionId);
 
-      // Task 17.2.4: Return 200 with { positionId, principalDebt, totalDebt, debtAsset }
+      //  Return 200 with { positionId, principalDebt, totalDebt, debtAsset }
       res.status(200).json({
         positionId: result.positionId,
         principalDebt: result.principalDebt,
@@ -486,13 +488,13 @@ router.get('/repay/total',
  * POST /api/vesu/withdraw
  * Withdraw supplied assets
  * 
- * Task 18.1: POST /api/vesu/withdraw - Withdraw supplied assets
+ * POST /api/vesu/withdraw - Withdraw supplied assets
  */
 router.post('/withdraw',
-  withdrawRateLimit, // Task 18.3: Add rate limiting
-  authenticateToken, // Task 18.1.1: Add authentication middleware
+  withdrawRateLimit, //: Add rate limiting
+  authenticateToken, //  Add authentication middleware
   [
-    // Task 18.1.2: Add input validation (positionId, amount, walletAddress required)
+    //  Add input validation (positionId, amount, walletAddress required)
     body('positionId').notEmpty().withMessage('positionId is required')
       .isString().withMessage('positionId must be a string'),
     body('amount').notEmpty().withMessage('amount is required')
@@ -510,10 +512,10 @@ router.post('/withdraw',
     const { positionId, amount, walletAddress } = req.body;
 
     try {
-      // Task 18.1.3: Call VesuService.withdraw(positionId, amount, walletAddress)
+      //  Call VesuService.withdraw(positionId, amount, walletAddress)
       const result = await vesuService.withdraw(positionId, amount, walletAddress);
 
-      // Task 18.1.4: Return 200 with { success, transactionHash, withdrawnAmount, vTokensBurned, newHealthFactor, position }
+      // Return 200 with { success, transactionHash, withdrawnAmount, vTokensBurned, newHealthFactor, position }
       res.status(200).json({
         success: result.success,
         transactionHash: result.transactionHash,
@@ -532,13 +534,13 @@ router.post('/withdraw',
  * GET /api/vesu/withdraw/max
  * Calculate maximum withdrawable amount for a position
  * 
- * Task 18.2: GET /api/vesu/withdraw/max - Calculate maximum withdrawable amount
+ * GET /api/vesu/withdraw/max - Calculate maximum withdrawable amount
  */
 router.get('/withdraw/max',
-  withdrawRateLimit, // Task 18.3: Add rate limiting
-  authenticateToken, // Task 18.2.1: Add authentication middleware
+  withdrawRateLimit, //  Add rate limiting
+  authenticateToken, //  Add authentication middleware
   [
-    // Task 18.2.2: Add input validation for query params (positionId required)
+    //  Add input validation for query params (positionId required)
     query('positionId').notEmpty().withMessage('positionId is required')
       .isString().withMessage('positionId must be a string'),
   ],
@@ -552,10 +554,10 @@ router.get('/withdraw/max',
     const { positionId } = req.query;
 
     try {
-      // Task 18.2.3: Fetch position and call VesuService.calculateMaxWithdrawable()
+      // Fetch position and call VesuService.calculateMaxWithdrawable()
       const result = await vesuService.calculateMaxWithdrawable(positionId);
 
-      // Task 18.2.4: Return 200 with { positionId, maxWithdrawable, currentCollateral, currentDebt }
+      // Return 200 with { positionId, maxWithdrawable, currentCollateral, currentDebt }
       res.status(200).json({
         positionId: result.positionId,
         maxWithdrawable: result.maxWithdrawable,
@@ -576,16 +578,16 @@ router.get('/withdraw/max',
  * GET /api/vesu/positions
  * Get all positions for a user
  * 
- * Task 19.1: GET /api/vesu/positions - Get all user positions
+ *  GET /api/vesu/positions - Get all user positions
  */
 router.get('/positions',
-  positionRateLimit, // Task 19.5: Add rate limiting
-  authenticateToken, // Task 19.1.1: Add authentication middleware
+  positionRateLimit, //  Add rate limiting
+  authenticateToken, //  Add authentication middleware
   [
-    // Task 19.1.2: Add pagination support (limit, offset query params)
+    //  Add pagination support (limit, offset query params)
     query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be between 1 and 100'),
     query('offset').optional().isInt({ min: 0 }).withMessage('offset must be a non-negative integer'),
-    // Task 19.1.3: Add status filter query parameter (optional)
+    // Add status filter query parameter (optional)
     query('status').optional().isIn(['active', 'liquidated', 'closed']).withMessage('status must be active, liquidated, or closed'),
   ],
   asyncHandler(async (req, res) => {
@@ -601,10 +603,10 @@ router.get('/positions',
     const offset = parseInt(req.query.offset) || 0;
 
     try {
-      // Task 19.1.4: Call VesuService.getUserPositions(req.user.id, status, { limit, offset })
+      //  Call VesuService.getUserPositions(req.user.id, status, { limit, offset })
       const result = await vesuService.getUserPositions(userId, status, { limit, offset });
 
-      // Task 19.1.5: Return 200 with { positions, pagination: { total, limit, offset, hasMore } }
+      //  Return 200 with { positions, pagination: { total, limit, offset, hasMore } }
       res.status(200).json({
         positions: result.positions,
         pagination: {
@@ -624,11 +626,11 @@ router.get('/positions',
  * GET /api/vesu/positions/:id
  * Get detailed position information
  * 
- * Task 19.2: GET /api/vesu/positions/:id - Get detailed position info
+ *  GET /api/vesu/positions/:id - Get detailed position info
  */
 router.get('/positions/:id',
-  positionRateLimit, // Task 19.5: Add rate limiting
-  authenticateToken, // Task 19.2.1: Add authentication middleware
+  positionRateLimit, //  Add rate limiting
+  authenticateToken, //  Add authentication middleware
   [
     param('id').notEmpty().withMessage('Position ID is required')
       .isString().withMessage('Position ID must be a string'),
@@ -644,10 +646,10 @@ router.get('/positions/:id',
     const userId = req.user.id; // From JWT authentication
 
     try {
-      // Task 19.2.3: Call VesuService.getPosition(positionId)
+      //  Call VesuService.getPosition(positionId)
       const position = await vesuService.getPosition(positionId);
 
-      // Task 19.2.2: Validate position belongs to authenticated user
+      // Validate position belongs to authenticated user
       if (position.userId !== userId) {
         return res.status(403).json({
           success: false,
@@ -659,7 +661,7 @@ router.get('/positions/:id',
         });
       }
 
-      // Task 19.2.4: Return 200 with detailed position including calculated metrics
+      //  Return 200 with detailed position including calculated metrics
       res.status(200).json({
         position: position
       });
@@ -673,15 +675,15 @@ router.get('/positions/:id',
  * POST /api/vesu/positions/:id/sync
  * Sync position data from blockchain
  * 
- * Task 19.3: POST /api/vesu/positions/:id/sync - Sync position from blockchain
+ *  POST /api/vesu/positions/:id/sync - Sync position from blockchain
  */
 router.post('/positions/:id/sync',
-  positionRateLimit, // Task 19.5: Add rate limiting
-  authenticateToken, // Task 19.3.1: Add authentication middleware
+  positionRateLimit, //  Add rate limiting
+  authenticateToken, // Add authentication middleware
   [
     param('id').notEmpty().withMessage('Position ID is required')
       .isString().withMessage('Position ID must be a string'),
-    // Task 19.3.2: Add input validation (walletAddress required in body)
+    //  Add input validation (walletAddress required in body)
     body('walletAddress').notEmpty().withMessage('walletAddress is required')
       .isString().withMessage('walletAddress must be a string'),
   ],
@@ -710,10 +712,10 @@ router.post('/positions/:id/sync',
         });
       }
 
-      // Task 19.3.3: Call VesuService.syncPositionFromChain(positionId, walletAddress)
+      //Call VesuService.syncPositionFromChain(positionId, walletAddress)
       const updatedPosition = await vesuService.syncPositionFromChain(positionId, walletAddress);
 
-      // Task 19.3.4: Return 200 with updated position data
+      //  Return 200 with updated position data
       res.status(200).json({
         success: true,
         position: updatedPosition
@@ -728,11 +730,11 @@ router.post('/positions/:id/sync',
  * GET /api/vesu/positions/:id/health
  * Get position health metrics
  * 
- * Task 19.4: GET /api/vesu/positions/:id/health - Get position health metrics
+ *  GET /api/vesu/positions/:id/health - Get position health metrics
  */
 router.get('/positions/:id/health',
-  positionRateLimit, // Task 19.5: Add rate limiting
-  authenticateToken, // Task 19.4.1: Add authentication middleware
+  positionRateLimit, //  Add rate limiting
+  authenticateToken, //  Add authentication middleware
   [
     param('id').notEmpty().withMessage('Position ID is required')
       .isString().withMessage('Position ID must be a string'),
@@ -761,10 +763,10 @@ router.get('/positions/:id/health',
         });
       }
 
-      // Task 19.4.2: Call VesuService.updatePositionHealth(positionId)
+      //  Call VesuService.updatePositionHealth(positionId)
       const healthUpdate = await vesuService.updatePositionHealth(positionId);
 
-      // Task 19.4.3: Return 200 with { positionId, healthFactor, ltv, prices, lastUpdated }
+      //  Return 200 with { positionId, healthFactor, ltv, prices, lastUpdated }
       res.status(200).json({
         positionId: healthUpdate.positionId,
         healthFactor: healthUpdate.healthFactor,
@@ -793,13 +795,13 @@ const poolCache = {
  * GET /api/vesu/pools
  * Get available lending pools
  * 
- * Task 20.1: GET /api/vesu/pools - Get available lending pools
+ *  GET /api/vesu/pools - Get available lending pools
  */
 router.get('/pools',
-  poolRateLimit, // Task 20.4: Add rate limiting
+  poolRateLimit, //  Add rate limiting
   asyncHandler(async (req, res) => {
     try {
-      // Task 20.1.3: Check cache first (5 minutes TTL)
+      //  Check cache first (5 minutes TTL)
       const now = Date.now();
       if (poolCache.data && poolCache.timestamp && (now - poolCache.timestamp) < poolCache.ttl) {
         return res.status(200).json({
@@ -809,13 +811,12 @@ router.get('/pools',
         });
       }
 
-      // Task 20.1.1: Fetch active pools from VesuPool model (where is_active = true)
+      //  Fetch active pools from VesuPool model (where is_active = true)
       const pools = await VesuPool.findAll({
         where: { is_active: true },
         order: [['total_supply', 'DESC']] // Order by TVL descending
       });
 
-      // Task 20.1.2: Include pool statistics (TVL, APY, utilization) from database
       const poolsWithStats = pools.map(pool => {
         const utilizationRate = pool.getUtilizationRate();
         const availableLiquidity = pool.getAvailableLiquidity();
@@ -842,7 +843,7 @@ router.get('/pools',
       poolCache.data = poolsWithStats;
       poolCache.timestamp = now;
 
-      // Task 20.1.4: Return 200 with { pools: [...] }
+      // Return 200 with { pools: [...] }
       res.status(200).json({
         pools: poolsWithStats,
         cached: false
@@ -858,7 +859,7 @@ router.get('/pools',
  * GET /api/vesu/pools/:address
  * Get detailed pool information
  * 
- * Task 20.2: GET /api/vesu/pools/:address - Get detailed pool info
+ *  GET /api/vesu/pools/:address - Get detailed pool info
  */
 router.get('/pools/:address',
   poolRateLimit, // Task 20.4: Add rate limiting
@@ -874,12 +875,12 @@ router.get('/pools/:address',
     const poolAddress = req.params.address;
 
     try {
-      // Task 20.2.1: Fetch pool by address from VesuPool model
+      //  Fetch pool by address from VesuPool model
       const pool = await VesuPool.findOne({
         where: { pool_address: poolAddress }
       });
 
-      // Task 20.2.2: Return 404 if pool not found
+      //  Return 404 if pool not found
       if (!pool) {
         return res.status(404).json({
           success: false,
@@ -929,7 +930,7 @@ router.get('/pools/:address',
  * GET /api/vesu/pools/:address/interest-rate
  * Get pool interest rates
  * 
- * Task 20.3: GET /api/vesu/pools/:address/interest-rate - Get pool interest rates
+ *  GET /api/vesu/pools/:address/interest-rate - Get pool interest rates
  */
 router.get('/pools/:address/interest-rate',
   poolRateLimit, // Task 20.4: Add rate limiting
@@ -964,7 +965,7 @@ router.get('/pools/:address/interest-rate',
         });
       }
 
-      // Task 20.3.1: Call VesuService.getPoolInterestRate(poolAddress)
+      //  Call VesuService.getPoolInterestRate(poolAddress)
       const interestRateData = await vesuService.getPoolInterestRate(poolAddress);
 
       // Task 20.3.2: Return 200 with { poolAddress, borrowAPY, supplyAPY, collateralAsset, debtAsset }
@@ -977,6 +978,165 @@ router.get('/pools/:address/interest-rate',
       });
     } catch (error) {
       console.error('Error fetching pool interest rates:', error);
+      handleVesuError(error, res);
+    }
+  })
+);
+
+// ============================================================================
+// LIQUIDATION ENDPOINTS
+// ============================================================================
+
+/**
+ * GET /api/vesu/liquidations/opportunities
+ * Get liquidatable positions (liquidator endpoint)
+ * 
+ *  GET /api/vesu/liquidations/opportunities - Get liquidatable positions
+ */
+router.get('/liquidations/opportunities',
+  liquidationRateLimit, // Task 21.4: Add stricter rate limiting
+  optionalAuth, //  Add authentication middleware (optional - can be public)
+  asyncHandler(async (req, res) => {
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    try {
+      //  Call LiquidationEngine.findLiquidatablePositions()
+      const opportunities = await liquidationEngine.findLiquidatablePositions();
+
+      //  Return 200 with { opportunities: [...] } including profit estimates
+      res.status(200).json({
+        opportunities: opportunities,
+        count: opportunities.length,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error finding liquidation opportunities:', error);
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * POST /api/vesu/liquidations/execute
+ * Execute a liquidation
+ * 
+ *  POST /api/vesu/liquidations/execute - Execute liquidation
+ */
+router.post('/liquidations/execute',
+  liquidationRateLimit, //  Add stricter rate limiting
+  authenticateToken, //  Add authentication middleware
+  [
+    //  Add input validation (positionId, debtToCover, liquidatorAddress required)
+    body('positionId').notEmpty().withMessage('positionId is required')
+      .isString().withMessage('positionId must be a string'),
+    body('debtToCover').optional()
+      .isNumeric().withMessage('debtToCover must be numeric'),
+    body('liquidatorAddress').notEmpty().withMessage('liquidatorAddress is required')
+      .isString().withMessage('liquidatorAddress must be a string')
+      .matches(/^0x[a-fA-F0-9]{1,64}$/).withMessage('Invalid liquidator address format'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const { positionId, debtToCover, liquidatorAddress } = req.body;
+
+    try {
+      //  Call LiquidationEngine.executeLiquidation()
+      const result = await liquidationEngine.executeLiquidation(
+        positionId,
+        debtToCover || null, // Optional - defaults to full liquidation
+        liquidatorAddress
+      );
+
+      //  Return 200 with { success, transactionHash, collateralSeized, debtRepaid, liquidationBonus }
+      res.status(200).json({
+        success: result.success,
+        transactionHash: result.transactionHash,
+        collateralSeized: result.liquidation.collateralSeized,
+        debtRepaid: result.liquidation.debtRepaid,
+        liquidationBonus: result.liquidation.liquidationBonus,
+        liquidation: result.liquidation,
+        position: result.position
+      });
+    } catch (error) {
+      console.error('Error executing liquidation:', error);
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * GET /api/vesu/liquidations/history
+ * Get liquidation history
+ * 
+ GET /api/vesu/liquidations/history - Get liquidation history
+ */
+router.get('/liquidations/history',
+  liquidationRateLimit, //  Add stricter rate limiting
+  [
+    //  Add pagination support (limit, offset query params)
+    query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be between 1 and 100'),
+    query('offset').optional().isInt({ min: 0 }).withMessage('offset must be a non-negative integer'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+
+    try {
+      //  Fetch from VesuLiquidation model with joins to VesuPosition
+      const { count, rows: liquidations } = await VesuLiquidation.findAndCountAll({
+        include: [
+          {
+            model: VesuPosition,
+            as: 'position',
+            attributes: ['id', 'pool_address', 'collateral_asset', 'debt_asset', 'user_id', 'status']
+          }
+        ],
+        order: [['timestamp', 'DESC']],
+        limit: limit,
+        offset: offset
+      });
+
+      // Format liquidation data
+      const formattedLiquidations = liquidations.map(liq => ({
+        id: liq.id,
+        positionId: liq.position_id,
+        liquidatorAddress: liq.liquidator_address,
+        transactionHash: liq.transaction_hash,
+        collateralSeized: liq.collateral_seized,
+        debtRepaid: liq.debt_repaid,
+        liquidationBonus: liq.liquidation_bonus,
+        timestamp: liq.timestamp,
+        position: liq.position ? {
+          id: liq.position.id,
+          poolAddress: liq.position.pool_address,
+          collateralAsset: liq.position.collateral_asset,
+          debtAsset: liq.position.debt_asset,
+          userId: liq.position.user_id,
+          status: liq.position.status
+        } : null
+      }));
+
+      //  Return 200 with { liquidations: [...], pagination: { total, limit, offset, hasMore } }
+      res.status(200).json({
+        liquidations: formattedLiquidations,
+        pagination: {
+          total: count,
+          limit: limit,
+          offset: offset,
+          hasMore: offset + limit < count
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching liquidation history:', error);
       handleVesuError(error, res);
     }
   })

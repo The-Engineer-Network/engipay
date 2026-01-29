@@ -206,15 +206,6 @@ The following fields are calculated using VesuPool model methods:
 
 A test file has been created at `backend/tests/test-pool-endpoints.js` to verify endpoint functionality.
 
-**Test Coverage:**
-- ✅ GET /api/vesu/pools returns list of pools
-- ✅ Cache functionality works correctly
-- ✅ GET /api/vesu/pools/:address validates address format
-- ✅ GET /api/vesu/pools/:address returns 404 for non-existent pools
-- ✅ GET /api/vesu/pools/:address returns detailed pool info
-- ✅ GET /api/vesu/pools/:address/interest-rate validates address format
-- ✅ GET /api/vesu/pools/:address/interest-rate returns interest rates
-
 **Run Tests:**
 ```bash
 npm test -- backend/tests/test-pool-endpoints.js
@@ -245,9 +236,9 @@ npm test -- backend/tests/test-pool-endpoints.js
 
 This implementation validates the following requirements:
 
-- **3.10.1:** RESTful API endpoints follow consistent naming conventions ✅
-- **3.10.3:** API responses include proper HTTP status codes ✅
-- **3.10.4:** Endpoints support pagination for list operations ✅ (via caching for performance)
+- **3.10.1:** RESTful API endpoints follow consistent naming conventions 
+- **3.10.3:** API responses include proper HTTP status codes 
+- **3.10.4:** Endpoints support pagination for list operations  (via caching for performance)
 
 ---
 

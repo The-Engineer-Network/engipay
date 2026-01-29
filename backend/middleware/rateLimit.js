@@ -62,6 +62,14 @@ const poolRateLimit = rateLimit({
   legacyHeaders: false,
 });
 
+const liquidationRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // limit each IP to 20 liquidation requests per windowMs
+  message: 'Too many liquidation requests from this IP, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 module.exports = {
   swapRateLimit,
   quoteRateLimit,
@@ -70,5 +78,6 @@ module.exports = {
   repayRateLimit,
   withdrawRateLimit,
   positionRateLimit,
-  poolRateLimit
+  poolRateLimit,
+  liquidationRateLimit
 };
