@@ -21,12 +21,13 @@
 const express = require('express');
 const { body, query, param, validationResult } = require('express-validator');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
-const { supplyRateLimit, borrowRateLimit, repayRateLimit, withdrawRateLimit, positionRateLimit } = require('../middleware/rateLimit');
+const { supplyRateLimit, borrowRateLimit, repayRateLimit, withdrawRateLimit, positionRateLimit, poolRateLimit } = require('../middleware/rateLimit');
 const { VesuService, VesuError } = require('../services/VesuService');
 const LiquidationEngine = require('../services/LiquidationEngine');
 const StarknetContractManager = require('../services/StarknetContractManager');
 const { PragmaOracleService } = require('../services/PragmaOracleService');
 const TransactionManager = require('../services/TransactionManager');
+const VesuPool = require('../models/VesuPool');
 
 const router = express.Router();
 
@@ -772,6 +773,210 @@ router.get('/positions/:id/health',
         lastUpdated: healthUpdate.lastUpdated
       });
     } catch (error) {
+      handleVesuError(error, res);
+    }
+  })
+);
+
+// ============================================================================
+// POOL INFORMATION ENDPOINTS
+// ============================================================================
+
+// Cache for pool data (5 minutes TTL)
+const poolCache = {
+  data: null,
+  timestamp: null,
+  ttl: 5 * 60 * 1000 // 5 minutes in milliseconds
+};
+
+/**
+ * GET /api/vesu/pools
+ * Get available lending pools
+ * 
+ * Task 20.1: GET /api/vesu/pools - Get available lending pools
+ */
+router.get('/pools',
+  poolRateLimit, // Task 20.4: Add rate limiting
+  asyncHandler(async (req, res) => {
+    try {
+      // Task 20.1.3: Check cache first (5 minutes TTL)
+      const now = Date.now();
+      if (poolCache.data && poolCache.timestamp && (now - poolCache.timestamp) < poolCache.ttl) {
+        return res.status(200).json({
+          pools: poolCache.data,
+          cached: true,
+          cacheAge: Math.floor((now - poolCache.timestamp) / 1000) // seconds
+        });
+      }
+
+      // Task 20.1.1: Fetch active pools from VesuPool model (where is_active = true)
+      const pools = await VesuPool.findAll({
+        where: { is_active: true },
+        order: [['total_supply', 'DESC']] // Order by TVL descending
+      });
+
+      // Task 20.1.2: Include pool statistics (TVL, APY, utilization) from database
+      const poolsWithStats = pools.map(pool => {
+        const utilizationRate = pool.getUtilizationRate();
+        const availableLiquidity = pool.getAvailableLiquidity();
+        
+        return {
+          poolAddress: pool.pool_address,
+          collateralAsset: pool.collateral_asset,
+          debtAsset: pool.debt_asset,
+          maxLTV: parseFloat(pool.max_ltv),
+          liquidationThreshold: parseFloat(pool.liquidation_threshold),
+          liquidationBonus: parseFloat(pool.liquidation_bonus),
+          supplyAPY: pool.supply_apy ? parseFloat(pool.supply_apy) : null,
+          borrowAPY: pool.borrow_apy ? parseFloat(pool.borrow_apy) : null,
+          totalSupply: parseFloat(pool.total_supply),
+          totalBorrow: parseFloat(pool.total_borrow),
+          availableLiquidity: availableLiquidity,
+          utilizationRate: utilizationRate,
+          isActive: pool.is_active,
+          lastSynced: pool.last_synced
+        };
+      });
+
+      // Update cache
+      poolCache.data = poolsWithStats;
+      poolCache.timestamp = now;
+
+      // Task 20.1.4: Return 200 with { pools: [...] }
+      res.status(200).json({
+        pools: poolsWithStats,
+        cached: false
+      });
+    } catch (error) {
+      console.error('Error fetching pools:', error);
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * GET /api/vesu/pools/:address
+ * Get detailed pool information
+ * 
+ * Task 20.2: GET /api/vesu/pools/:address - Get detailed pool info
+ */
+router.get('/pools/:address',
+  poolRateLimit, // Task 20.4: Add rate limiting
+  [
+    param('address').notEmpty().withMessage('Pool address is required')
+      .isString().withMessage('Pool address must be a string')
+      .matches(/^0x[a-fA-F0-9]{1,64}$/).withMessage('Invalid pool address format'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+
+    const poolAddress = req.params.address;
+
+    try {
+      // Task 20.2.1: Fetch pool by address from VesuPool model
+      const pool = await VesuPool.findOne({
+        where: { pool_address: poolAddress }
+      });
+
+      // Task 20.2.2: Return 404 if pool not found
+      if (!pool) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'POOL_NOT_FOUND',
+            message: 'Pool not found',
+            details: { poolAddress }
+          }
+        });
+      }
+
+      // Task 20.2.3: Return 200 with detailed pool information
+      const utilizationRate = pool.getUtilizationRate();
+      const availableLiquidity = pool.getAvailableLiquidity();
+      const isHealthy = pool.isHealthy();
+
+      res.status(200).json({
+        pool: {
+          id: pool.id,
+          poolAddress: pool.pool_address,
+          collateralAsset: pool.collateral_asset,
+          debtAsset: pool.debt_asset,
+          maxLTV: parseFloat(pool.max_ltv),
+          liquidationThreshold: parseFloat(pool.liquidation_threshold),
+          liquidationBonus: parseFloat(pool.liquidation_bonus),
+          supplyAPY: pool.supply_apy ? parseFloat(pool.supply_apy) : null,
+          borrowAPY: pool.borrow_apy ? parseFloat(pool.borrow_apy) : null,
+          totalSupply: parseFloat(pool.total_supply),
+          totalBorrow: parseFloat(pool.total_borrow),
+          availableLiquidity: availableLiquidity,
+          utilizationRate: utilizationRate,
+          isActive: pool.is_active,
+          isHealthy: isHealthy,
+          lastSynced: pool.last_synced,
+          createdAt: pool.createdAt,
+          updatedAt: pool.updatedAt
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching pool details:', error);
+      handleVesuError(error, res);
+    }
+  })
+);
+
+/**
+ * GET /api/vesu/pools/:address/interest-rate
+ * Get pool interest rates
+ * 
+ * Task 20.3: GET /api/vesu/pools/:address/interest-rate - Get pool interest rates
+ */
+router.get('/pools/:address/interest-rate',
+  poolRateLimit, // Task 20.4: Add rate limiting
+  [
+    param('address').notEmpty().withMessage('Pool address is required')
+      .isString().withMessage('Pool address must be a string')
+      .matches(/^0x[a-fA-F0-9]{1,64}$/).withMessage('Invalid pool address format'),
+  ],
+  asyncHandler(async (req, res) => {
+    // Validate request
+    if (!validateRequest(req, res)) return;
+    
+    // Check services availability
+    if (!checkServicesAvailable(res)) return;
+
+    const poolAddress = req.params.address;
+
+    try {
+      // First verify pool exists
+      const pool = await VesuPool.findOne({
+        where: { pool_address: poolAddress }
+      });
+
+      if (!pool) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'POOL_NOT_FOUND',
+            message: 'Pool not found',
+            details: { poolAddress }
+          }
+        });
+      }
+
+      // Task 20.3.1: Call VesuService.getPoolInterestRate(poolAddress)
+      const interestRateData = await vesuService.getPoolInterestRate(poolAddress);
+
+      // Task 20.3.2: Return 200 with { poolAddress, borrowAPY, supplyAPY, collateralAsset, debtAsset }
+      res.status(200).json({
+        poolAddress: interestRateData.poolAddress,
+        borrowAPY: interestRateData.borrowAPY,
+        supplyAPY: interestRateData.supplyAPY,
+        collateralAsset: pool.collateral_asset,
+        debtAsset: pool.debt_asset
+      });
+    } catch (error) {
+      console.error('Error fetching pool interest rates:', error);
       handleVesuError(error, res);
     }
   })
