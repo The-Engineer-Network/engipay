@@ -735,3 +735,266 @@ The backend will need the following main entities:
 4. Webhooks for real-time updates
 
 This documentation covers all the endpoints needed to power the current EngiPay frontend functionality.
+
+
+---
+
+## Analytics Endpoints
+
+### GET `/api/analytics/portfolio`
+Get comprehensive portfolio analytics and performance metrics.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Query Parameters:**
+- `period` (optional): Time period for analytics. Options: `1d`, `7d`, `30d`, `90d`, `1y`. Default: `30d`
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "period": "30d",
+    "total_value_usd": 5234.56,
+    "total_return": 234.56,
+    "total_return_percent": 4.69,
+    "asset_allocation": [
+      {
+        "asset": "ETH",
+        "percentage": 45.5,
+        "value_usd": 2381.72
+      },
+      {
+        "asset": "STRK",
+        "percentage": 35.2,
+        "value_usd": 1842.56
+      }
+    ],
+    "performance_metrics": {
+      "volatility": 0.15,
+      "sharpe_ratio": 1.8,
+      "max_drawdown": -5.2,
+      "best_performer": {
+        "asset": "STRK",
+        "return_percent": 12.5
+      },
+      "worst_performer": {
+        "asset": "BTC",
+        "return_percent": -2.3
+      }
+    },
+    "historical_values": [
+      {
+        "date": "2026-01-01",
+        "value_usd": 5000.00
+      }
+    ]
+  }
+}
+```
+
+### GET `/api/analytics/defi`
+Get DeFi activity analytics including TVL, rewards, and protocol usage.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "total_value_locked": 4200.00,
+    "total_rewards_earned": 150.00,
+    "average_apy": 8.6,
+    "protocols_used": ["Vesu", "Trove", "Endurfi"],
+    "active_positions": 3,
+    "risk_distribution": {
+      "low": 60,
+      "medium": 30,
+      "high": 10
+    },
+    "positions_by_protocol": [
+      {
+        "protocol": "Vesu",
+        "tvl": 2500.00,
+        "positions": 2,
+        "apy": 9.2
+      }
+    ],
+    "rewards_by_protocol": [
+      {
+        "protocol": "Vesu",
+        "amount": 85.50,
+        "asset": "STRK"
+      }
+    ]
+  }
+}
+```
+
+### GET `/api/analytics/transactions`
+Get transaction analytics including volume, fees, and distribution.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Query Parameters:**
+- `period` (optional): Time period for analytics. Options: `1d`, `7d`, `30d`, `90d`, `1y`. Default: `30d`
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "period": "30d",
+    "total_transactions": 45,
+    "total_volume_usd": 12500.00,
+    "average_transaction_size": 277.78,
+    "total_fees_paid": 25.50,
+    "transaction_types": {
+      "send": 20,
+      "receive": 15,
+      "swap": 10
+    },
+    "networks_used": {
+      "ethereum": 25,
+      "starknet": 15,
+      "bitcoin": 5
+    },
+    "success_rate": 97.8,
+    "daily_volume": [
+      {
+        "date": "2026-01-01",
+        "volume_usd": 450.00,
+        "count": 3
+      }
+    ]
+  }
+}
+```
+
+### GET `/api/analytics/rewards`
+Get rewards analytics including earned rewards and pending claims.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Query Parameters:**
+- `period` (optional): Time period for analytics. Options: `1d`, `7d`, `30d`, `90d`, `1y`. Default: `30d`
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "period": "30d",
+    "total_rewards_earned": 150.00,
+    "total_rewards_usd": 180.50,
+    "pending_rewards": 25.00,
+    "pending_rewards_usd": 30.00,
+    "rewards_by_protocol": [
+      {
+        "protocol": "Vesu",
+        "amount": 85.50,
+        "asset": "STRK",
+        "value_usd": 102.60
+      }
+    ],
+    "rewards_by_asset": [
+      {
+        "asset": "STRK",
+        "amount": 120.00,
+        "value_usd": 144.00
+      }
+    ],
+    "rewards_over_time": [
+      {
+        "date": "2026-01-01",
+        "amount": 5.50,
+        "value_usd": 6.60
+      }
+    ]
+  }
+}
+```
+
+### GET `/api/analytics/swaps`
+Get swap analytics including volume, pairs, and success rates.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Query Parameters:**
+- `period` (optional): Time period for analytics. Options: `1d`, `7d`, `30d`, `90d`, `1y`. Default: `30d`
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "period": "30d",
+    "total_swaps": 15,
+    "total_volume_usd": 5000.00,
+    "average_swap_size": 333.33,
+    "total_fees_paid": 15.00,
+    "success_rate": 100.0,
+    "popular_pairs": [
+      {
+        "from_asset": "ETH",
+        "to_asset": "STRK",
+        "count": 8,
+        "volume_usd": 3200.00
+      }
+    ],
+    "swaps_by_protocol": [
+      {
+        "protocol": "Atomiq",
+        "count": 15,
+        "volume_usd": 5000.00
+      }
+    ],
+    "daily_volume": [
+      {
+        "date": "2026-01-01",
+        "volume_usd": 250.00,
+        "count": 2
+      }
+    ]
+  }
+}
+```
+
+**Error Responses:**
+
+All analytics endpoints return consistent error responses:
+
+```json
+{
+  "success": false,
+  "error": "Error message description"
+}
+```
+
+**Status Codes:**
+- `200 OK` - Successful request
+- `401 Unauthorized` - Invalid or missing authentication token
+- `500 Internal Server Error` - Server error occurred
+
+**Notes:**
+- All monetary values are in USD unless otherwise specified
+- Percentages are returned as decimal numbers (e.g., 4.69 for 4.69%)
+- Dates are in ISO 8601 format
+- All endpoints require valid JWT authentication
+- Data is user-specific and isolated per account
