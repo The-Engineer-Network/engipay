@@ -216,3 +216,86 @@ CMD ["npm", "start"]
 ## License
 
 MIT License - see LICENSE file for details.
+
+
+## Liquity Protocol Integration
+
+EngiPay now supports Liquity V1 protocol for interest-free borrowing against ETH collateral.
+
+### Features
+
+- **Trove Management**: Open, close, and adjust borrowing positions
+- **Stability Pool**: Deposit LUSD to earn liquidation gains and LQTY rewards
+- **Automated Monitoring**: Real-time health checks and liquidation alerts
+- **Risk Management**: Collateral ratio tracking and auto top-up
+- **Complete API**: RESTful endpoints for all Liquity operations
+
+### Quick Start
+
+1. **Install Liquity SDK:**
+   ```bash
+   npm install @liquity/lib-ethers
+   ```
+
+2. **Configure Environment:**
+   ```env
+   ETHEREUM_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY
+   ETHEREUM_PRIVATE_KEY=0x...
+   LIQUITY_NETWORK=mainnet
+   ```
+
+3. **Setup and Test:**
+   ```bash
+   npm run setup-liquity    # Automated setup
+   npm run sync-db          # Create database tables
+   npm run test-liquity     # Test connection
+   ```
+
+4. **Start Server:**
+   ```bash
+   npm run dev
+   ```
+
+### API Endpoints
+
+All Liquity endpoints are available at `/api/liquity/*`:
+
+- `GET /api/liquity/status` - Service status
+- `GET /api/liquity/price` - Current ETH price
+- `POST /api/liquity/trove/open` - Open new Trove
+- `POST /api/liquity/trove/:id/adjust` - Adjust Trove
+- `POST /api/liquity/stability/deposit` - Deposit to Stability Pool
+- `GET /api/liquity/transactions` - Transaction history
+
+### Documentation
+
+- **Quick Start**: [LIQUITY_QUICKSTART.md](./LIQUITY_QUICKSTART.md)
+- **Full Guide**: [README_LIQUITY_INTEGRATION.md](./README_LIQUITY_INTEGRATION.md)
+- **Deployment**: [LIQUITY_DEPLOYMENT_CHECKLIST.md](./LIQUITY_DEPLOYMENT_CHECKLIST.md)
+- **Examples**: [examples/liquity-usage-example.js](./examples/liquity-usage-example.js)
+
+### NPM Scripts
+
+```bash
+npm run setup-liquity          # Automated setup
+npm run test-liquity           # Test connection
+npm run test-liquity-monitor   # Test monitoring
+npm run liquity-examples       # Run usage examples
+```
+
+### Important Notes
+
+ **Always test on testnet (Goerli/Sepolia) first!**
+
+ **Minimum Requirements:**
+- Minimum debt: 2,000 LUSD
+- Minimum collateral ratio: 110%
+- Recommended CR: 150-200%
+
+ **Security:**
+- Never commit private keys
+- Use environment variables
+- Enable monitoring alerts
+- Maintain safe collateral ratios
+
+For detailed information, see [README_LIQUITY_INTEGRATION.md](./README_LIQUITY_INTEGRATION.md)
