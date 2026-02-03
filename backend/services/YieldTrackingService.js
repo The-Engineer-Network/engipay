@@ -20,6 +20,67 @@ class YieldTrackingService {
   }
 
   /**
+   * Get position yield data (wrapper for calculateTotalYield)
+   * 
+   * @param {string} positionId - Position ID
+   * @returns {Promise<Object>} Position yield data
+   */
+  async getPositionYield(positionId) {
+    try {
+      const totalYield = await this.calculateTotalYield(positionId);
+      const position = await VesuPosition.findByPk(positionId);
+      
+      if (!position) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+
+      return {
+        positionId: position.id,
+        poolAddress: position.pool_address,
+        collateralAsset: position.collateral_asset,
+        debtAsset: position.debt_asset,
+        totalYieldEarned: totalYield.netYield.valueUSD,
+        currentAPY: totalYield.effectiveAPY,
+        supplyYield: totalYield.totalSupplyYield,
+        borrowCost: totalYield.totalBorrowCost,
+        positionAgeDays: totalYield.positionAgeDays,
+        history: []
+      };
+    } catch (error) {
+      console.error('Error getting position yield:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a yield snapshot for a position
+   * 
+   * @param {string} positionId - Position ID
+   * @returns {Promise<Object>} Snapshot data
+   */
+  async createYieldSnapshot(positionId) {
+    try {
+      const position = await VesuPosition.findByPk(positionId);
+      if (!position) {
+        throw new Error(`Position not found: ${positionId}`);
+      }
+
+      const yieldData = await this.calculatePositionYield(position);
+      
+      // In a full implementation, this would save to a snapshots table
+      // For now, return the calculated data
+      return {
+        positionId: position.id,
+        snapshotAt: new Date(),
+        ...yieldData
+      };
+    } catch (error) {
+      console.error('Error creating yield snapshot:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Calculate yield earned on a position since last update
    * 
    * @param {Object} position - VesuPosition instance
