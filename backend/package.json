@@ -13,14 +13,9 @@
     "migrate": "node scripts/run-migrations.js",
     "verify-indexes": "node scripts/verify-indexes.js",
     "test-starknet": "node scripts/test-starknet-connection.js",
-    "test-vesu-config": "node scripts/test-vesu-config.js",
-    "setup-liquity": "node scripts/setup-liquity.js",
-    "test-liquity": "node scripts/test-liquity-connection.js",
-    "test-liquity-monitor": "node scripts/test-liquity-monitor.js",
-    "liquity-examples": "node examples/liquity-usage-example.js"
+    "test-vesu-config": "node scripts/test-vesu-config.js"
   },
   "dependencies": {
-    "@liquity/lib-ethers": "^3.4.0",
     "@starknet-io/types-js": "^0.10.0",
     "axios": "^1.13.4",
     "bcryptjs": "^2.4.3",
@@ -28,7 +23,6 @@
     "cors": "^2.8.6",
     "decimal.js": "^10.6.0",
     "dotenv": "^16.6.1",
-    "ethers": "^5.8.0",
     "express": "^4.22.1",
     "express-fileupload": "^1.4.3",
     "express-rate-limit": "^7.5.1",
