@@ -26,6 +26,7 @@ const analyticsRoutes = require('./routes/analytics');
 const webhookRoutes = require('./routes/webhooks');
 const chipiPayRoutes = require('./routes/chipipay');
 const vesuRoutes = require('./routes/vesu');
+const stakingRoutes = require('./routes/staking');
 const liquityRoutes = require('./routes/liquity');
 
 const app = express();
@@ -140,6 +141,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/chipipay', chipiPayRoutes);
 app.use('/api/vesu', vesuRoutes);
+app.use('/api/staking', stakingRoutes);
 app.use('/api/liquity', liquityRoutes);
 
 // 404 handler
