@@ -7,8 +7,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeftRight, Bitcoin, Coins, Zap, Loader2 } from 'lucide-react';
-import { atomiq, SwapParams, SwapResult, SwapQuote } from '@/lib/atomiq';
-import { xverseWallet } from '@/lib/xverse';
 import { useWallet } from '@/contexts/WalletContext';
 import { toast } from '@/hooks/use-toast';
 
@@ -36,7 +34,7 @@ export function BtcSwap() {
 
     setIsGettingQuote(true);
     try {
-      const quote = await atomiq.getQuote(swapParams);
+      const quote = await getSwapQuote(swapParams);
       setSwapQuote(quote);
     } catch (error) {
       console.error('Error getting quote:', error);
@@ -68,7 +66,7 @@ export function BtcSwap() {
 
       setSwapStatus('Confirming in Wallet...');
 
-      const result: SwapResult = await atomiq.swap(swapParams);
+      const result: SwapResult = await executeSwap(swapParams);
 
       if (result.status === 'failed') {
         throw new Error(result.details.error || 'Swap failed');
@@ -116,7 +114,7 @@ export function BtcSwap() {
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        const status = await atomiq.getSwapStatus(txHash);
+        const status = await checkSwapStatus(txHash);
         if (status === 'confirmed') {
           return true;
         } else if (status === 'failed') {
