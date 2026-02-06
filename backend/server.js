@@ -29,10 +29,10 @@ const webhookRoutes = require('./routes/webhooks');
 const chipiPayRoutes = require('./routes/chipipay');
 const atomiqService = require('./services/atomiqService');
 const vesuRoutes = require('./routes/vesu');
+const stakingRoutes = require('./routes/staking');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-
 // PostgreSQL Database connection
 const sequelize = new Sequelize(
   process.env.DB_NAME || 'engipay_db',
@@ -145,6 +145,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/chipipay', chipiPayRoutes);
 app.use('/api/vesu', vesuRoutes);
+app.use('/api/staking', stakingRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -173,10 +174,10 @@ const startServer = async () => {
   await connectDatabase();
 
   app.listen(PORT, () => {
-    console.log(`🚀 EngiPay Backend server running on port ${PORT}`);
-    console.log(`📊 Health check available at http://localhost:${PORT}/health`);
-    console.log(`🗄️  Database: PostgreSQL`);
-    console.log(`🔄 Cache: ${redisClient ? 'Redis' : 'Disabled'}`);
+    console.log(`EngiPay Backend server running on port ${PORT}`);
+    console.log(` Health check available at http://localhost:${PORT}/health`);
+    console.log(` Database: PostgreSQL`);
+    console.log(`Cache: ${redisClient ? 'Redis' : 'Disabled'}`);
   });
 };
 

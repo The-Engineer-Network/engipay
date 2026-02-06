@@ -227,7 +227,7 @@ User.associate = (models) => {
     as: 'referrals'
   });
 
-  // Other associations
+  // Sequelize model associations only
   User.hasMany(models.Transaction, {
     foreignKey: 'user_id',
     as: 'transactions'
@@ -236,22 +236,20 @@ User.associate = (models) => {
     foreignKey: 'user_id',
     as: 'portfolios'
   });
-  User.hasMany(models.Wallet, {
+  User.hasMany(models.PaymentRequest, {
     foreignKey: 'user_id',
-    as: 'wallets'
+    as: 'payment_requests'
   });
-  User.hasMany(models.Notification, {
+  User.hasMany(models.VesuPosition, {
     foreignKey: 'user_id',
-    as: 'notifications'
+    as: 'vesu_positions'
   });
-  User.hasMany(models.DeFiPosition, {
+  User.hasMany(models.VesuTransaction, {
     foreignKey: 'user_id',
-    as: 'defi_positions'
+    as: 'vesu_transactions'
   });
-  User.hasMany(models.Reward, {
-    foreignKey: 'user_id',
-    as: 'rewards'
-  });
+  
+  
 };
 
 module.exports = User;
