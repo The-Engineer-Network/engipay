@@ -139,37 +139,56 @@ We combine:
 
 ## 🚀 Key Features
 
-### **💳 Payment Features**
-- **⚡ Instant P2P Payments** - Send money instantly to anyone
-- **🏪 Merchant Payments** - Pay businesses with crypto or fiat
-- **📱 QR Code Payments** - Scan to pay anywhere
-- **🔄 Payment Requests** - Request money from contacts
-- **📊 Payment Analytics** - Track spending and income patterns
+### Payment Features
+- **Instant P2P Payments** - Send money instantly to anyone
+- **Private Payments** - Military-grade financial privacy with Tongo Protocol
+- **Merchant Payments** - Pay businesses with crypto or fiat
+- **QR Code Payments** - Scan to pay anywhere
+- **Payment Requests** - Request money from contacts
+- **Payment Analytics** - Track spending and income patterns
+- **Privacy Toggle** - Choose between public and private transactions
 
-### **₿ Bitcoin Integration**
-- **🔗 Direct BTC Support** - Send/receive Bitcoin natively
-- **👛 Xverse Wallet Integration** - Seamless BTC wallet connection
-- **🎨 Ordinals Support** - NFT and inscription trading
-- **💰 BRC-20 Tokens** - Access to Bitcoin-based tokens
+### Bitcoin Integration
+- **Direct BTC Support** - Send/receive Bitcoin natively
+- **Xverse Wallet Integration** - Seamless BTC wallet connection
+- **Private Bitcoin Bridge** - Confidential BTC to StarkNet bridging via Atomiq
+- **Bitcoin DeFi** - Private BTC staking, lending, and yield farming
+- **Ordinals Support** - NFT and inscription trading
+- **BRC-20 Tokens** - Access to Bitcoin-based tokens
 
-### **🔄 DeFi Features**
-- **💱 Cross-Chain Swaps** - BTC ↔ ETH/STRK via Atomiq SDK
-- **🌾 Yield Farming** - Earn rewards by providing liquidity
-- **🏦 Lending & Borrowing** - Earn interest or borrow assets
-- **🎯 Staking** - Stake tokens for governance and rewards
-- **📈 Portfolio Tracking** - Real-time balance monitoring
+### DeFi Features
+- **Cross-Chain Swaps** - BTC ↔ ETH/STRK via Atomiq SDK
+- **Dark Pool Trading** - Private order matching with ZK proofs
+- **Private Yield Farming** - Confidential DeFi positions
+- **Lending & Borrowing** - Private lending with Vesu Protocol
+- **Staking** - Confidential staking positions
+- **Portfolio Tracking** - Real-time balance monitoring with privacy
 
-### **🛡️ Security & Compliance**
-- **🔐 Non-Custodial** - Users control their own funds
-- **🛡️ Smart Contract Audits** - Professional security reviews
-- **📋 KYC/AML Ready** - Compliance framework for regulated markets
-- **🔒 Multi-Sig Protection** - Advanced security for large transactions
+### Privacy & Security Features
+- **ZK Social Login** - Anonymous authentication via Sumo Login
+- **Confidential Transactions** - Hide transaction amounts with Tongo
+- **Private Addresses** - Anonymous recipient addresses
+- **MEV Protection** - Front-running protection for trades
+- **Anonymous Governance** - Private voting with Semaphore Protocol
+- **Non-Custodial** - Users control their own funds
+- **Smart Contract Audits** - Professional security reviews
+- **Multi-Sig Protection** - Advanced security for large transactions
 
-### **📊 Analytics & Insights**
-- **📈 Portfolio Analytics** - Performance tracking and reporting
-- **💡 DeFi Opportunities** - Personalized yield farming recommendations
-- **📊 Spending Insights** - Transaction categorization and trends
-- **🎯 Risk Assessment** - Portfolio risk analysis and recommendations
+### Analytics & Insights
+- **Portfolio Analytics** - Performance tracking with privacy
+- **DeFi Opportunities** - Personalized yield recommendations
+- **Spending Insights** - Transaction categorization and trends
+- **Risk Assessment** - Portfolio risk analysis
+- **Private Reporting** - Confidential financial reports
+
+### User Experience
+- **Mobile-First Design** - Responsive across all devices
+- **Dark/Light Theme** - Customizable interface
+- **Multi-Language Support** - Global accessibility
+- **Real-Time Updates** - Live balance and transaction tracking
+- **Intuitive Navigation** - Seamless user flows
+- **Help Center** - Comprehensive documentation and support
+- **User Onboarding** - Interactive tutorials and guides
 
 ---
 
@@ -365,40 +384,51 @@ We combine:
 
 ## 🗺️ Roadmap
 
-### **Phase 1: MVP Launch (Q4 2024)**
+### Phase 1: MVP Launch (Q4 2024) - COMPLETE
 - ✅ Core payment functionality
+- ✅ Private payments with Tongo Protocol
+- ✅ ZK social login via Sumo
 - ✅ Basic DeFi features (staking, swaps)
-- ✅ Wallet integrations (MetaMask, Xverse)
+- ✅ Wallet integrations (MetaMask, Xverse, Argent, Braavos)
 - ✅ Mobile-responsive web app
 - ✅ StarkNet smart contracts
+- ✅ Privacy toggle for transactions
+- ✅ Help center and user onboarding
+- ✅ Privacy policy and compliance
 
-### **Phase 2: DeFi Expansion (Q1 2025)**
-- 🔄 Advanced yield farming strategies
-- 🔄 Lending and borrowing protocols
-- 🔄 Portfolio analytics dashboard
-- 🔄 Multi-asset portfolio tracking
-- 🔄 Cross-chain bridge integrations
+### Phase 2: DeFi Expansion (Q1 2025) - IN PROGRESS
+- ✅ Advanced yield farming strategies
+- ✅ Private lending and borrowing (Vesu Protocol)
+- ✅ Dark pool trading with ZK proofs
+- ✅ Portfolio analytics dashboard
+- ✅ Multi-asset portfolio tracking
+- ✅ Cross-chain bridge integrations (Atomiq, Garden)
+- 🔄 Private Bitcoin DeFi features
+- 🔄 Anonymous governance with Semaphore
 
-### **Phase 3: Enterprise Features (Q2 2025)**
+### Phase 3: Enterprise Features (Q2 2025)
 - 🏢 Merchant payment solutions
 - 🏢 Business API for integrations
 - 🏢 Advanced compliance features
 - 🏢 White-label solutions
 - 🏢 Institutional-grade security
+- 🏢 Private institutional trading
 
-### **Phase 4: Global Expansion (Q3-Q4 2025)**
+### Phase 4: Global Expansion (Q3-Q4 2025)
 - 🌍 Multi-language support
 - 🌍 Regional regulatory compliance
 - 🌍 Local payment integrations
 - 🌍 Emerging market optimizations
 - 🌍 Global merchant network
+- 🌍 Privacy-first global payments
 
-### **Phase 5: Ecosystem Building (2026)**
+### Phase 5: Ecosystem Building (2026)
 - 🏗️ Governance token launch
 - 🏗️ Developer platform and APIs
 - 🏗️ Third-party integrations
 - 🏗️ Mobile app development
 - 🏗️ Institutional partnerships
+- 🏗️ Privacy infrastructure expansion
 
 ---
 
@@ -479,22 +509,32 @@ We welcome contributions from the community! Here's how to get involved:
 
 ## 🙏 Acknowledgments
 
-### **Technology Partners**
+### Technology Partners
 - **StarkNet** - Revolutionary L2 blockchain infrastructure
+- **Tongo Protocol** - Confidential transactions with ZK proofs
+- **Sumo Login** - ZK social authentication
+- **Semaphore** - Anonymous signaling and governance
 - **Atomiq** - Cross-chain swap protocol
+- **Garden Finance** - Bitcoin bridge infrastructure
+- **Vesu Protocol** - Private lending and borrowing
+- **Ekubo** - DEX integration
 - **Xverse** - Bitcoin wallet integration
 - **Chipi Pay** - Payment processing SDK
 
-### **Open Source**
+### Open Source
 - **Next.js** - The React framework for production
 - **Tailwind CSS** - A utility-first CSS framework
 - **shadcn/ui** - Beautifully designed components
 - **ethers.js** - Complete Ethereum library
+- **Scaffold-Stark** - StarkNet dApp development framework
+- **StarknetKit** - Wallet connection library
+- **OpenZeppelin Cairo** - Secure smart contract library
 
-### **Community**
+### Community
 - **StarkNet Ecosystem** - Amazing developer community
 - **DeFi Community** - Pioneers pushing financial innovation
 - **Web3 Community** - Building the decentralized future
+- **Privacy Advocates** - Champions of financial privacy
 
 ---
 
@@ -510,16 +550,24 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 ## 🚀 Features
 
-- **⚡ Instant Payments**: P2P & Merchant payments powered by Chipi-Pay SDK
-- **🔄 Cross-Chain Swaps**: Seamless BTC ↔ STRK/ETH via Atomiq SDK
-- **₿ Bitcoin Ready**: Direct Bitcoin integration via Xverse Wallet API
-- **💰 DeFi Power Tools**: Lending, borrowing, yield farming, and staking
-- **📊 Real Wallet Balances**: Live display of actual ETH, USDT, and USDC balances
-- **🔗 Seamless Navigation**: Easy access between dashboard and DeFi features
-- **🔌 Wallet Management**: Connect/disconnect wallets with persistent sessions
-- **🏠 Seamless Navigation**: Easy switching between home page and dashboard when logged in
-- **🔒 Enterprise Security**: Built on StarkNet's zero-knowledge rollup technology
-- **📱 Mobile-First**: Responsive design with smooth animations
+- **Instant Payments**: P2P & Merchant payments powered by Chipi-Pay SDK
+- **Private Payments**: Military-grade financial privacy with Tongo Protocol
+- **ZK Social Login**: Anonymous authentication via Sumo Login
+- **Cross-Chain Swaps**: Seamless BTC ↔ STRK/ETH via Atomiq SDK
+- **Bitcoin Ready**: Direct Bitcoin integration via Xverse Wallet API
+- **Private Bitcoin Bridge**: Confidential BTC bridging with Atomiq & Garden
+- **DeFi Power Tools**: Private lending, borrowing, yield farming, and staking
+- **Dark Pool Trading**: Private order matching with ZK proofs
+- **Real Wallet Balances**: Live display of actual ETH, USDT, USDC, and BTC balances
+- **Anonymous Governance**: Private voting with Semaphore Protocol
+- **Seamless Navigation**: Easy access between dashboard and DeFi features
+- **Wallet Management**: Connect/disconnect wallets with persistent sessions
+- **Privacy Toggle**: Choose between public and private transactions
+- **Help Center**: Comprehensive documentation and support
+- **User Onboarding**: Interactive tutorials and guides
+- **Privacy Policy**: Complete privacy and compliance documentation
+- **Enterprise Security**: Built on StarkNet's zero-knowledge rollup technology
+- **Mobile-First**: Responsive design with smooth animations
 
 ## 🛠️ Tech Stack
 

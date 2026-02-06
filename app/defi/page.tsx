@@ -3,52 +3,49 @@
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useWallet } from "@/contexts/WalletContext"
-import Link from "next/link"
-import { Button } from "@/components/ui/button"
-import { ArrowLeft } from "lucide-react"
+import dynamic from "next/dynamic"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader"
 import { DashboardNavigation } from "@/components/dashboard/DashboardNavigation"
 import { TabType } from "@/types/dashboard"
-import { PortfolioOverview } from "@/components/defi/portfolio-overview"
-import { YieldFarming } from "@/components/defi/yield-farming"
-import { LendingBorrowing } from "@/components/defi/lending-borrowing"
-import { ClaimRewards } from "@/components/defi/claim-rewards"
-import { ProfileSettings } from "@/components/defi/profile-settings"
+
+// Dynamically import heavy components
+const PortfolioOverview = dynamic(() => import("@/components/defi/portfolio-overview").then(mod => ({ default: mod.PortfolioOverview })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const YieldFarming = dynamic(() => import("@/components/defi/yield-farming").then(mod => ({ default: mod.YieldFarming })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const LendingBorrowing = dynamic(() => import("@/components/defi/lending-borrowing").then(mod => ({ default: mod.LendingBorrowing })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const ClaimRewards = dynamic(() => import("@/components/defi/claim-rewards").then(mod => ({ default: mod.ClaimRewards })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const ProfileSettings = dynamic(() => import("@/components/defi/profile-settings").then(mod => ({ default: mod.ProfileSettings })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
 
 export default function DeFiPage() {
   const [activeTab, setActiveTab] = useState<TabType>("defi")
   const [defiSubTab, setDefiSubTab] = useState("portfolio")
-  const [isClient, setIsClient] = useState(false)
   const router = useRouter()
   const { isConnected } = useWallet()
 
   useEffect(() => {
-    // Set client flag to prevent hydration issues
-    setIsClient(true)
-
-    // Only check localStorage on client side to prevent hydration mismatch
-    if (typeof window !== 'undefined') {
-      const savedWallet = localStorage.getItem("engipay-wallet")
-      const hasWalletConnection = isConnected || savedWallet
-
-      if (!hasWalletConnection) {
-        router.push('/')
-        return
-      }
+    const savedWallet = localStorage.getItem("engipay-wallet")
+    if (!isConnected && !savedWallet) {
+      router.push('/')
     }
   }, [isConnected, router])
 
-  // Prevent hydration mismatch by not rendering until client-side
-  if (!isClient) {
-    return (
-      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-400 mx-auto mb-4"></div>
-          <p className="text-gray-300">Loading...</p>
-        </div>
-      </div>
-    )
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  if (!mounted) {
+    return null
   }
 
   const handleTabChange = (tab: TabType) => {
