@@ -35,9 +35,9 @@ async function setupDatabase() {
   const client = new Client(config);
 
   try {
-    console.log('🔄 Connecting to PostgreSQL...');
+    console.log(' Connecting to PostgreSQL...');
     await client.connect();
-    console.log('✅ Connected to PostgreSQL');
+    console.log(' Connected to PostgreSQL');
 
     // Check if database exists
     const dbCheck = await client.query(
@@ -46,12 +46,12 @@ async function setupDatabase() {
     );
 
     if (dbCheck.rows.length > 0) {
-      console.log(`⚠️  Database '${dbName}' already exists`);
+      console.log(`  Database '${dbName}' already exists`);
     } else {
       // Create database
-      console.log(`📦 Creating database '${dbName}'...`);
+      console.log(` Creating database '${dbName}'...`);
       await client.query(`CREATE DATABASE ${dbName}`);
-      console.log(`✅ Database '${dbName}' created`);
+      console.log(` Database '${dbName}' created`);
     }
 
     // Check if user exists
@@ -61,18 +61,18 @@ async function setupDatabase() {
     );
 
     if (userCheck.rows.length > 0) {
-      console.log(`⚠️  User '${dbUser}' already exists`);
+      console.log(`  User '${dbUser}' already exists`);
     } else {
       // Create user
-      console.log(`👤 Creating user '${dbUser}'...`);
+      console.log(` Creating user '${dbUser}'...`);
       await client.query(`CREATE USER ${dbUser} WITH PASSWORD '${dbPassword}'`);
-      console.log(`✅ User '${dbUser}' created`);
+      console.log(` User '${dbUser}' created`);
     }
 
     // Grant privileges
-    console.log(`🔑 Granting privileges to '${dbUser}' on '${dbName}'...`);
+    console.log(` Granting privileges to '${dbUser}' on '${dbName}'...`);
     await client.query(`GRANT ALL PRIVILEGES ON DATABASE ${dbName} TO ${dbUser}`);
-    console.log(`✅ Privileges granted`);
+    console.log(` Privileges granted`);
 
     // Close connection to default database
     await client.end();
@@ -81,15 +81,15 @@ async function setupDatabase() {
     const dbConfig = { ...config, database: dbName };
     const dbClient = new Client(dbConfig);
 
-    console.log(`🔄 Connecting to '${dbName}' database...`);
+    console.log(` Connecting to '${dbName}' database...`);
     await dbClient.connect();
-    console.log(`✅ Connected to '${dbName}' database`);
+    console.log(` Connected to '${dbName}' database`);
 
     // Create extensions
     console.log('🔧 Creating PostgreSQL extensions...');
     await dbClient.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
     await dbClient.query('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');
-    console.log('✅ Extensions created');
+    console.log(' Extensions created');
 
     // Grant schema privileges
     await dbClient.query(`GRANT ALL ON SCHEMA public TO ${dbUser}`);
@@ -98,19 +98,19 @@ async function setupDatabase() {
 
     await dbClient.end();
 
-    console.log('\n🎉 Database setup completed successfully!');
+    console.log('\n Database setup completed successfully!');
     console.log('\n📋 Next steps:');
     console.log('1. Update your .env file with the database credentials');
     console.log('2. Run: npm run migrate (if you have migration scripts)');
     console.log('3. Start your application: npm start');
 
-    console.log('\n🔐 Security Reminder:');
+    console.log('\n Security Reminder:');
     console.log('- Change the default database password in production');
     console.log('- Use strong passwords for database users');
     console.log('- Consider using connection pooling in production');
 
   } catch (error) {
-    console.error('❌ Database setup failed:', error.message);
+    console.error(' Database setup failed:', error.message);
     console.log('\n🔍 Troubleshooting:');
     console.log('1. Make sure PostgreSQL is running');
     console.log('2. Check your PostgreSQL credentials');
