@@ -4,7 +4,7 @@ const { sequelize } = require('../config/database');
 
 const models = {};
 
-// List of Sequelize models (PostgreSQL)
+// List of all Sequelize models (PostgreSQL)
 const sequelizeModels = [
   'User',
   'Transaction',
@@ -13,10 +13,26 @@ const sequelizeModels = [
   'VesuPosition',
   'VesuTransaction',
   'VesuPool',
-  'VesuLiquidation'
+  'VesuLiquidation',
+  'StakingPosition',
+  'StakingTransaction',
+  'Wallet',
+  'Notification',
+  'DeFiPosition',
+  'Swap',
+  'SwapQuote',
+  'Reward',
+  'Analytics',
+  'YieldFarm',
+  'SupportTicket',
+  'SupportMessage',
+  'UserOnboarding',
+  'KYCVerification',
+  'HelpArticle',
+  'HelpVideo'
 ];
 
-// Load only Sequelize model files
+// Load all Sequelize model files
 sequelizeModels.forEach(modelName => {
   const filePath = path.join(__dirname, `${modelName}.js`);
   if (fs.existsSync(filePath)) {
@@ -25,7 +41,7 @@ sequelizeModels.forEach(modelName => {
   }
 });
 
-// Set up associations for Sequelize models
+// Set up associations for all models
 Object.keys(models).forEach(modelName => {
   if (models[modelName].associate) {
     models[modelName].associate(models);
@@ -35,15 +51,5 @@ Object.keys(models).forEach(modelName => {
 // Add sequelize instance and Sequelize constructor to models
 models.sequelize = sequelize;
 models.Sequelize = require('sequelize').Sequelize;
-
-// Export Mongoose models separately (they don't need associations)
-models.Wallet = require('./Wallet');
-models.Notification = require('./Notification');
-models.DeFiPosition = require('./DeFiPosition');
-models.Swap = require('./Swap');
-models.SwapQuote = require('./SwapQuote');
-models.Reward = require('./Reward');
-models.Analytics = require('./Analytics');
-models.YieldFarm = require('./YieldFarm');
 
 module.exports = models;

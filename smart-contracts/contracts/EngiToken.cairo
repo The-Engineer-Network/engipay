@@ -3,6 +3,7 @@ mod EngiToken {
     use starknet::ContractAddress;
     use starknet::get_caller_address;
     use starknet::get_block_timestamp;
+    use core::zeroable::Zeroable;
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess
@@ -120,6 +121,9 @@ mod EngiToken {
         balances: Map<ContractAddress, u256>,
         allowances: Map<(ContractAddress, ContractAddress), u256>,
 
+        // Owner
+        owner: ContractAddress,
+
         // Governance Storage
         staking_total: u256,
         staking_balances: Map<ContractAddress, u256>,
@@ -159,6 +163,7 @@ mod EngiToken {
         self.decimals.write(18);
         self.total_supply.write(initial_supply);
         self.balances.write(owner, initial_supply);
+        self.owner.write(owner);
         self.last_update_time.write(get_block_timestamp());
         self.paused.write(false);
 
@@ -244,203 +249,246 @@ mod EngiToken {
         }
     }
 
-    // Internal transfer function
-    fn _transfer(sender: ContractAddress, recipient: ContractAddress, amount: u256) {
-        let sender_balance = self.balances.read(sender);
-        assert(sender_balance >= amount, 'Insufficient balance');
+    // Internal implementations
+    #[generate_trait]
+    impl InternalImpl of InternalTrait {
+        fn _transfer(ref self: ContractState, sender: ContractAddress, recipient: ContractAddress, amount: u256) {
+            let sender_balance = self.balances.read(sender);
+            assert(sender_balance >= amount, 'Insufficient balance');
 
-        self.balances.write(sender, sender_balance - amount);
-        let recipient_balance = self.balances.read(recipient);
-        self.balances.write(recipient, recipient_balance + amount);
+            self.balances.write(sender, sender_balance - amount);
+            let recipient_balance = self.balances.read(recipient);
+            self.balances.write(recipient, recipient_balance + amount);
 
-        Transfer(sender, recipient, amount);
+            self.emit(Transfer { from: sender, to: recipient, value: amount });
+        }
+
+        fn _approve(ref self: ContractState, owner: ContractAddress, spender: ContractAddress, amount: u256) {
+            self.allowances.write((owner, spender), amount);
+            self.emit(Approval { owner, spender, value: amount });
+        }
+
+        fn _update_reward(ref self: ContractState, account: ContractAddress) {
+            let current_time = get_block_timestamp();
+            let time_elapsed = current_time - self.last_update_time.read();
+
+            if time_elapsed > 0 && self.staking_total.read() > 0 {
+                let reward = SafeMath::div(
+                    SafeMath::mul(time_elapsed.into(), self.reward_rate.read()),
+                    self.staking_total.read()
+                );
+                let new_reward_per_token = SafeMath::add(self.reward_per_token_stored.read(), reward);
+                self.reward_per_token_stored.write(new_reward_per_token);
+                self.last_update_time.write(current_time);
+            }
+
+            let user_stake = self.staking_balances.read(account);
+            if user_stake > 0 {
+                let reward_diff = SafeMath::sub(
+                    self.reward_per_token_stored.read(),
+                    self.user_reward_per_token_paid.read(account)
+                );
+                let earned = SafeMath::div(SafeMath::mul(user_stake, reward_diff), 1000000000000000000);
+                let current_rewards = self.rewards.read(account);
+                self.rewards.write(account, SafeMath::add(current_rewards, earned));
+            }
+
+            self.user_reward_per_token_paid.write(account, self.reward_per_token_stored.read());
+        }
     }
 
     // Staking Functions
-    #[external]
-    fn stake(amount: u256) {
-        let account = get_caller_address();
-        assert(amount > 0, 'Cannot stake 0 tokens');
+    #[abi(embed_v0)]
+    impl StakingImpl of IStaking<ContractState> {
+        fn stake(ref self: ContractState, amount: u256) {
+            let account = get_caller_address();
+            assert(amount > 0, 'Cannot stake 0 tokens');
 
-        let balance = self.balances.read(account);
-        assert(balance >= amount, 'Insufficient balance');
+            let balance = self.balances.read(account);
+            assert(balance >= amount, 'Insufficient balance');
 
-        // Update rewards before staking
-        self._update_reward(account);
+            // Update rewards before staking
+            self._update_reward(account);
 
-        // Transfer tokens to contract
-        self._transfer(account, starknet::get_contract_address(), amount);
+            // Transfer tokens to contract
+            self._transfer(account, starknet::get_contract_address(), amount);
 
-        // Update staking balance
-        let current_stake = self.staking_balances.read(account);
-        self.staking_balances.write(account, current_stake + amount);
-        self.staking_total.write(self.staking_total.read() + amount);
+            // Update staking balance
+            let current_stake = self.staking_balances.read(account);
+            let new_stake = SafeMath::add(current_stake, amount);
+            self.staking_balances.write(account, new_stake);
+            let new_total = SafeMath::add(self.staking_total.read(), amount);
+            self.staking_total.write(new_total);
 
-        if (current_stake == 0) {
-            self.staking_timestamps.write(account, starknet::get_block_timestamp());
+            if current_stake == 0 {
+                self.staking_timestamps.write(account, get_block_timestamp());
+            }
+
+            self.emit(Staked { account, amount });
         }
 
-        Staked(account, amount);
-    }
+        fn unstake(ref self: ContractState, amount: u256) {
+            let account = get_caller_address();
+            let staked_balance = self.staking_balances.read(account);
+            assert(staked_balance >= amount, 'Insufficient staked balance');
 
-    #[external]
-    fn unstake(amount: u256) {
-        let account = get_caller_address();
-        let staked_balance = self.staking_balances.read(account);
-        assert(staked_balance >= amount, 'Insufficient staked balance');
+            // Update rewards before unstaking
+            self._update_reward(account);
 
-        // Update rewards before unstaking
-        self._update_reward(account);
+            // Update staking balance
+            let new_stake = SafeMath::sub(staked_balance, amount);
+            self.staking_balances.write(account, new_stake);
+            let new_total = SafeMath::sub(self.staking_total.read(), amount);
+            self.staking_total.write(new_total);
 
-        // Update staking balance
-        self.staking_balances.write(account, staked_balance - amount);
-        self.staking_total.write(self.staking_total.read() - amount);
+            // Transfer tokens back to user
+            self._transfer(starknet::get_contract_address(), account, amount);
 
-        // Transfer tokens back to user
-        self._transfer(starknet::get_contract_address(), account, amount);
+            self.emit(Unstaked { account, amount });
+        }
 
-        Unstaked(account, amount);
-    }
+        fn claim_rewards(ref self: ContractState) {
+            let account = get_caller_address();
+            self._update_reward(account);
 
-    #[external]
-    fn claim_rewards() {
-        let account = get_caller_address();
-        self._update_reward(account);
+            let reward = self.rewards.read(account);
+            assert(reward > 0, 'No rewards to claim');
 
-        let reward = self.rewards.read(account);
-        assert(reward > 0, 'No rewards to claim');
+            self.rewards.write(account, 0);
 
-        self.rewards.write(account, 0);
+            // Mint reward tokens
+            let current_supply = self.total_supply.read();
+            let new_supply = SafeMath::add(current_supply, reward);
+            self.total_supply.write(new_supply);
+            let current_balance = self.balances.read(account);
+            let new_balance = SafeMath::add(current_balance, reward);
+            self.balances.write(account, new_balance);
 
-        // Mint reward tokens (simplified - would need proper minting mechanism)
-        let current_supply = self.total_supply.read();
-        self.total_supply.write(current_supply + reward);
-        self.balances.write(account, self.balances.read(account) + reward);
+            self.emit(RewardsClaimed { account, amount: reward });
+        }
 
-        RewardsClaimed(account, reward);
+        fn get_staked_balance(self: @ContractState, account: ContractAddress) -> u256 {
+            self.staking_balances.read(account)
+        }
+
+        fn get_pending_rewards(self: @ContractState, account: ContractAddress) -> u256 {
+            self.rewards.read(account)
+        }
     }
 
     // Governance Functions
-    #[external]
-    fn create_proposal(description: felt252, duration_days: u64) -> u256 {
-        let proposer = get_caller_address();
-        let staked_balance = self.staking_balances.read(proposer);
-        assert(staked_balance > 0, 'Must have staked tokens to propose');
+    #[abi(embed_v0)]
+    impl GovernanceImpl of IGovernance<ContractState> {
+        fn create_proposal(ref self: ContractState, description: ByteArray, duration_days: u64) -> u256 {
+            let proposer = get_caller_address();
+            let staked_balance = self.staking_balances.read(proposer);
+            assert(staked_balance > 0, 'Must have staked tokens to propose');
 
-        let proposal_id = self.proposal_count.read() + 1;
-        self.proposal_count.write(proposal_id);
+            let proposal_id = SafeMath::add(self.proposal_count.read(), 1);
+            self.proposal_count.write(proposal_id);
 
-        let current_time = starknet::get_block_timestamp();
-        let proposal = Proposal {
-            id: proposal_id,
-            proposer: proposer,
-            description: description,
-            start_time: current_time,
-            end_time: current_time + (duration_days * 86400), // Convert days to seconds
-            executed: false,
-            votes_for: 0,
-            votes_against: 0,
-            votes_abstain: 0,
-        };
+            let current_time = get_block_timestamp();
+            let proposal = Proposal {
+                id: proposal_id,
+                proposer: proposer,
+                description: description.clone(),
+                start_time: current_time,
+                end_time: current_time + (duration_days * 86400),
+                executed: false,
+                votes_for: 0,
+                votes_against: 0,
+                votes_abstain: 0,
+            };
 
-        self.proposals.write(proposal_id, proposal);
+            self.proposals.write(proposal_id, proposal);
 
-        ProposalCreated(proposal_id, proposer, description);
-        proposal_id
-    }
-
-    #[external]
-    fn vote(proposal_id: u256, option: u8) {
-        assert(option <= 2, 'Invalid vote option'); // 0=against, 1=for, 2=abstain
-
-        let voter = get_caller_address();
-        let voting_power = self.staking_balances.read(voter);
-        assert(voting_power > 0, 'Must have staked tokens to vote');
-
-        let mut proposal = self.proposals.read(proposal_id);
-        assert(proposal.id != 0, 'Proposal does not exist');
-        assert(starknet::get_block_timestamp() >= proposal.start_time, 'Voting has not started');
-        assert(starknet::get_block_timestamp() <= proposal.end_time, 'Voting has ended');
-
-        // Check if already voted
-        let existing_vote = self.votes.read((proposal_id, voter));
-        assert(existing_vote == 0, 'Already voted');
-
-        // Record vote
-        self.votes.write((proposal_id, voter), option);
-
-        // Update vote counts
-        if (option == 0) {
-            proposal.votes_against += voting_power;
-        } else if (option == 1) {
-            proposal.votes_for += voting_power;
-        } else {
-            proposal.votes_abstain += voting_power;
+            self.emit(ProposalCreated { proposal_id, proposer, description });
+            proposal_id
         }
 
-        self.proposals.write(proposal_id, proposal);
+        fn vote(ref self: ContractState, proposal_id: u256, option: u8) {
+            assert(option <= 2, 'Invalid vote option');
 
-        Voted(proposal_id, voter, option, voting_power);
-    }
+            let voter = get_caller_address();
+            let voting_power = self.staking_balances.read(voter);
+            assert(voting_power > 0, 'Must have staked tokens to vote');
 
-    // View Functions
-    #[view]
-    fn get_staked_balance(account: ContractAddress) -> u256 {
-        self.staking_balances.read(account)
-    }
+            let mut proposal = self.proposals.read(proposal_id);
+            assert(proposal.id != 0, 'Proposal does not exist');
+            assert(get_block_timestamp() >= proposal.start_time, 'Voting has not started');
+            assert(get_block_timestamp() <= proposal.end_time, 'Voting has ended');
 
-    #[view]
-    fn get_pending_rewards(account: ContractAddress) -> u256 {
-        self._update_reward(account);
-        self.rewards.read(account)
-    }
+            let existing_vote = self.votes.read((proposal_id, voter));
+            assert(existing_vote == 0, 'Already voted');
 
-    #[view]
-    fn get_proposal(proposal_id: u256) -> Proposal {
-        self.proposals.read(proposal_id)
-    }
+            self.votes.write((proposal_id, voter), option + 1);
 
-    #[view]
-    fn get_vote(proposal_id: u256, voter: ContractAddress) -> u8 {
-        self.votes.read((proposal_id, voter))
-    }
+            if option == 0 {
+                proposal.votes_against = SafeMath::add(proposal.votes_against, voting_power);
+            } else if option == 1 {
+                proposal.votes_for = SafeMath::add(proposal.votes_for, voting_power);
+            } else {
+                proposal.votes_abstain = SafeMath::add(proposal.votes_abstain, voting_power);
+            }
 
-    // Internal reward calculation
-    fn _update_reward(account: ContractAddress) {
-        let current_time = starknet::get_block_timestamp();
-        let time_elapsed = current_time - self.last_update_time.read();
+            self.proposals.write(proposal_id, proposal);
 
-        if (time_elapsed > 0 && self.staking_total.read() > 0) {
-            let reward = (time_elapsed.into() * self.reward_rate.read()) / self.staking_total.read().into();
-            self.reward_per_token_stored.write(self.reward_per_token_stored.read() + reward.into());
-            self.last_update_time.write(current_time);
+            self.emit(Voted { proposal_id, voter, option, votes: voting_power });
         }
 
-        let user_stake = self.staking_balances.read(account);
-        if (user_stake > 0) {
-            let earned = (user_stake * (self.reward_per_token_stored.read() - self.user_reward_per_token_paid.read(account))) / (10_u256.pow(18)); // Adjust for decimals
-            self.rewards.write(account, self.rewards.read(account) + earned);
+        fn get_proposal(self: @ContractState, proposal_id: u256) -> Proposal {
+            self.proposals.read(proposal_id)
         }
 
-        self.user_reward_per_token_paid.write(account, self.reward_per_token_stored.read());
+        fn get_vote(self: @ContractState, proposal_id: u256, voter: ContractAddress) -> u8 {
+            let vote = self.votes.read((proposal_id, voter));
+            if vote > 0 { vote - 1 } else { 0 }
+        }
     }
 
     // Admin Functions
-    #[external]
-    fn set_reward_rate(new_rate: u256) {
-        assert(get_caller_address() == self.owner.read(), 'Only owner can set reward rate');
-        self.reward_rate.write(new_rate);
+    #[abi(embed_v0)]
+    impl AdminImpl of IAdmin<ContractState> {
+        fn set_reward_rate(ref self: ContractState, new_rate: u256) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can set reward rate');
+            self.reward_rate.write(new_rate);
+        }
+
+        fn mint_tokens(ref self: ContractState, recipient: ContractAddress, amount: u256) {
+            self.access_control.assert_only_role(MINTER_ROLE);
+
+            let current_supply = self.total_supply.read();
+            let new_supply = SafeMath::add(current_supply, amount);
+            self.total_supply.write(new_supply);
+            let recipient_balance = self.balances.read(recipient);
+            let new_balance = SafeMath::add(recipient_balance, amount);
+            self.balances.write(recipient, new_balance);
+
+            self.emit(Transfer { from: Zeroable::zero(), to: recipient, value: amount });
+        }
     }
+}
 
-    #[external]
-    fn mint_tokens(recipient: ContractAddress, amount: u256) {
-        assert(get_caller_address() == self.owner.read(), 'Only owner can mint tokens');
+// Trait definitions
+#[starknet::interface]
+trait IStaking<TContractState> {
+    fn stake(ref self: TContractState, amount: u256);
+    fn unstake(ref self: TContractState, amount: u256);
+    fn claim_rewards(ref self: TContractState);
+    fn get_staked_balance(self: @TContractState, account: ContractAddress) -> u256;
+    fn get_pending_rewards(self: @TContractState, account: ContractAddress) -> u256;
+}
 
-        let current_supply = self.total_supply.read();
-        self.total_supply.write(current_supply + amount);
-        let recipient_balance = self.balances.read(recipient);
-        self.balances.write(recipient, recipient_balance + amount);
+#[starknet::interface]
+trait IGovernance<TContractState> {
+    fn create_proposal(ref self: TContractState, description: ByteArray, duration_days: u64) -> u256;
+    fn vote(ref self: TContractState, proposal_id: u256, option: u8);
+    fn get_proposal(self: @TContractState, proposal_id: u256) -> EngiToken::Proposal;
+    fn get_vote(self: @TContractState, proposal_id: u256, voter: ContractAddress) -> u8;
+}
 
-        Transfer(0.try_into().unwrap(), recipient, amount);
-    }
+#[starknet::interface]
+trait IAdmin<TContractState> {
+    fn set_reward_rate(ref self: TContractState, new_rate: u256);
+    fn mint_tokens(ref self: TContractState, recipient: ContractAddress, amount: u256);
 }

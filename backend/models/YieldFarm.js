@@ -1,416 +1,130 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/database');
 
-const yieldFarmSchema = new mongoose.Schema({
-  // Farm identification
+const YieldFarm = sequelize.define('YieldFarm', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
   farm_id: {
-    type: String,
-    required: true,
-    unique: true,
-    index: true
+    type: DataTypes.STRING(255),
+    allowNull: false,
+    unique: true
   },
-
-  // Protocol information
   protocol: {
-    type: String,
-    required: true,
-    enum: [
-      'uniswap',     // Uniswap V3 farms
-      'sushiswap',   // SushiSwap farms
-      'pancakeswap', // PancakeSwap farms
-      'curve',       // Curve Finance
-      'balancer',    // Balancer
-      'yearn',       // Yearn Finance
-      'convex',      // Convex Finance
-      'compound',    // Compound
-      'aave',        // Aave
-      'vesu',        // Vesu (Starknet)
-      'zkLend',      // zkLend (Starknet)
-      'other'
-    ],
-    index: true
+    type: DataTypes.ENUM('uniswap', 'sushiswap', 'pancakeswap', 'curve', 'balancer', 'yearn', 'convex', 'compound', 'aave', 'vesu', 'zkLend', 'other'),
+    allowNull: false
   },
-
   protocol_name: {
-    type: String,
-    trim: true
+    type: DataTypes.STRING(100),
+    allowNull: true
   },
-
-  // Farm details
   name: {
-    type: String,
-    required: true,
-    trim: true
+    type: DataTypes.STRING(200),
+    allowNull: false
   },
   description: {
-    type: String,
-    trim: true,
-    maxlength: 1000
+    type: DataTypes.TEXT,
+    allowNull: true
   },
-
-  // Farm type
   type: {
-    type: String,
-    required: true,
-    enum: [
-      'liquidity_pool',    // LP token staking
-      'single_stake',      // Single token staking
-      'dual_farm',         // Farming two tokens
-      'vault',             // Yield vault
-      'auto_compound',     // Auto-compounding vault
-      'leveraged',         // Leveraged farming
-      'other'
-    ],
-    index: true
+    type: DataTypes.ENUM('liquidity_pool', 'single_stake', 'dual_farm', 'vault', 'auto_compound', 'leveraged', 'other'),
+    allowNull: false
   },
-
-  // Farm status
   status: {
-    type: String,
-    required: true,
-    enum: [
-      'active',     // Farm is active
-      'inactive',   // Farm is closed
-      'deprecated', // Farm is deprecated
-      'paused'      // Farm is temporarily paused
-    ],
-    default: 'active',
-    index: true
+    type: DataTypes.ENUM('active', 'inactive', 'deprecated', 'paused'),
+    defaultValue: 'active'
   },
-
-  // Network information
   network: {
-    type: String,
-    required: true,
-    enum: ['ethereum', 'polygon', 'arbitrum', 'optimism', 'starknet', 'bsc', 'avalanche'],
-    index: true
+    type: DataTypes.ENUM('ethereum', 'polygon', 'arbitrum', 'optimism', 'starknet', 'bsc', 'avalanche'),
+    allowNull: false
   },
-
-  // Contract addresses
   farm_contract_address: {
-    type: String,
-    required: true,
-    trim: true,
-    lowercase: true,
-    index: true
+    type: DataTypes.STRING(255),
+    allowNull: false
   },
-  reward_contract_address: {
-    type: String,
-    trim: true,
-    lowercase: true
-  },
-  lp_token_address: {
-    type: String,
-    trim: true,
-    lowercase: true
-  },
-
-  // Token information
   staking_token: {
-    symbol: {
-      type: String,
-      required: true,
-      uppercase: true
-    },
-    name: {
-      type: String,
-      trim: true
-    },
-    address: {
-      type: String,
-      trim: true,
-      lowercase: true
-    },
-    decimals: {
-      type: Number,
-      min: 0,
-      max: 18,
-      default: 18
-    }
+    type: DataTypes.JSONB,
+    defaultValue: {}
   },
-
-  reward_tokens: [{
-    symbol: {
-      type: String,
-      required: true,
-      uppercase: true
-    },
-    name: {
-      type: String,
-      trim: true
-    },
-    address: {
-      type: String,
-      trim: true,
-      lowercase: true
-    },
-    decimals: {
-      type: Number,
-      min: 0,
-      max: 18,
-      default: 18
-    },
-    reward_rate: {
-      type: mongoose.Schema.Types.Decimal128,
-      min: 0
-    },
-    total_rewards: {
-      type: mongoose.Schema.Types.Decimal128,
-      min: 0
-    },
-    remaining_rewards: {
-      type: mongoose.Schema.Types.Decimal128,
-      min: 0
-    }
-  }],
-
-  // Farm metrics
+  reward_tokens: {
+    type: DataTypes.JSONB,
+    defaultValue: []
+  },
   tvl: {
-    type: mongoose.Schema.Types.Decimal128,
-    min: 0,
-    default: 0
+    type: DataTypes.DECIMAL(20, 2),
+    defaultValue: 0
   },
-  tvl_change_24h: {
-    type: mongoose.Schema.Types.Decimal128,
-    default: 0
-  },
-
   total_staked: {
-    type: mongoose.Schema.Types.Decimal128,
-    min: 0,
-    default: 0
+    type: DataTypes.DECIMAL(36, 18),
+    defaultValue: 0
   },
-
-  // APY information
   apy: {
-    type: mongoose.Schema.Types.Decimal128,
-    min: 0
+    type: DataTypes.DECIMAL(10, 4),
+    allowNull: true
   },
   base_apy: {
-    type: mongoose.Schema.Types.Decimal128,
-    min: 0
+    type: DataTypes.DECIMAL(10, 4),
+    allowNull: true
   },
   reward_apy: {
-    type: mongoose.Schema.Types.Decimal128,
-    min: 0
+    type: DataTypes.DECIMAL(10, 4),
+    allowNull: true
   },
-
-  // Risk metrics
   risk_level: {
-    type: String,
-    enum: ['low', 'medium', 'high', 'very_high'],
-    default: 'medium'
+    type: DataTypes.ENUM('low', 'medium', 'high', 'very_high'),
+    defaultValue: 'medium'
   },
-  impermanent_loss_risk: {
-    type: String,
-    enum: ['none', 'low', 'medium', 'high', 'very_high'],
-    default: 'none'
-  },
-
-  // Farm parameters
   min_stake_amount: {
-    type: mongoose.Schema.Types.Decimal128,
-    min: 0
-  },
-  max_stake_amount: {
-    type: mongoose.Schema.Types.Decimal128,
-    min: 0
+    type: DataTypes.DECIMAL(36, 18),
+    allowNull: true
   },
   lock_period_days: {
-    type: Number,
-    min: 0
+    type: DataTypes.INTEGER,
+    allowNull: true
   },
-  withdrawal_fee: {
-    type: mongoose.Schema.Types.Decimal128,
-    min: 0,
-    max: 100
-  },
-  performance_fee: {
-    type: mongoose.Schema.Types.Decimal128,
-    min: 0,
-    max: 100
-  },
-
-  // Farm statistics
   total_stakers: {
-    type: Number,
-    min: 0,
-    default: 0
+    type: DataTypes.INTEGER,
+    defaultValue: 0
   },
-  active_stakers: {
-    type: Number,
-    min: 0,
-    default: 0
+  tags: {
+    type: DataTypes.ARRAY(DataTypes.STRING),
+    defaultValue: []
   },
-
-  // Historical performance
-  performance_history: [{
-    date: {
-      type: Date,
-      required: true
-    },
-    tvl: {
-      type: mongoose.Schema.Types.Decimal128,
-      min: 0
-    },
-    apy: {
-      type: mongoose.Schema.Types.Decimal128,
-      min: 0
-    },
-    total_staked: {
-      type: mongoose.Schema.Types.Decimal128,
-      min: 0
-    }
-  }],
-
-  // Tags and categories
-  tags: [{
-    type: String,
-    trim: true,
-    lowercase: true,
-    maxlength: 20
-  }],
-  category: {
-    type: String,
-    enum: [
-      'dex',
-      'lending',
-      'staking',
-      'liquidity',
-      'yield',
-      'vault',
-      'other'
-    ],
-    default: 'other'
-  },
-
-  // External links
-  links: {
-    website: String,
-    docs: String,
-    discord: String,
-    telegram: String,
-    twitter: String,
-    github: String
-  },
-
-  // Metadata
   metadata: {
-    type: mongoose.Schema.Types.Mixed
-  },
-
-  // Timestamps
-  created_at: {
-    type: Date,
-    default: Date.now
-  },
-  updated_at: {
-    type: Date,
-    default: Date.now
+    type: DataTypes.JSONB,
+    defaultValue: {}
   },
   ends_at: {
-    type: Date
+    type: DataTypes.DATE,
+    allowNull: true
   },
   last_sync: {
-    type: Date,
-    default: Date.now
+    type: DataTypes.DATE,
+    defaultValue: DataTypes.NOW
   }
+}, {
+  tableName: 'yield_farms',
+  timestamps: true,
+  underscored: true,
+  indexes: [
+    {
+      fields: ['protocol', 'network']
+    },
+    {
+      fields: ['type', 'status']
+    },
+    {
+      fields: ['tvl']
+    },
+    {
+      fields: ['apy']
+    },
+    {
+      fields: ['farm_contract_address']
+    }
+  ]
 });
 
-// Indexes for performance
-yieldFarmSchema.index({ protocol: 1, network: 1 });
-yieldFarmSchema.index({ type: 1, status: 1 });
-yieldFarmSchema.index({ tvl: -1 });
-yieldFarmSchema.index({ apy: -1 });
-yieldFarmSchema.index({ network: 1, status: 1 });
-yieldFarmSchema.index({ farm_contract_address: 1 });
-yieldFarmSchema.index({ last_sync: 1 });
-
-// Pre-save middleware
-yieldFarmSchema.pre('save', function(next) {
-  this.updated_at = new Date();
-  next();
-});
-
-// Virtual for whether farm is expired
-yieldFarmSchema.virtual('is_expired').get(function() {
-  return this.ends_at && new Date() > this.ends_at;
-});
-
-// Virtual for days until expiration
-yieldFarmSchema.virtual('days_until_expiry').get(function() {
-  if (!this.ends_at) return null;
-  return Math.max(0, Math.floor((this.ends_at.getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
-});
-
-// Method to check if farm is active
-yieldFarmSchema.methods.isActive = function() {
-  return this.status === 'active' && !this.is_expired;
-};
-
-// Method to calculate estimated daily rewards
-yieldFarmSchema.methods.getEstimatedDailyRewards = function(stakeAmount) {
-  if (!this.apy || !stakeAmount) return 0;
-
-  const apy = parseFloat(this.apy.toString());
-  const stake = parseFloat(stakeAmount.toString());
-
-  // Daily rewards = (stake * APY) / 365
-  return (stake * apy) / 365;
-};
-
-// Method to get farm score (for ranking)
-yieldFarmSchema.methods.getFarmScore = function() {
-  let score = 0;
-
-  // TVL weight (higher TVL = higher score)
-  const tvl = parseFloat(this.tvl?.toString() || '0');
-  score += Math.min(tvl / 1000000, 50); // Max 50 points for TVL
-
-  // APY weight (higher APY = higher score, but cap at reasonable levels)
-  const apy = parseFloat(this.apy?.toString() || '0');
-  score += Math.min(apy / 10, 30); // Max 30 points for APY
-
-  // Risk penalty
-  const riskMultiplier = this.risk_level === 'low' ? 1.2 :
-                        this.risk_level === 'medium' ? 1.0 :
-                        this.risk_level === 'high' ? 0.8 : 0.5;
-  score *= riskMultiplier;
-
-  return Math.round(score);
-};
-
-// Static method to get top farms by network
-yieldFarmSchema.statics.getTopFarms = async function(network, limit = 10, category = null) {
-  const query = {
-    network,
-    status: 'active',
-    $or: [
-      { ends_at: { $exists: false } },
-      { ends_at: { $gt: new Date() } }
-    ]
-  };
-
-  if (category) {
-    query.category = category;
-  }
-
-  return this.find(query)
-    .sort({ apy: -1, tvl: -1 })
-    .limit(limit)
-    .select('farm_id name protocol apy tvl reward_tokens tags category');
-};
-
-// Static method to get farms by protocol
-yieldFarmSchema.statics.getFarmsByProtocol = async function(protocol, network = null) {
-  const query = { protocol, status: 'active' };
-
-  if (network) {
-    query.network = network;
-  }
-
-  return this.find(query)
-    .sort({ apy: -1 })
-    .select('farm_id name network apy tvl reward_tokens tags');
-};
-
-module.exports = mongoose.model('YieldFarm', yieldFarmSchema);
+module.exports = YieldFarm;
