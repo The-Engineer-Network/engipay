@@ -13,8 +13,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { User, Shield, Globe, Bell, Palette, Smartphone, Upload, Camera } from "lucide-react"
+import { useWallet } from "@/contexts/WalletContext"
 
 export function ProfileSettings() {
+  const { walletAddress } = useWallet()
   const [notifications, setNotifications] = useState({
     rewards: true,
     positions: true,
@@ -182,8 +184,7 @@ export function ProfileSettings() {
                       <span className="text-xs font-bold text-primary">0x</span>
                     </div>
                     <div>
-                      {/*Mock blockchain wallet address...*/}
-                      <div className="font-mono text-sm">0x742d...4B2f</div>
+                      <div className="font-mono text-sm">{walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : 'Not connected'}</div>
                       <div className="text-xs text-muted-foreground">Primary wallet</div>
                     </div>
                   </div>
