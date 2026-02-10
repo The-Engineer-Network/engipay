@@ -120,8 +120,7 @@ export function VesuLendingIntegrated() {
       }
     } catch (error) {
       console.error('Error loading balance:', error)
-      // Fallback to mock balance
-      setUserBalance("10.5")
+      setUserBalance("0")
     }
   }
 

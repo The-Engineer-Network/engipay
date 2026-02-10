@@ -81,7 +81,13 @@ export function DeFiCard({ opportunities }: DeFiCardProps) {
       </CardHeader>
       <CardContent>
         <div className="space-y-4">
-          {opportunities.map((opportunity, index) => (
+          {opportunities.length === 0 ? (
+            <div className="text-center py-8">
+              <div className="text-gray-400 text-lg mb-2">No DeFi opportunities available</div>
+              <div className="text-gray-500 text-sm">Check back later for new opportunities</div>
+            </div>
+          ) : (
+            opportunities.map((opportunity, index) => (
             <div
               key={opportunity.id}
               className="p-5 rounded-xl border hover:scale-102 transition-all duration-300 relative overflow-hidden group/item cursor-pointer"
@@ -167,7 +173,7 @@ export function DeFiCard({ opportunities }: DeFiCardProps) {
                 </div>
               </div>
             </div>
-          ))}
+          )))}
         </div>
       </CardContent>
     </Card>

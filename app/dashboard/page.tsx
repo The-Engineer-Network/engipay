@@ -9,7 +9,6 @@ import { BalanceCard } from "@/components/dashboard/BalanceCard"
 import { QuickActions } from "@/components/dashboard/QuickActions"
 import { ActivityCard } from "@/components/dashboard/ActivityCard"
 import { DeFiCard } from "@/components/dashboard/DeFiCard"
-import { mockRecentActivity, mockDeFiOpportunities } from "@/data/dashboardData"
 import { TabType } from "@/types/dashboard"
 
 export default function DashboardPage() {
@@ -143,8 +142,8 @@ export default function DashboardPage() {
         <QuickActions onAction={handleQuickAction} />
 
         <div className="grid lg:grid-cols-2 gap-8">
-          <ActivityCard activities={mockRecentActivity} />
-          <DeFiCard opportunities={mockDeFiOpportunities} />
+          <ActivityCard activities={[]} />
+          <DeFiCard opportunities={[]} />
         </div>
 
         {/* Additional Stats Section */}
@@ -167,7 +166,7 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between">
               <div className="flex-1">
                 <h4 className="text-sm sm:text-lg font-semibold text-blue-400">Active Positions</h4>
-                <p className="text-xl sm:text-2xl font-bold">12</p>
+                <p className="text-xl sm:text-2xl font-bold">0</p>
               </div>
               <div className="w-10 h-10 sm:w-12 sm:h-12 bg-blue-500/20 rounded-full flex items-center justify-center ml-4">
                 <span className="text-lg sm:text-2xl">🎯</span>
@@ -179,7 +178,7 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between">
               <div className="flex-1">
                 <h4 className="text-sm sm:text-lg font-semibold text-purple-400">Avg. APY</h4>
-                <p className="text-xl sm:text-2xl font-bold">14.2%</p>
+                <p className="text-xl sm:text-2xl font-bold">0%</p>
               </div>
               <div className="w-10 h-10 sm:w-12 sm:h-12 bg-purple-500/20 rounded-full flex items-center justify-center ml-4">
                 <span className="text-lg sm:text-2xl">⚡</span>
