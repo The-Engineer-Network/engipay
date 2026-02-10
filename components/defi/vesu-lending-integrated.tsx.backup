@@ -1,0 +1,893 @@
+"use client"
+
+import { useState, useEffect } from "react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Progress } from "@/components/ui/progress"
+import { AlertTriangle, CheckCircle, Loader2, TrendingUp, TrendingDown } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import { useWallet } from "@/contexts/WalletContext"
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
+
+interface Pool {
+  asset: string
+  supplyAPY: string
+  borrowAPY: string
+  totalSupplied: string
+  totalBorrowed: string
+  available: string
+  utilization: number
+}
+
+interface Position {
+  type: 'Supply' | 'Borrow'
+  asset: string
+  amount: string
+  value: string
+  apy: string
+  earned?: string
+  cost?: string
+}
+
+export function VesuLendingIntegrated() {
+  const [selectedAsset, setSelectedAsset] = useState("ETH")
+  const [amount, setAmount] = useState("")
+  const [activeTab, setActiveTab] = useState("supply")
+  const [pools, setPools] = useState<Pool[]>([])
+  const [positions, setPositions] = useState<Position[]>([])
+  const [userBalance, setUserBalance] = useState("0")
+  const [healthFactor, setHealthFactor] = useState<number | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
+  
+  const { toast } = useToast()
+  const { walletAddress } = useWallet()
+
+  useEffect(() => {
+    loadPools()
+    if (walletAddress) {
+      loadUserData()
+    }
+  }, [walletAddress])
+
+  useEffect(() => {
+    if (walletAddress && selectedAsset) {
+      loadBalance()
+    }
+  }, [walletAddress, selectedAsset])
+
+  const loadPools = async () => {
+    setLoading(true)
+    try {
+      const response = await fetch(`${API_URL}/vesu/pools`)
+      const data = await response.json()
+      
+      if (data.success && data.pools) {
+        setPools(data.pools)
+      }
+    } catch (error) {
+      console.error('Error loading pools:', error)
+      toast({
+        title: "Error",
+        description: "Failed to load lending pools",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadUserData = async () => {
+    if (!walletAddress) return
+    
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/vesu/positions`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      })
+      const data = await response.json()
+      
+      if (data.success) {
+        setPositions(data.positions || [])
+        if (data.positions && data.positions.length > 0) {
+          const minHealth = Math.min(...data.positions.map((p: any) => parseFloat(p.health_factor || '0')))
+          setHealthFactor(minHealth)
+        }
+      }
+    } catch (error) {
+      console.error('Error loading positions:', error)
+    }
+  }
+
+  const loadBalance = async () => {
+    // Mock balance for now - in production, fetch from wallet/blockchain
+    setUserBalance("10.5")
+  }
+
+  const handleSupply = async () => {
+    if (!amount || !walletAddress) {
+      toast({
+        title: "Error",
+        description: "Please enter an amount",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/vesu/supply`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          asset: selectedAsset,
+          amount: amount,
+          poolAddress: pools.find(p => p.asset === selectedAsset)?.asset || ''
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully supplied ${amount} ${selectedAsset}`
+        })
+        setAmount("")
+        loadUserData()
+        loadPools()
+      } else {
+        throw new Error(data.error || 'Supply failed')
+      }
+    } catch (error) {
+      console.error('Supply error:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to supply assets",
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleBorrow = async () => {
+    if (!amount || !walletAddress) {
+      toast({
+        title: "Error",
+        description: "Please enter an amount",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/vesu/borrow`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          asset: selectedAsset,
+          amount: amount,
+          poolAddress: pools.find(p => p.asset === selectedAsset)?.asset || ''
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully borrowed ${amount} ${selectedAsset}`
+        })
+        setAmount("")
+        loadUserData()
+        loadPools()
+      } else {
+        throw new Error(data.error || 'Borrow failed')
+      }
+    } catch (error) {
+      console.error('Borrow error:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to borrow assets",
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleWithdraw = async () => {
+    if (!amount || !walletAddress) {
+      toast({
+        title: "Error",
+        description: "Please enter an amount",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/vesu/withdraw`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          asset: selectedAsset,
+          amount: amount,
+          poolAddress: pools.find(p => p.asset === selectedAsset)?.asset || ''
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully withdrew ${amount} ${selectedAsset}`
+        })
+        setAmount("")
+        loadUserData()
+        loadPools()
+      } else {
+        throw new Error(data.error || 'Withdraw failed')
+      }
+    } catch (error) {
+      console.error('Withdraw error:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to withdraw assets",
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleWithdrawPosition = async (asset: string, withdrawAmount: string) => {
+    if (!walletAddress) return
+
+    setIsProcessing(true)
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/vesu/withdraw`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          asset: asset,
+          amount: withdrawAmount,
+          poolAddress: pools.find(p => p.asset === asset)?.asset || ''
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully withdrew ${withdrawAmount} ${asset}`
+        })
+        loadUserData()
+        loadPools()
+      } else {
+        throw new Error(data.error || 'Withdraw failed')
+      }
+    } catch (error) {
+      console.error('Withdraw error:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to withdraw assets",
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleRepay = async () => {
+    if (!amount || !walletAddress) {
+      toast({
+        title: "Error",
+        description: "Please enter an amount",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/vesu/repay`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          asset: selectedAsset,
+          amount: amount,
+          poolAddress: pools.find(p => p.asset === selectedAsset)?.asset || ''
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully repaid ${amount} ${selectedAsset}`
+        })
+        setAmount("")
+        loadUserData()
+        loadPools()
+      } else {
+        throw new Error(data.error || 'Repay failed')
+      }
+    } catch (error) {
+      console.error('Repay error:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to repay debt",
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleRepayPosition = async (asset: string, repayAmount: string) => {
+    if (!walletAddress) return
+
+    setIsProcessing(true)
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch(`${API_URL}/vesu/repay`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          asset: asset,
+          amount: repayAmount,
+          poolAddress: pools.find(p => p.asset === asset)?.asset || ''
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully repaid ${repayAmount} ${asset}`
+        })
+        loadUserData()
+        loadPools()
+      } else {
+        throw new Error(data.error || 'Repay failed')
+      }
+    } catch (error) {
+      console.error('Repay error:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to repay debt",
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const getHealthFactorColor = (hf: number | null) => {
+    if (!hf) return "text-muted-foreground"
+    if (hf >= 2) return "text-green-500"
+    if (hf >= 1.5) return "text-yellow-500"
+    return "text-red-500"
+  }
+
+  const selectedPool = pools.find(p => p.asset === selectedAsset)
+    if (!walletAddress || !selectedAsset) return
+    
+    try {
+      const response = await fetch(`${API_URL}/vesu/balance/${walletAddress}/${selectedAsset}`)
+      const data = await response.json()
+      
+      if (data.success) {
+        setUserBalance(data.balance)
+      }
+    } catch (error) {
+      console.error('Error loading balance:', error)
+    }
+  }
+
+  const handleSupply = async () => {
+    if (!walletAddress || !amount || parseFloat(amount) <= 0) {
+      toast({
+        title: "Invalid Input",
+        description: "Please enter a valid amount",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const response = await fetch(`${API_URL}/vesu/supply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userAddress: walletAddress,
+          asset: selectedAsset,
+          amount: amount
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully supplied ${amount} ${selectedAsset}`
+        })
+        setAmount("")
+        loadPools()
+        loadUserData()
+        loadBalance()
+      } else {
+        throw new Error(data.error || 'Supply failed')
+      }
+    } catch (error: any) {
+      toast({
+        title: "Supply Failed",
+        description: error.message,
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleBorrow = async () => {
+    if (!walletAddress || !amount || parseFloat(amount) <= 0) {
+      toast({
+        title: "Invalid Input",
+        description: "Please enter a valid amount",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const response = await fetch(`${API_URL}/vesu/borrow`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userAddress: walletAddress,
+          asset: selectedAsset,
+          amount: amount
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully borrowed ${amount} ${selectedAsset}`
+        })
+        setAmount("")
+        loadPools()
+        loadUserData()
+      } else {
+        throw new Error(data.error || 'Borrow failed')
+      }
+    } catch (error: any) {
+      toast({
+        title: "Borrow Failed",
+        description: error.message,
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleWithdraw = async (asset: string, withdrawAmount: string) => {
+    if (!walletAddress) return
+
+    setIsProcessing(true)
+    try {
+      const response = await fetch(`${API_URL}/vesu/withdraw`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userAddress: walletAddress,
+          asset: asset,
+          amount: withdrawAmount
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully withdrew ${withdrawAmount} ${asset}`
+        })
+        loadPools()
+        loadUserData()
+        loadBalance()
+      } else {
+        throw new Error(data.error || 'Withdraw failed')
+      }
+    } catch (error: any) {
+      toast({
+        title: "Withdraw Failed",
+        description: error.message,
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleRepay = async (asset: string, repayAmount: string) => {
+    if (!walletAddress) return
+
+    setIsProcessing(true)
+    try {
+      const response = await fetch(`${API_URL}/vesu/repay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userAddress: walletAddress,
+          asset: asset,
+          amount: repayAmount
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully repaid ${repayAmount} ${asset}`
+        })
+        loadPools()
+        loadUserData()
+      } else {
+        throw new Error(data.error || 'Repay failed')
+      }
+    } catch (error: any) {
+      toast({
+        title: "Repay Failed",
+        description: error.message,
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const getHealthFactorColor = (hf: number | null) => {
+    if (!hf) return "text-muted-foreground"
+    if (hf >= 2) return "text-green-500"
+    if (hf >= 1.5) return "text-yellow-500"
+    return "text-red-500"
+  }
+
+  const selectedPool = pools.find(p => p.asset === selectedAsset)
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold">Vesu Lending & Borrowing</h2>
+          <p className="text-muted-foreground">Supply assets to earn yield or borrow against collateral</p>
+        </div>
+        <Badge variant="secondary" className="bg-primary/10 text-primary border-primary/20">
+          Vesu Protocol
+        </Badge>
+      </div>
+
+      {/* Health Factor Alert */}
+      {healthFactor && healthFactor < 1.5 && (
+        <Card className="border-yellow-500/50 bg-yellow-500/10">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-yellow-500" />
+              <div>
+                <p className="font-medium text-yellow-500">Low Health Factor Warning</p>
+                <p className="text-sm text-muted-foreground">
+                  Your health factor is {healthFactor.toFixed(2)}. Consider adding collateral or repaying debt.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Action Panel */}
+      <Card className="gradient-card glow-effect">
+        <CardHeader>
+          <CardTitle>Lend or Borrow Assets</CardTitle>
+          <CardDescription>
+            {activeTab === "supply" 
+              ? "Supply assets to earn interest" 
+              : "Borrow assets using your collateral"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="supply">Supply</TabsTrigger>
+              <TabsTrigger value="borrow">Borrow</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="supply" className="space-y-4 mt-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Asset</Label>
+                  <Select value={selectedAsset} onValueChange={setSelectedAsset}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {pools.map(pool => (
+                        <SelectItem key={pool.asset} value={pool.asset}>
+                          {pool.asset}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Amount</Label>
+                  <Input
+                    type="number"
+                    placeholder="0.00"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {selectedPool && (
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Supply APY</span>
+                    <span className="text-green-500 font-medium flex items-center gap-1">
+                      <TrendingUp className="h-3 w-3" />
+                      {selectedPool.supplyAPY}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Available Balance</span>
+                    <span>{parseFloat(userBalance).toFixed(4)} {selectedAsset}</span>
+                  </div>
+                </div>
+              )}
+
+              <Button 
+                className="w-full" 
+                size="lg"
+                onClick={handleSupply}
+                disabled={isProcessing || !amount || !walletAddress}
+              >
+                {isProcessing ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  `Supply ${selectedAsset}`
+                )}
+              </Button>
+            </TabsContent>
+
+            <TabsContent value="borrow" className="space-y-4 mt-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Asset</Label>
+                  <Select value={selectedAsset} onValueChange={setSelectedAsset}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {pools.map(pool => (
+                        <SelectItem key={pool.asset} value={pool.asset}>
+                          {pool.asset}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Amount</Label>
+                  <Input
+                    type="number"
+                    placeholder="0.00"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {selectedPool && (
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Borrow APY</span>
+                    <span className="text-red-500 font-medium flex items-center gap-1">
+                      <TrendingDown className="h-3 w-3" />
+                      {selectedPool.borrowAPY}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Available to Borrow</span>
+                    <span>{selectedPool.available}</span>
+                  </div>
+                  {healthFactor && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Health Factor</span>
+                      <span className={getHealthFactorColor(healthFactor)}>
+                        {healthFactor.toFixed(2)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <Button 
+                className="w-full" 
+                size="lg"
+                onClick={handleBorrow}
+                disabled={isProcessing || !amount || !walletAddress}
+              >
+                {isProcessing ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  `Borrow ${selectedAsset}`
+                )}
+              </Button>
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
+
+      {/* Market Overview */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Market Overview</CardTitle>
+          <CardDescription>Current lending and borrowing rates</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {pools.map((pool) => (
+                <div
+                  key={pool.asset}
+                  className="p-4 rounded-lg bg-secondary/50 border hover:bg-secondary/70 transition-colors"
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-full bg-primary/20 flex items-center justify-center">
+                        <span className="font-bold text-primary">{pool.asset}</span>
+                      </div>
+                      <span className="font-medium">{pool.asset}</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm text-muted-foreground">Utilization</div>
+                      <div className="font-medium">{pool.utilization}%</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-3">
+                    <div>
+                      <div className="text-muted-foreground">Supply APY</div>
+                      <div className="font-medium text-green-500">{pool.supplyAPY}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Borrow APY</div>
+                      <div className="font-medium text-red-500">{pool.borrowAPY}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Total Supplied</div>
+                      <div className="font-medium">{pool.totalSupplied}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Available</div>
+                      <div className="font-medium">{pool.available}</div>
+                    </div>
+                  </div>
+
+                  <Progress value={pool.utilization} className="h-2" />
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* User Positions */}
+      {positions.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Your Positions</CardTitle>
+            <CardDescription>Active lending and borrowing positions</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {positions.map((position, index) => (
+                <div
+                  key={index}
+                  className="flex items-center justify-between p-4 rounded-lg bg-secondary/50 border"
+                >
+                  <div className="flex items-center gap-4">
+                    <Badge variant={position.type === "Supply" ? "default" : "destructive"}>
+                      {position.type}
+                    </Badge>
+                    <div>
+                      <div className="font-medium">{position.asset}</div>
+                      <div className="text-sm text-muted-foreground">{position.amount}</div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-medium">{position.value}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {position.type === "Supply" ? `+${position.earned}` : `-${position.cost}`} • {position.apy}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => position.type === "Supply" 
+                      ? handleWithdrawPosition(position.asset, position.amount)
+                      : handleRepayPosition(position.asset, position.amount)
+                    }
+                    disabled={isProcessing}
+                  >
+                    {position.type === "Supply" ? "Withdraw" : "Repay"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}

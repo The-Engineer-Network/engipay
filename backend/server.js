@@ -30,6 +30,10 @@ const chipiPayRoutes = require('./routes/chipipay');
 const atomiqService = require('./services/atomiqService');
 const vesuRoutes = require('./routes/vesu');
 const stakingRoutes = require('./routes/staking');
+const helpRoutes = require('./routes/help');
+const supportRoutes = require('./routes/support');
+const onboardingRoutes = require('./routes/onboarding');
+const kycRoutes = require('./routes/kyc');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -146,6 +150,10 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/chipipay', chipiPayRoutes);
 app.use('/api/vesu', vesuRoutes);
 app.use('/api/staking', stakingRoutes);
+app.use('/api/help', helpRoutes);
+app.use('/api/support', supportRoutes);
+app.use('/api/users/onboarding', onboardingRoutes);
+app.use('/api/users/kyc', kycRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

@@ -181,8 +181,10 @@ mod AtomiqAdapter {
         self.emergency_admin.write(owner);
         
         // Set up access control
-        self.access_control._grant_role(DEFAULT_ADMIN_ROLE, owner);
-        self.access_control._grant_role(PAUSER_ROLE, owner);
+        self.access_control.initializer(owner);
+        self.reentrancy_guard.initializer();
+        self.access_control.grant_role(DEFAULT_ADMIN_ROLE, owner);
+        self.access_control.grant_role(PAUSER_ROLE, owner);
         
         // Set default limits
         self.min_swap_amount.write(1000000); // 0.01 STRK (18 decimals)
@@ -199,7 +201,7 @@ mod AtomiqAdapter {
             min_btc_amount: u256
         ) -> u256 {
             self._assert_not_paused();
-            self.reentrancy_guard._start();
+            self.reentrancy_guard.start();
             
             let caller = get_caller_address();
             let current_time = get_block_timestamp();
@@ -267,14 +269,14 @@ mod AtomiqAdapter {
                 expires_at: expires_at,
             });
             
-            self.reentrancy_guard._end();
+            self.reentrancy_guard.end();
             swap_id
         }
 
         /// Confirm swap with StarkNet transaction hash
         fn confirm_swap(ref self: ContractState, swap_id: u256, tx_hash: felt252) {
             self._assert_not_paused();
-            self.access_control._assert_only_role(DEFAULT_ADMIN_ROLE);
+            self.access_control.assert_only_role(DEFAULT_ADMIN_ROLE);
             
             let mut swap = self.swaps.read(swap_id);
             assert(swap.id != 0, 'Swap not found');
@@ -293,7 +295,7 @@ mod AtomiqAdapter {
         /// Complete swap with Bitcoin transaction hash
         fn complete_swap(ref self: ContractState, swap_id: u256, bitcoin_tx_hash: ByteArray) {
             self._assert_not_paused();
-            self.access_control._assert_only_role(DEFAULT_ADMIN_ROLE);
+            self.access_control.assert_only_role(DEFAULT_ADMIN_ROLE);
             
             let mut swap = self.swaps.read(swap_id);
             assert(swap.id != 0, 'Swap not found');
@@ -315,7 +317,7 @@ mod AtomiqAdapter {
 
         /// Refund expired or failed swap
         fn refund_swap(ref self: ContractState, swap_id: u256) {
-            self.reentrancy_guard._start();
+            self.reentrancy_guard.start();
             
             let mut swap = self.swaps.read(swap_id);
             assert(swap.id != 0, 'Swap not found');
@@ -325,7 +327,7 @@ mod AtomiqAdapter {
             
             // Check if caller is authorized to refund
             let is_user = caller == swap.user;
-            let is_admin = self.access_control._has_role(DEFAULT_ADMIN_ROLE, caller);
+            let is_admin = self.access_control.has_role(DEFAULT_ADMIN_ROLE, caller);
             let is_expired = current_time > swap.expires_at;
             
             assert(is_user || is_admin, 'Unauthorized');
@@ -357,7 +359,7 @@ mod AtomiqAdapter {
                 refund_amount: refund_amount,
             });
             
-            self.reentrancy_guard._end();
+            self.reentrancy_guard.end();
         }
 
         /// Get swap details
@@ -377,7 +379,7 @@ mod AtomiqAdapter {
 
         /// Admin: Add supported token
         fn add_supported_token(ref self: ContractState, token: ContractAddress, fee: u256) {
-            self.access_control._assert_only_role(DEFAULT_ADMIN_ROLE);
+            self.access_control.assert_only_role(DEFAULT_ADMIN_ROLE);
             
             self.supported_tokens.write(token, true);
             self.token_fees.write(token, fee);
@@ -387,7 +389,7 @@ mod AtomiqAdapter {
 
         /// Admin: Remove supported token
         fn remove_supported_token(ref self: ContractState, token: ContractAddress) {
-            self.access_control._assert_only_role(DEFAULT_ADMIN_ROLE);
+            self.access_control.assert_only_role(DEFAULT_ADMIN_ROLE);
             
             self.supported_tokens.write(token, false);
             
@@ -396,7 +398,7 @@ mod AtomiqAdapter {
 
         /// Admin: Update platform fee
         fn update_platform_fee(ref self: ContractState, new_fee: u256) {
-            self.access_control._assert_only_role(DEFAULT_ADMIN_ROLE);
+            self.access_control.assert_only_role(DEFAULT_ADMIN_ROLE);
             
             let old_fee = self.platform_fee.read();
             self.platform_fee.write(new_fee);
@@ -406,7 +408,7 @@ mod AtomiqAdapter {
 
         /// Emergency: Pause contract
         fn emergency_pause(ref self: ContractState) {
-            self.access_control._assert_only_role(PAUSER_ROLE);
+            self.access_control.assert_only_role(PAUSER_ROLE);
             
             self.paused.write(true);
             
@@ -415,7 +417,7 @@ mod AtomiqAdapter {
 
         /// Emergency: Unpause contract
         fn emergency_unpause(ref self: ContractState) {
-            self.access_control._assert_only_role(PAUSER_ROLE);
+            self.access_control.assert_only_role(PAUSER_ROLE);
             
             self.paused.write(false);
             

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,66 +9,195 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Progress } from "@/components/ui/progress"
-import { AlertTriangle, CheckCircle } from "lucide-react"
+import { AlertTriangle, CheckCircle, Loader2 } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import { useWallet } from "@/contexts/WalletContext"
 
-const lendingPools = [
-  {
-    asset: "ETH",
-    totalSupplied: "234.5 ETH",
-    supplyAPY: "4.2%",
-    totalBorrowed: "187.3 ETH",
-    borrowAPY: "6.8%",
-    utilization: 80,
-    available: "47.2 ETH",
-  },
-  {
-    asset: "STRK",
-    totalSupplied: "15,678 STRK",
-    supplyAPY: "8.9%",
-    totalBorrowed: "12,145 STRK",
-    borrowAPY: "12.3%",
-    utilization: 77,
-    available: "3,533 STRK",
-  },
-  {
-    asset: "USDC",
-    totalSupplied: "67,890 USDC",
-    supplyAPY: "3.1%",
-    totalBorrowed: "45,234 USDC",
-    borrowAPY: "5.7%",
-    utilization: 67,
-    available: "22,656 USDC",
-  },
-]
-
-const userPositions = [
-  {
-    type: "Supply",
-    asset: "ETH",
-    amount: "0.85 ETH",
-    value: "$1,680",
-    apy: "4.2%",
-    earned: "$7.06",
-    healthFactor: null,
-  },
-  {
-    type: "Borrow",
-    asset: "USDC",
-    amount: "800 USDC",
-    value: "$800",
-    apy: "5.7%",
-    cost: "$3.80",
-    healthFactor: 2.1,
-  },
-]
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
 
 export function LendingBorrowing() {
   const [selectedAsset, setSelectedAsset] = useState("ETH")
   const [amount, setAmount] = useState("")
   const [activeTab, setActiveTab] = useState("supply")
+  const [lendingPools, setLendingPools] = useState<any[]>([])
+  const [userPositions, setUserPositions] = useState<any[]>([])
+  const [userBalance, setUserBalance] = useState("0")
+  const [healthFactor, setHealthFactor] = useState<number | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
+  
+  const { toast } = useToast()
+  const { walletAddress } = useWallet()
 
-  return (
-    <div className="space-y-6">
+  // Load data on mount and when wallet changes
+  useEffect(() => {
+    if (walletAddress) {
+      loadLendingData()
+      loadUserPositions()
+    }
+  }, [walletAddress])
+
+  // Load lending pools data
+  const loadLendingData = async () => {
+    setLoading(true)
+    try {
+      const response = await fetch(`${API_URL}/vesu/pools`)
+      const data = await response.json()
+      
+      if (data.success) {
+        setLendingPools(data.pools || [])
+      }
+    } catch (error) {
+      console.error('Error loading lending data:', error)
+      toast({
+        title: "Error",
+        description: "Failed to load lending pools",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Load user positions
+  const loadUserPositions = async () => {
+    if (!walletAddress) return
+    
+    try {
+      const response = await fetch(`${API_URL}/vesu/positions/${walletAddress}`)
+      const data = await response.json()
+      
+      if (data.success) {
+        setUserPositions(data.positions || [])
+        setHealthFactor(data.healthFactor)
+      }
+    } catch (error) {
+      console.error('Error loading user positions:', error)
+    }
+  }
+
+  // Get user balance for selected asset
+  const getUserBalance = async (asset: string) => {
+    if (!walletAddress) return
+    
+    try {
+      const response = await fetch(`${API_URL}/vesu/balance/${walletAddress}/${asset}`)
+      const data = await response.json()
+      
+      if (data.success) {
+        setUserBalance(data.balance)
+      }
+    } catch (error) {
+      console.error('Error loading balance:', error)
+    }
+  }
+
+  // Handle supply
+  const handleSupply = async () => {
+    if (!walletAddress || !amount || parseFloat(amount) <= 0) {
+      toast({
+        title: "Invalid Input",
+        description: "Please enter a valid amount",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const response = await fetch(`${API_URL}/vesu/supply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userAddress: walletAddress,
+          asset: selectedAsset,
+          amount: amount
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully supplied ${amount} ${selectedAsset}`
+        })
+        setAmount("")
+        loadLendingData()
+        loadUserPositions()
+      } else {
+        throw new Error(data.error || 'Supply failed')
+      }
+    } catch (error: any) {
+      toast({
+        title: "Supply Failed",
+        description: error.message,
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  // Handle borrow
+  const handleBorrow = async () => {
+    if (!walletAddress || !amount || parseFloat(amount) <= 0) {
+      toast({
+        title: "Invalid Input",
+        description: "Please enter a valid amount",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const response = await fetch(`${API_URL}/vesu/borrow`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userAddress: walletAddress,
+          asset: selectedAsset,
+          amount: amount
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully borrowed ${amount} ${selectedAsset}`
+        })
+        setAmount("")
+        loadLendingData()
+        loadUserPositions()
+      } else {
+        throw new Error(data.error || 'Borrow failed')
+      }
+    } catch (error: any) {
+      toast({
+        title: "Borrow Failed",
+        description: error.message,
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  // Handle withdraw
+  const handleWithdraw = async (positionAsset: string, positionAmount: string) => {
+    if (!walletAddress) return
+
+    setIsProcessing(true)
+    try {
+      const response = await fetch(`${API_URL}/vesu/withdraw`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userAddress: walletAddress,
+          asset: positi
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

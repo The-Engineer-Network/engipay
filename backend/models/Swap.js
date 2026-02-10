@@ -1,75 +1,99 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/database');
 
-const swapSchema = new mongoose.Schema({
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+const Swap = sequelize.define('Swap', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
   },
-  fromToken: {
-    type: String,
-    required: true,
-    enum: ['BTC', 'ETH', 'STRK', 'USDT', 'USDC']
+  user_id: {
+    type: DataTypes.UUID,
+    allowNull: false,
+    references: {
+      model: 'users',
+      key: 'id'
+    },
+    onDelete: 'CASCADE'
   },
-  toToken: {
-    type: String,
-    required: true,
-    enum: ['BTC', 'ETH', 'STRK', 'USDT', 'USDC']
+  from_token: {
+    type: DataTypes.ENUM('BTC', 'ETH', 'STRK', 'USDT', 'USDC'),
+    allowNull: false
+  },
+  to_token: {
+    type: DataTypes.ENUM('BTC', 'ETH', 'STRK', 'USDT', 'USDC'),
+    allowNull: false
   },
   amount: {
-    type: Number,
-    required: true
+    type: DataTypes.DECIMAL(36, 18),
+    allowNull: false
   },
-  expectedOutput: {
-    type: Number,
-    required: true
+  expected_output: {
+    type: DataTypes.DECIMAL(36, 18),
+    allowNull: false
   },
-  actualOutput: {
-    type: Number,
-    default: null
+  actual_output: {
+    type: DataTypes.DECIMAL(36, 18),
+    allowNull: true
   },
   fee: {
-    type: Number,
-    default: 0
+    type: DataTypes.DECIMAL(36, 18),
+    defaultValue: 0
   },
   slippage: {
-    type: Number,
-    default: 0.5
+    type: DataTypes.DECIMAL(5, 2),
+    defaultValue: 0.5
   },
   status: {
-    type: String,
-    enum: ['pending', 'processing', 'completed', 'failed', 'refunded'],
-    default: 'pending'
+    type: DataTypes.ENUM('pending', 'processing', 'completed', 'failed', 'refunded'),
+    defaultValue: 'pending'
   },
-  txHash: {
-    type: String,
-    required: true,
+  tx_hash: {
+    type: DataTypes.STRING(255),
+    allowNull: false,
     unique: true
   },
-  blockchainTxHash: {
-    type: String,
-    default: null
+  blockchain_tx_hash: {
+    type: DataTypes.STRING(255),
+    allowNull: true
   },
-  atomiqSwapId: {
-    type: String,
-    required: true
+  atomiq_swap_id: {
+    type: DataTypes.STRING(255),
+    allowNull: false
   },
-  walletAddress: {
-    type: String,
-    required: true
+  wallet_address: {
+    type: DataTypes.STRING(255),
+    allowNull: false
   },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
-  },
-  completedAt: {
-    type: Date,
-    default: null
+  completed_at: {
+    type: DataTypes.DATE,
+    allowNull: true
   }
+}, {
+  tableName: 'swaps',
+  timestamps: true,
+  underscored: true,
+  indexes: [
+    {
+      fields: ['user_id']
+    },
+    {
+      fields: ['tx_hash']
+    },
+    {
+      fields: ['status']
+    },
+    {
+      fields: ['user_id', 'created_at']
+    }
+  ]
 });
 
-module.exports = mongoose.model('Swap', swapSchema);
+Swap.associate = (models) => {
+  Swap.belongsTo(models.User, {
+    foreignKey: 'user_id',
+    as: 'user'
+  });
+};
+
+module.exports = Swap;
