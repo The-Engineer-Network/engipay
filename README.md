@@ -2,9 +2,9 @@
 
 ![EngiPay Logo](public/placeholder-logo.png)
 
-> **A Complete Web3 Payment Ecosystem Built on StarkNet**
+> **The Future of Private Cross-Chain Payments on StarkNet**
 
-EngiPay is a production-ready Web3 payment platform that combines instant payments, escrow protection, and cross-chain swaps into one seamless experience. Built for the hackathon with real blockchain integration and a beautiful, intuitive interface.
+EngiPay is a production-ready Web3 payment platform that combines instant payments, escrow protection, and cross-chain swaps into one seamless experience. Built on StarkNet to leverage zero-knowledge technology for future privacy features. Phase 1 delivers the core infrastructure, Phase 2 will introduce ZK-powered private transactions.
 
 ---
 
@@ -402,6 +402,57 @@ engipay/
 
 ---
 
+## 🔮 Privacy Roadmap - Coming Soon
+
+### Why StarkNet for EngiPay?
+
+We chose StarkNet specifically for its native ZK-SNARK technology, which will enable true privacy in payments. While Phase 1 delivers the core payment infrastructure, Phase 2 will leverage StarkNet's zero-knowledge capabilities to make EngiPay the first truly private cross-chain payment platform.
+
+### Phase 2: ZK Privacy Layer (Q2 2024)
+
+**Planned Privacy Features:**
+
+1. **Private Transactions**
+   - Hide transaction amounts using ZK-SNARKs
+   - Optional stealth addresses for recipient privacy
+   - Zero-knowledge proofs for transaction validity
+   - Selective disclosure for compliance
+
+2. **Private Escrow**
+   - Encrypted escrow amounts
+   - Private payment requests
+   - Zero-knowledge proof of funds
+   - Privacy-preserving dispute resolution
+
+3. **Private Cross-Chain Swaps**
+   - Hidden swap amounts
+   - Private liquidity pools
+   - Anonymous cross-chain transfers
+   - ZK proof of swap completion
+
+4. **Privacy Controls**
+   - User-controlled privacy levels
+   - "Private Mode" toggle in UI
+   - Transparent vs. private transaction options
+   - Privacy analytics dashboard
+
+**Technical Implementation:**
+- StarkNet's native STARK proofs
+- Cairo smart contracts with privacy primitives
+- Account abstraction for enhanced privacy
+- Integration with privacy-focused protocols
+
+**Why Not Now?**
+Privacy is fundamental to payments, but we're building it right. Phase 1 establishes the infrastructure, Phase 2 adds privacy without compromising the user experience or security. We're committed to production-grade privacy, not demo-grade features.
+
+**Timeline:**
+- Q2 2024: ZK privacy research and design
+- Q3 2024: Smart contract development
+- Q4 2024: Testing and audit
+- Q1 2025: Mainnet privacy launch
+
+---
+
 ## 🏆 Competitive Advantages
 
 ### 1. Completeness
@@ -415,6 +466,7 @@ engipay/
 - Escrow protection system
 - QR code payments
 - Multi-wallet support
+- **Privacy-first architecture** (coming Q2 2024)
 
 ### 3. User Experience
 - Banking app quality UI
@@ -427,6 +479,7 @@ engipay/
 - Comprehensive testing
 - Security best practices
 - Well-documented code
+- **Built on StarkNet for future privacy features**
 
 ---
 
