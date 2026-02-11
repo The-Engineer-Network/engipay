@@ -140,29 +140,21 @@ router.post('/atomiq/initiate', authenticateToken, [
       }
     });
 
-    // For now, simulate the swap initiation
-    // In production, this would call the actual Atomiq SDK
+    // Return swap result for frontend to execute
     const swapResult = {
       id: transactionId,
+      atomiq_swap_id: quoteId,
       fromToken,
       toToken,
       fromAmount,
       toAmount,
-      status: 'pending',
+      status: 'pending_execution',
       txHash: null,
       createdAt: new Date().toISOString(),
-      estimatedTime: '10-30 minutes'
+      estimatedTime: '10-30 minutes',
+      requires_execution: true,
+      instructions: 'Execute swap with your wallet to complete the transaction'
     };
-
-    // Update transaction status
-    await transaction.update({
-      status: 'submitted',
-      tx_hash: `0x${Math.random().toString(16).substring(2, 66)}`, // Mock tx hash
-      metadata: {
-        ...transaction.metadata,
-        submitted_at: new Date().toISOString()
-      }
-    });
 
     res.json({
       swap: swapResult,
@@ -333,6 +325,78 @@ router.get('/atomiq/refundable', authenticateToken, async (req, res) => {
       error: {
         code: 'REFUNDABLE_ERROR',
         message: 'Failed to get refundable swaps',
+        details: error.message
+      }
+    });
+  }
+});
+
+// POST /api/swap/atomiq/:swapId/execute - Execute swap
+router.post('/atomiq/:swapId/execute', authenticateToken, [
+  body('tx_hash').isString().notEmpty().withMessage('Transaction hash is required'),
+  body('direction').isIn(['btc_to_strk', 'strk_to_btc']).withMessage('Invalid swap direction')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid input data',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { swapId } = req.params;
+    const { tx_hash, direction } = req.body;
+
+    // Find transaction in database
+    const transaction = await Transaction.findOne({
+      where: {
+        transaction_id: swapId,
+        user_id: req.user.id
+      }
+    });
+
+    if (!transaction) {
+      return res.status(404).json({
+        error: {
+          code: 'TRANSACTION_NOT_FOUND',
+          message: 'Transaction not found'
+        }
+      });
+    }
+
+    // Update transaction with hash
+    await transaction.update({
+      tx_hash: tx_hash,
+      status: 'executing',
+      metadata: {
+        ...transaction.metadata,
+        executed_at: new Date().toISOString(),
+        direction
+      }
+    });
+
+    console.log(`✅ Swap ${swapId} executing with tx_hash: ${tx_hash}`);
+
+    res.json({
+      success: true,
+      swap_id: swapId,
+      tx_hash,
+      status: 'executing',
+      explorer_url: direction === 'btc_to_strk' 
+        ? `https://mempool.space/tx/${tx_hash}`
+        : `https://starkscan.co/tx/${tx_hash}`,
+      message: 'Swap execution submitted successfully'
+    });
+  } catch (error) {
+    console.error('Execute swap error:', error);
+    res.status(500).json({
+      error: {
+        code: 'EXECUTION_FAILED',
+        message: 'Failed to execute swap',
         details: error.message
       }
     });

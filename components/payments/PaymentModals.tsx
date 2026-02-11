@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { toast } from '@/hooks/use-toast'
 import { Send, ArrowLeftRight, QrCode, Building2, Copy, Check, X } from 'lucide-react'
 import { paymentService, escrowService } from '@/lib/starknet'
+import { QRScanner } from './QRScanner'
 
 interface PaymentModalsProps {
   activeModal: 'send' | 'request' | 'qr' | 'merchant' | null
@@ -468,40 +469,34 @@ export function PaymentModals({ activeModal, onClose }: PaymentModalsProps) {
 
       {/* QR Code Modal */}
       {activeModal === 'qr' && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-          <Card className="glassmorphism max-w-md w-full border-primary/30">
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <QrCode className="w-5 h-5 text-primary" />
-                Scan QR Code
-              </CardTitle>
-              <Button variant="ghost" size="icon" onClick={handleClose}>
-                <X className="w-4 h-4" />
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="bg-white p-8 rounded-lg flex items-center justify-center">
-                <div className="text-center">
-                  <QrCode className="w-32 h-32 mx-auto text-black mb-4" />
-                  <p className="text-black text-sm font-medium">QR Scanner Coming Soon</p>
-                  <p className="text-gray-600 text-xs mt-2">
-                    Camera access required
-                  </p>
-                </div>
-              </div>
-              <p className="text-sm text-muted-foreground text-center">
-                Scan a QR code to quickly send payments or connect with merchants
-              </p>
-              <Button
-                onClick={handleClose}
-                variant="outline"
-                className="w-full"
-              >
-                Close
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+        <QRScanner
+          onScan={(data) => {
+            // Handle scanned QR code data
+            if (data.address) {
+              setModalRecipient(data.address);
+            }
+            if (data.amount) {
+              setModalAmount(data.amount);
+            }
+            if (data.token || data.asset) {
+              setModalAsset(data.token || data.asset);
+            }
+            if (data.description || data.memo) {
+              setModalMemo(data.description || data.memo);
+            }
+            
+            // Switch to send payment modal
+            onClose();
+            setTimeout(() => {
+              // This would need to be handled by parent component
+              toast({
+                title: 'QR Code Scanned',
+                description: 'Payment details loaded. Please open Send Payment to continue.',
+              });
+            }, 100);
+          }}
+          onClose={onClose}
+        />
       )}
 
       {/* Merchant Payment Modal */}

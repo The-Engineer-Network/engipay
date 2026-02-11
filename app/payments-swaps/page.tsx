@@ -36,6 +36,9 @@ const BtcSwap = dynamic(() => import("@/components/payments/BtcSwap").then(mod =
 const PaymentModals = dynamic(() => import("@/components/payments/PaymentModals").then(mod => ({ default: mod.PaymentModals })), {
   ssr: false
 })
+const TransactionHistory = dynamic(() => import("@/components/payments/TransactionHistory").then(mod => ({ default: mod.TransactionHistory })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-96 rounded-lg" />
+})
 
 export default function PaymentsSwapsPage() {
   const [activeTab, setActiveTab] = useState<TabType>("payments")
@@ -116,36 +119,6 @@ export default function PaymentsSwapsPage() {
     { symbol: "STRK", name: "Starknet" },
   ]
 
-  const mockTransactions = [
-    {
-      id: 1,
-      type: "Payment",
-      amount: "-0.05 ETH",
-      to: "0x1234...5678",
-      date: "2024-01-15",
-      status: "Completed",
-      asset: "ETH",
-    },
-    {
-      id: 2,
-      type: "Swap",
-      amount: "+0.1 STRK",
-      from: "0.02 BTC",
-      date: "2024-01-14",
-      status: "Completed",
-      asset: "STRK",
-    },
-    {
-      id: 3,
-      type: "Payment",
-      amount: "+0.2 ETH",
-      from: "merchant@example.com",
-      date: "2024-01-13",
-      status: "Pending",
-      asset: "ETH",
-    },
-  ]
-
   const handleQuickPayment = (type: string) => {
     console.log(`Payment action: ${type}`)
     // Payment actions are handled by the modal system
@@ -214,56 +187,11 @@ export default function PaymentsSwapsPage() {
 
         {/* Transaction History */}
         <section>
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-3xl font-bold flex items-center gap-2">
-              <Clock className="w-8 h-8 text-primary" />
-              Transaction History
-            </h2>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm">
-                <Filter className="w-4 h-4 mr-2" />
-                Filter
-              </Button>
-              <Button variant="outline" size="sm">
-                <Calendar className="w-4 h-4 mr-2" />
-                Date
-              </Button>
-            </div>
-          </div>
-          <Card className="glassmorphism">
-            <CardContent className="p-0">
-              <ScrollArea className="h-96">
-                <div className="divide-y divide-border">
-                  {mockTransactions.map((tx) => (
-                    <div key={tx.id} className="p-4 hover:bg-muted/10 transition-colors">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className={`p-2 rounded-full ${tx.type === 'Payment' ? 'bg-[#22D3EE]/20' : 'bg-[#34D399]/20'}`}>
-                            {tx.type === 'Payment' ? <Send className="w-4 h-4" /> : <ArrowLeftRight className="w-4 h-4" />}
-                          </div>
-                          <div>
-                            <p className="font-medium">{tx.type}</p>
-                            <p className="text-sm text-muted-foreground">
-                              {tx.type === 'Payment' ? `To: ${tx.to}` : `From: ${tx.from}`}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className={`font-semibold ${tx.amount.startsWith('-') ? 'text-red-500' : 'text-green-500'}`}>
-                            {tx.amount}
-                          </p>
-                          <p className="text-sm text-muted-foreground">{tx.date}</p>
-                        </div>
-                        <Badge variant={tx.status === 'Completed' ? 'default' : 'secondary'}>
-                          {tx.status}
-                        </Badge>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
+          <h2 className="text-3xl font-bold mb-6 flex items-center gap-2">
+            <Clock className="w-8 h-8 text-primary" />
+            Transaction History
+          </h2>
+          <TransactionHistory />
         </section>
 
         {/* Payment Modals */}

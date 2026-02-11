@@ -1,0 +1,116 @@
+{
+  "abi": [
+    {
+      "name": "create_payment_request",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "recipient",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "token",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "expiry_hours",
+          "type": "core::integer::u64"
+        },
+        {
+          "name": "memo",
+          "type": "core::felt252"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "external"
+    },
+    {
+      "name": "accept_payment",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::bool"
+        }
+      ],
+      "state_mutability": "external"
+    },
+    {
+      "name": "reject_payment",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::bool"
+        }
+      ],
+      "state_mutability": "external"
+    },
+    {
+      "name": "get_payment_request",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "(core::starknet::contract_address::ContractAddress, core::starknet::contract_address::ContractAddress, core::integer::u256, core::starknet::contract_address::ContractAddress, core::integer::u64, core::integer::u8, core::felt252)"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_user_requests",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "user",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::array::Array::<core::integer::u256>"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "cancel_request",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::bool"
+        }
+      ],
+      "state_mutability": "external"
+    }
+  ]
+}

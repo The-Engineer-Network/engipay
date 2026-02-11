@@ -222,31 +222,13 @@ router.post('/send', authenticateToken, [
       }
     });
 
-    // TODO: Here you would integrate with actual blockchain/wallet
-    // For now, we'll simulate the transaction hash
-    const mockTxHash = `0x${Math.random().toString(16).substring(2, 66)}`;
-
-    // Update transaction with hash
-    await transaction.update({
-      tx_hash: mockTxHash,
-      status: 'submitted'
-    });
-
-    // TODO: Start monitoring transaction status
-    // This would typically involve:
-    // 1. Submitting to blockchain
-    // 2. Starting confirmation monitoring
-    // 3. Updating status as confirmations come in
-
-    res.json({
-      transaction_id: transaction.transaction_id,
-      tx_hash: transaction.tx_hash,
-      status: transaction.status,
-      estimated_completion: new Date(Date.now() + 2 * 60 * 1000).toISOString(), // 2 minutes
-      network: transaction.network,
-      amount: transaction.amount.toString(),
-      asset: transaction.asset_symbol,
-      to_address: transaction.to_address
+    // This endpoint is deprecated - use /api/transactions/broadcast instead
+    res.status(400).json({
+      error: {
+        code: 'DEPRECATED_ENDPOINT',
+        message: 'This endpoint is deprecated. Please use /api/transactions/broadcast for real blockchain transactions',
+        new_endpoint: '/api/transactions/broadcast'
+      }
     });
   } catch (error) {
     console.error('Transaction send error:', error);

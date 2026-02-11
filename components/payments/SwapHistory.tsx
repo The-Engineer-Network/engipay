@@ -49,7 +49,7 @@ export function SwapHistory() {
   const [refundableSwaps, setRefundableSwaps] = useState<RefundableSwap[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const { isConnected } = useWallet();
+  const { isConnected, account } = useWallet();
 
   useEffect(() => {
     if (isConnected) {
@@ -118,8 +118,25 @@ export function SwapHistory() {
       const token = localStorage.getItem('engipay-token');
       if (!token) throw new Error('No authentication token');
 
-      // This would need wallet integration for signing
-      const wallet = {}; // TODO: Get actual wallet signer
+      if (!isConnected || !account) {
+        toast({
+          title: 'Wallet Not Connected',
+          description: 'Please connect your wallet to claim',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      toast({
+        title: 'Claiming Swap',
+        description: 'Please confirm in your wallet...',
+      });
+
+      // Get wallet signer - this would need proper implementation based on wallet type
+      const wallet = {
+        address: account.address,
+        // Add signer methods as needed by Atomiq SDK
+      };
 
       const response = await fetch(`/api/swap/atomiq/${swapId}/claim`, {
         method: 'POST',
@@ -137,13 +154,14 @@ export function SwapHistory() {
         });
         await refreshHistory();
       } else {
-        throw new Error('Claim failed');
+        const error = await response.json();
+        throw new Error(error.error?.message || 'Claim failed');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Claim error:', error);
       toast({
         title: 'Claim Failed',
-        description: 'Failed to claim swap',
+        description: error.message || 'Failed to claim swap',
         variant: 'destructive',
       });
     }
@@ -154,8 +172,25 @@ export function SwapHistory() {
       const token = localStorage.getItem('engipay-token');
       if (!token) throw new Error('No authentication token');
 
-      // This would need wallet integration for signing
-      const wallet = {}; // TODO: Get actual wallet signer
+      if (!isConnected || !account) {
+        toast({
+          title: 'Wallet Not Connected',
+          description: 'Please connect your wallet to refund',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      toast({
+        title: 'Refunding Swap',
+        description: 'Please confirm in your wallet...',
+      });
+
+      // Get wallet signer
+      const wallet = {
+        address: account.address,
+        // Add signer methods as needed by Atomiq SDK
+      };
 
       const response = await fetch(`/api/swap/atomiq/${swapId}/refund`, {
         method: 'POST',
@@ -173,13 +208,14 @@ export function SwapHistory() {
         });
         await refreshHistory();
       } else {
-        throw new Error('Refund failed');
+        const error = await response.json();
+        throw new Error(error.error?.message || 'Refund failed');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Refund error:', error);
       toast({
         title: 'Refund Failed',
-        description: 'Failed to refund swap',
+        description: error.message || 'Failed to refund swap',
         variant: 'destructive',
       });
     }

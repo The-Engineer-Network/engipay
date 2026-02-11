@@ -24,6 +24,8 @@ const swapRoutes = require('./routes/swaps');
 const swapAtomiqRoutes = require('./routes/swaps-atomiq');
 const atomiqAdapterRoutes = require('./routes/atomiq-adapter');
 const paymentRoutes = require('./routes/payments');
+const paymentsV2Routes = require('./routes/payments-v2');
+const escrowRoutes = require('./routes/escrow');
 const analyticsRoutes = require('./routes/analytics');
 const webhookRoutes = require('./routes/webhooks');
 const chipiPayRoutes = require('./routes/chipipay');
@@ -145,6 +147,8 @@ app.use('/api/swap', swapRoutes);
 app.use('/api/swap', swapAtomiqRoutes);
 app.use('/api/atomiq-adapter', atomiqAdapterRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/payments/v2', paymentsV2Routes);
+app.use('/api/escrow', escrowRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/chipipay', chipiPayRoutes);
@@ -180,6 +184,16 @@ app.use((err, req, res, next) => {
 // Initialize database connection and start server
 const startServer = async () => {
   await connectDatabase();
+
+  // Initialize Atomiq SDK for cross-chain swaps
+  try {
+    const atomiqService = require('./services/atomiqService');
+    await atomiqService.initialize();
+    console.log('✅ Atomiq SDK initialized');
+  } catch (error) {
+    console.warn('⚠️  Atomiq SDK initialization failed:', error.message);
+    console.warn('Cross-chain swaps will not be available');
+  }
 
   app.listen(PORT, () => {
     console.log(`EngiPay Backend server running on port ${PORT}`);

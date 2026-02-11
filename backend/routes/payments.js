@@ -48,10 +48,6 @@ router.post('/send', authenticateToken, [
       });
     }
 
-    // NOTE: In production, you need to get the user's Starknet account
-    // This requires the user to sign the transaction on the frontend
-    // For now, we'll return instructions for frontend implementation
-    
     const transactionId = `tx_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
     // Return transaction data for frontend to sign and execute
