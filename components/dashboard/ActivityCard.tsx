@@ -119,7 +119,13 @@ export function ActivityCard({ activities }: ActivityCardProps) {
       </CardHeader>
       <CardContent>
         <div className="space-y-4">
-          {activities.map((activity, index) => (
+          {activities.length === 0 ? (
+            <div className="text-center py-8">
+              <div className="text-gray-400 text-lg mb-2">No recent activity</div>
+              <div className="text-gray-500 text-sm">Your transactions will appear here</div>
+            </div>
+          ) : (
+            activities.map((activity, index) => (
             <div
               key={activity.id}
               className="flex items-center justify-between p-4 rounded-xl border hover:scale-102 transition-all duration-300 relative overflow-hidden group/item"
@@ -177,7 +183,7 @@ export function ActivityCard({ activities }: ActivityCardProps) {
               <div className="absolute top-2 right-2 w-2 h-2 bg-green-400 rounded-full opacity-0 group-hover/item:opacity-60 animate-ping" />
               <div className="absolute bottom-2 left-2 w-1 h-1 bg-blue-400 rounded-full opacity-0 group-hover/item:opacity-40 animate-bounce" style={{ animationDelay: '0.2s' }} />
             </div>
-          ))}
+          )))}
         </div>
       </CardContent>
     </Card>
