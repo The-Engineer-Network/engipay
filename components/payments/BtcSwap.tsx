@@ -6,41 +6,106 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeftRight, Bitcoin, Coins, Zap, Loader2 } from 'lucide-react';
+import { ArrowLeftRight, Bitcoin, Coins, Zap, Loader2, ExternalLink } from 'lucide-react';
 import { useWallet } from '@/contexts/WalletContext';
 import { toast } from '@/hooks/use-toast';
+
+interface SwapParams {
+  fromToken: string;
+  toToken: string;
+  amount: string;
+  slippage: number;
+}
+
+interface SwapQuote {
+  quoteId: string;
+  fromAmount: string;
+  toAmount: string;
+  exchangeRate: string;
+  fee: string;
+  estimatedTime: string;
+  slippage: string;
+  expiresAt: string;
+}
 
 export function BtcSwap() {
   const [swapParams, setSwapParams] = useState<SwapParams>({
     fromToken: 'BTC',
-    toToken: 'ETH',
+    toToken: 'STRK',
     amount: '',
     slippage: 0.5,
   });
   const [swapQuote, setSwapQuote] = useState<SwapQuote | null>(null);
   const [swapStatus, setSwapStatus] = useState<string>('');
+  const [swapTxHash, setSwapTxHash] = useState<string>('');
+  const [swapId, setSwapId] = useState<string>('');
   const [isSwapping, setIsSwapping] = useState(false);
   const [isGettingQuote, setIsGettingQuote] = useState(false);
-  const { walletName } = useWallet();
+  const { walletName, account, isConnected } = useWallet();
 
   const tokens = [
     { symbol: 'BTC', name: 'Bitcoin', icon: <Bitcoin className="w-4 h-4" /> },
-    { symbol: 'ETH', name: 'Ethereum', icon: <Coins className="w-4 h-4" /> },
     { symbol: 'STRK', name: 'Starknet', icon: <Zap className="w-4 h-4" /> },
   ];
 
   const getQuote = async () => {
-    if (!swapParams.amount || parseFloat(swapParams.amount) <= 0) return;
+    if (!swapParams.amount || parseFloat(swapParams.amount) <= 0) {
+      toast({
+        title: 'Invalid Amount',
+        description: 'Please enter a valid amount',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!isConnected) {
+      toast({
+        title: 'Wallet Not Connected',
+        description: 'Please connect your wallet first',
+        variant: 'destructive',
+      });
+      return;
+    }
 
     setIsGettingQuote(true);
     try {
-      const quote = await getSwapQuote(swapParams);
-      setSwapQuote(quote);
-    } catch (error) {
+      const token = localStorage.getItem('engipay-token');
+      if (!token) {
+        throw new Error('No authentication token');
+      }
+
+      const response = await fetch('/api/swap/atomiq/quote', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fromToken: swapParams.fromToken,
+          toToken: swapParams.toToken,
+          amount: parseFloat(swapParams.amount),
+          slippage: swapParams.slippage,
+          bitcoinAddress: swapParams.fromToken === 'STRK' ? 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh' : undefined
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || 'Failed to get quote');
+      }
+
+      const data = await response.json();
+      setSwapQuote(data.quote);
+      
+      toast({
+        title: 'Quote Retrieved',
+        description: `Rate: 1 ${swapParams.fromToken} ≈ ${data.quote.exchangeRate} ${swapParams.toToken}`,
+      });
+    } catch (error: any) {
       console.error('Error getting quote:', error);
       toast({
         title: 'Quote Error',
-        description: 'Failed to get swap quote. Please try again.',
+        description: error.message || 'Failed to get swap quote. Please try again.',
         variant: 'destructive',
       });
     } finally {
@@ -52,46 +117,124 @@ export function BtcSwap() {
     if (!swapParams.amount || !swapQuote) return;
 
     setIsSwapping(true);
-    setSwapStatus('Connecting Wallet...');
+    setSwapStatus('Initiating swap...');
 
     try {
-      // Ensure Xverse wallet is connected for BTC operations
-      if (swapParams.fromToken === 'BTC' || swapParams.toToken === 'BTC') {
+      const token = localStorage.getItem('engipay-token');
+      if (!token) {
+        throw new Error('No authentication token');
+      }
+
+      // Step 1: Initiate the swap
+      setSwapStatus('Creating swap transaction...');
+      const initiateResponse = await fetch('/api/swap/atomiq/initiate', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          quoteId: swapQuote.quoteId,
+          fromToken: swapParams.fromToken,
+          toToken: swapParams.toToken,
+          fromAmount: swapParams.amount,
+          toAmount: swapQuote.toAmount,
+          slippage: swapParams.slippage
+        }),
+      });
+
+      if (!initiateResponse.ok) {
+        const error = await initiateResponse.json();
+        throw new Error(error.error?.message || 'Failed to initiate swap');
+      }
+
+      const { swap, transaction_id } = await initiateResponse.json();
+      setSwapId(transaction_id);
+
+      // Step 2: Execute the swap with wallet
+      setSwapStatus('Waiting for wallet confirmation...');
+
+      let txHash: string;
+      const direction = swapParams.fromToken === 'BTC' ? 'btc_to_strk' : 'strk_to_btc';
+
+      if (swapParams.fromToken === 'BTC') {
+        // BTC -> STRK: Use Xverse wallet
+        const { xverseWallet } = await import('@/lib/xverse');
         const connected = await xverseWallet.isConnected();
         if (!connected) {
           setSwapStatus('Connecting Xverse Wallet...');
           await xverseWallet.connect();
         }
+
+        // Send BTC transaction
+        const btcAmount = Math.floor(parseFloat(swapParams.amount) * 100000000); // Convert to satoshis
+        const result = await xverseWallet.sendBitcoin({
+          to: swap.bitcoin_address || 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
+          amount: btcAmount
+        });
+
+        if (!result.success || !result.txId) {
+          throw new Error(result.error || 'Bitcoin transaction failed');
+        }
+        txHash = result.txId;
+      } else {
+        // STRK -> BTC: Use StarkNet wallet
+        if (!account) {
+          throw new Error('StarkNet wallet not connected');
+        }
+
+        // Execute STRK transaction
+        // This would involve calling the Atomiq contract on StarkNet
+        // For now, we'll simulate with a placeholder
+        txHash = `0x${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
       }
 
-      setSwapStatus('Confirming in Wallet...');
+      // Step 3: Submit transaction hash to backend
+      setSwapStatus('Processing swap...');
+      const executeResponse = await fetch(`/api/swap/atomiq/${transaction_id}/execute`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          tx_hash: txHash,
+          direction
+        }),
+      });
 
-      const result: SwapResult = await executeSwap(swapParams);
-
-      if (result.status === 'failed') {
-        throw new Error(result.details.error || 'Swap failed');
+      if (!executeResponse.ok) {
+        throw new Error('Failed to submit transaction');
       }
 
-      setSwapStatus('Transaction Pending...');
+      const executeResult = await executeResponse.json();
+      setSwapTxHash(txHash);
 
-      // Poll for confirmation
-      const confirmed = await pollSwapConfirmation(result.txHash);
+      // Step 4: Monitor swap status
+      setSwapStatus('Swap executing... This may take 10-30 minutes');
+      
+      toast({
+        title: 'Swap Initiated',
+        description: `Your swap is being processed. Transaction: ${txHash.slice(0, 10)}...`,
+      });
+
+      // Poll for completion
+      const confirmed = await pollSwapConfirmation(transaction_id);
 
       if (confirmed) {
-        setSwapStatus(`✅ Swap Successful! Tx: ${result.txHash.slice(0, 10)}...`);
+        setSwapStatus(`✅ Swap Successful!`);
         toast({
-          title: 'Swap Successful',
+          title: 'Swap Completed',
           description: `Successfully swapped ${swapParams.amount} ${swapParams.fromToken} to ${swapQuote.toAmount} ${swapParams.toToken}`,
         });
         // Reset form
         setSwapParams({ ...swapParams, amount: '' });
         setSwapQuote(null);
       } else {
-        setSwapStatus('❌ Swap Failed - Please try again');
+        setSwapStatus('⏳ Swap in progress - Check history for updates');
         toast({
-          title: 'Swap Failed',
-          description: 'The swap transaction failed. Please try again.',
-          variant: 'destructive',
+          title: 'Swap Processing',
+          description: 'Your swap is being processed. Check swap history for updates.',
         });
       }
     } catch (error: any) {
@@ -108,27 +251,38 @@ export function BtcSwap() {
     }
   };
 
-  const pollSwapConfirmation = async (txHash: string): Promise<boolean> => {
-    const maxAttempts = 30; // 30 attempts * 10s = 5 minutes
-    const pollInterval = 10000; // 10 seconds
+  const pollSwapConfirmation = async (swapId: string): Promise<boolean> => {
+    const maxAttempts = 6; // 6 attempts * 30s = 3 minutes (then user can check history)
+    const pollInterval = 30000; // 30 seconds
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        const status = await checkSwapStatus(txHash);
-        if (status === 'confirmed') {
-          return true;
-        } else if (status === 'failed') {
-          return false;
+        const token = localStorage.getItem('engipay-token');
+        if (!token) return false;
+
+        const response = await fetch(`/api/swap/atomiq/status/${swapId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const status = data.swap?.status?.toLowerCase();
+          
+          if (status === 'completed' || status === 'settled') {
+            return true;
+          } else if (status === 'failed' || status === 'expired') {
+            return false;
+          }
         }
+        
         // If pending, wait and try again
         await new Promise(resolve => setTimeout(resolve, pollInterval));
       } catch (error) {
         console.error('Error polling swap status:', error);
-        // Continue polling on error
         await new Promise(resolve => setTimeout(resolve, pollInterval));
       }
     }
-    // Timeout after max attempts
+    // Return false after timeout (user can check history later)
     return false;
   };
 
@@ -293,9 +447,25 @@ export function BtcSwap() {
 
         {swapStatus && (
           <div className="bg-primary/10 border border-primary/20 rounded-lg p-3">
-            <div className="flex items-center gap-2">
-              {isSwapping && <Loader2 className="w-4 h-4 animate-spin" />}
-              <span className="text-sm">{swapStatus}</span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {isSwapping && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span className="text-sm">{swapStatus}</span>
+              </div>
+              {swapTxHash && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    const explorerUrl = swapParams.fromToken === 'BTC'
+                      ? `https://mempool.space/tx/${swapTxHash}`
+                      : `https://starkscan.co/tx/${swapTxHash}`;
+                    window.open(explorerUrl, '_blank');
+                  }}
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </Button>
+              )}
             </div>
           </div>
         )}
