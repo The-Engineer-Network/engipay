@@ -353,24 +353,65 @@ starknet call \
 
 ## 🎯 Hackathon Readiness
 
-### Critical for Demo (Must Deploy)
+### Critical for Demo (Must Deploy) ⭐
 
-1. **EngiToken.cairo** ✅
+1. **AtomiqAdapter.cairo** ✅ **HIGHEST PRIORITY**
+   - Required for: Cross-chain swap functionality (YOUR KILLER FEATURE!)
+   - Demo usage: BTC ↔ STRK swaps with on-chain verification
+   - Priority: **CRITICAL**
+   - Time: 1 hour
+   - Impact: Shows smart contract capability for your main demo feature
+   - **Why:** Proves you're not just using APIs, but building on-chain infrastructure
+
+2. **EngiToken.cairo** ✅ **HIGH PRIORITY**
    - Required for: Platform token operations
    - Demo usage: Token transfers, balance display
    - Priority: HIGH
+   - Time: 30 minutes (after AtomiqAdapter)
+   - Impact: Shows complete token ecosystem
 
-2. **EscrowV2.cairo** ✅
+### Recommended for Demo (Strong Impact)
+
+3. **EscrowV2.cairo** 🟡
    - Required for: Protected payment requests
    - Demo usage: Create/accept/reject payments
-   - Priority: HIGH
+   - Priority: MEDIUM
+   - Time: 30 minutes
+   - Impact: Showcases unique escrow feature
 
 ### Optional for Demo (Can Skip)
 
-3. **RewardDistributorV2.cairo** 🟡
+4. **RewardDistributorV2.cairo** 🟡
    - Required for: Staking rewards
    - Demo usage: Staking demonstration
    - Priority: LOW (can demo without deployment)
+   - Time: 30 minutes
+
+---
+
+## 🎯 Recommended Deployment Strategy
+
+### Option A: Deploy AtomiqAdapter Only (1 hour) ⭐ **RECOMMENDED**
+**Best for:** Limited time, maximum impact
+- ✅ Deploy AtomiqAdapter (powers your cross-chain swap demo)
+- ✅ Verify on StarkScan
+- ✅ Show judges verified contract during swap demo
+- **Impact:** HIGH - Directly supports your killer feature
+
+### Option B: Deploy AtomiqAdapter + EngiToken (1.5 hours)
+**Best for:** Comprehensive smart contract showcase
+- ✅ Deploy AtomiqAdapter (cross-chain swaps)
+- ✅ Deploy EngiToken (platform token)
+- ✅ Show complete smart contract ecosystem
+- **Impact:** VERY HIGH - Full platform demonstration
+
+### Option C: Deploy All Core Contracts (2.5 hours)
+**Best for:** Maximum technical depth
+- ✅ Deploy AtomiqAdapter (cross-chain swaps)
+- ✅ Deploy EngiToken (platform token)
+- ✅ Deploy EscrowV2 (protected payments)
+- ✅ Show complete production-ready platform
+- **Impact:** MAXIMUM - Full technical capability
 
 ---
 
@@ -425,20 +466,27 @@ RewardDistributor: [NOT DEPLOYED]
 The platform can demonstrate most features without deployed contracts:
 
 ### Working Without Contracts:
-- ✅ Cross-chain swaps (uses Atomiq SDK, no custom contracts)
+- ✅ Cross-chain swaps (uses Atomiq SDK, no custom contracts needed)
 - ✅ Transaction history
 - ✅ QR code scanning
 - ✅ Wallet connections
 - ✅ UI/UX demonstration
 - ✅ API endpoints
 
-### Requires Contracts:
-- ⚠️ Escrow payment requests (needs EscrowV2)
-- ⚠️ Token transfers (needs EngiToken)
-- ⚠️ Staking rewards (needs RewardDistributor)
+### Enhanced With Contracts:
+- ⭐ **AtomiqAdapter** - Shows on-chain infrastructure for your killer feature
+- ⭐ **EngiToken** - Demonstrates platform token ecosystem
+- ⚠️ **EscrowV2** - Enables escrow payment requests (needs contract)
 
 ### Recommendation:
-Deploy at least **EngiToken** and **EscrowV2** for a complete demo. This takes ~2 hours and showcases the unique escrow feature.
+**Deploy AtomiqAdapter (1 hour)** for maximum impact with minimal time investment. This directly supports your cross-chain swap demo and proves you're building real on-chain infrastructure, not just using APIs.
+
+**Why AtomiqAdapter matters:**
+- Your main demo feature is BTC ↔ STRK swaps
+- Having the smart contract deployed shows technical depth
+- Judges can verify it on StarkScan during your demo
+- Differentiates you from projects that only have frontend
+- Takes only 1 hour but adds significant credibility
 
 ---
 
