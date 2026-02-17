@@ -96,28 +96,21 @@ export function WalletProvider({ children }: WalletProviderProps) {
   };
 
   const checkWalletInstalled = (walletName: string): boolean => {
+    if (typeof window === "undefined") return false;
+
     switch (walletName) {
       case "MetaMask":
-        return (
-          typeof window !== "undefined" &&
-          !!window.ethereum &&
-          window.ethereum.isMetaMask
-        );
+        return !!window.ethereum && window.ethereum.isMetaMask;
       case "Argent":
-        return (
-          typeof window !== "undefined" &&
-          !!window.ethereum &&
-          window.ethereum.isArgent
-        );
+      case "ArgentX":
+        // Check for StarkNet Argent wallet
+        return !!window.starknet_argentX || !!window.starknet;
       case "Braavos":
-        return (
-          typeof window !== "undefined" &&
-          !!window.ethereum &&
-          window.ethereum.isBraavos
-        );
+        // Check for StarkNet Braavos wallet
+        return !!window.starknet_braavos || !!window.starknet;
       case "Xverse":
-        // Xverse is a browser extension, check if available
-        return typeof window !== "undefined" && !!window.xverse;
+        // Xverse is a browser extension for Bitcoin
+        return !!window.xverse;
       default:
         return false;
     }
@@ -153,10 +146,7 @@ export function WalletProvider({ children }: WalletProviderProps) {
           throw new Error("Failed to connect to Xverse wallet");
         }
 
-        // Get real BTC address from Xverse wallet
-        // The xverseWallet.connect() sets the address internally
-        // We need to access it - assuming it has a getAddress method or property
-        const address = xverseWallet.address; // Get the real address
+        const address = xverseWallet.address;
         if (!address) {
           throw new Error("Failed to get wallet address");
         }
@@ -166,7 +156,6 @@ export function WalletProvider({ children }: WalletProviderProps) {
         setIsConnected(true);
         setShowWalletModal(false);
 
-        // Persist connection
         localStorage.setItem(
           "engipay-wallet",
           JSON.stringify({
@@ -180,7 +169,6 @@ export function WalletProvider({ children }: WalletProviderProps) {
           description: "Successfully connected to Xverse Bitcoin wallet",
         });
 
-        // Register wallet connection with backend
         try {
           await fetch('/api/auth/wallet-connect', {
             method: 'POST',
@@ -194,15 +182,67 @@ export function WalletProvider({ children }: WalletProviderProps) {
           console.error('Failed to register wallet with backend:', err);
         }
 
-        // Fetch balances after connection
+        await fetchBalances();
+      } else if (walletName === "Argent" || walletName === "ArgentX" || walletName === "Braavos") {
+        // Handle StarkNet wallets using get-starknet
+        const { connect } = await import("get-starknet");
+        
+        // Connect to StarkNet wallet
+        const starknet = await connect({
+          modalMode: "neverAsk",
+          modalTheme: "dark",
+        });
+
+        if (!starknet || !starknet.isConnected) {
+          throw new Error(`Failed to connect to ${walletName} wallet`);
+        }
+
+        // Enable the wallet
+        await starknet.enable();
+
+        if (!starknet.selectedAddress) {
+          throw new Error("No account selected");
+        }
+
+        const address = starknet.selectedAddress;
+        setWalletAddress(address);
+        setWalletName(walletName);
+        setIsConnected(true);
+        setShowWalletModal(false);
+
+        localStorage.setItem(
+          "engipay-wallet",
+          JSON.stringify({
+            address,
+            name: walletName,
+          })
+        );
+
+        toast({
+          title: "Wallet connected",
+          description: `Successfully connected to ${walletName}`,
+        });
+
+        try {
+          await fetch('/api/auth/wallet-connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              wallet_address: address,
+              wallet_type: walletName.toLowerCase()
+            })
+          });
+        } catch (err) {
+          console.error('Failed to register wallet with backend:', err);
+        }
+
         await fetchBalances();
       } else {
-        // Handle Ethereum wallets
+        // Handle Ethereum wallets (MetaMask)
         if (!window.ethereum) {
           throw new Error("No Ethereum provider found");
         }
 
-        // Request account access
         const accounts = await window.ethereum.request({
           method: "eth_requestAccounts",
         });
@@ -217,7 +257,6 @@ export function WalletProvider({ children }: WalletProviderProps) {
         setIsConnected(true);
         setShowWalletModal(false);
 
-        // Persist connection
         localStorage.setItem(
           "engipay-wallet",
           JSON.stringify({
@@ -231,7 +270,6 @@ export function WalletProvider({ children }: WalletProviderProps) {
           description: `Successfully connected to ${walletName}`,
         });
 
-        // Register wallet connection with backend
         try {
           await fetch('/api/auth/wallet-connect', {
             method: 'POST',
@@ -245,7 +283,6 @@ export function WalletProvider({ children }: WalletProviderProps) {
           console.error('Failed to register wallet with backend:', err);
         }
 
-        // Fetch balances after connection
         await fetchBalances();
       }
     } catch (error: any) {
@@ -266,9 +303,10 @@ export function WalletProvider({ children }: WalletProviderProps) {
       case "MetaMask":
         return "https://metamask.io/download/";
       case "Argent":
-        return "https://argent.xyz/download";
+      case "ArgentX":
+        return "https://www.argent.xyz/argent-x/";
       case "Braavos":
-        return "https://braavos.app/download";
+        return "https://braavos.app/download-braavos-wallet/";
       case "Xverse":
         return "https://www.xverse.app/download";
       default:
@@ -421,5 +459,8 @@ declare global {
   interface Window {
     ethereum?: any;
     xverse?: any;
+    starknet?: any;
+    starknet_argentX?: any;
+    starknet_braavos?: any;
   }
 }

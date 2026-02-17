@@ -39,22 +39,28 @@ export function WalletConnectModal({
 
   const wallets = [
     {
-      name: "MetaMask",
-      icon: "🦊",
-      popular: true,
-    },
-    {
       name: "Argent",
       icon: "🛡️",
+      popular: true,
+      description: "StarkNet Wallet",
     },
     {
       name: "Braavos",
       icon: "⚡",
+      popular: true,
+      description: "StarkNet Wallet",
     },
     {
       name: "Xverse",
       icon: "₿",
       popular: false,
+      description: "Bitcoin Wallet",
+    },
+    {
+      name: "MetaMask",
+      icon: "🦊",
+      popular: false,
+      description: "Ethereum Wallet",
     },
   ];
 
