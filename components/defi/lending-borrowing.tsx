@@ -197,7 +197,36 @@ export function LendingBorrowing() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userAddress: walletAddress,
-          asset: positi
+          asset: positionAsset,
+          amount: positionAmount
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Withdrawal Successful",
+          description: `Withdrew ${positionAmount} ${positionAsset}`
+        })
+        fetchPools()
+        fetchPositions()
+      } else {
+        throw new Error(data.error || 'Withdrawal failed')
+      }
+    } catch (error: any) {
+      toast({
+        title: "Withdrawal Failed",
+        description: error.message,
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

@@ -103,11 +103,11 @@ export function WalletProvider({ children }: WalletProviderProps) {
         return !!window.ethereum && window.ethereum.isMetaMask;
       case "Argent":
       case "ArgentX":
-        // Check for StarkNet Argent wallet
-        return !!window.starknet_argentX || !!window.starknet;
+        // Check for StarkNet Argent wallet - it injects starknet_argentX
+        return !!(window.starknet_argentX || (window.starknet && window.starknet.id === "argentX"));
       case "Braavos":
-        // Check for StarkNet Braavos wallet
-        return !!window.starknet_braavos || !!window.starknet;
+        // Check for StarkNet Braavos wallet - it injects starknet_braavos
+        return !!(window.starknet_braavos || (window.starknet && window.starknet.id === "braavos"));
       case "Xverse":
         // Xverse is a browser extension for Bitcoin
         return !!window.xverse;
@@ -169,6 +169,9 @@ export function WalletProvider({ children }: WalletProviderProps) {
           description: "Successfully connected to Xverse Bitcoin wallet",
         });
 
+        // Fetch balances in background (non-blocking)
+        fetchBalances().catch(err => console.error('Failed to fetch balances:', err));
+
         try {
           await fetch('/api/auth/wallet-connect', {
             method: 'POST',
@@ -181,62 +184,144 @@ export function WalletProvider({ children }: WalletProviderProps) {
         } catch (err) {
           console.error('Failed to register wallet with backend:', err);
         }
-
-        await fetchBalances();
       } else if (walletName === "Argent" || walletName === "ArgentX" || walletName === "Braavos") {
         // Handle StarkNet wallets using get-starknet
         const { connect } = await import("get-starknet");
         
-        // Connect to StarkNet wallet
-        const starknet = await connect({
-          modalMode: "neverAsk",
-          modalTheme: "dark",
-        });
-
-        if (!starknet || !starknet.isConnected) {
-          throw new Error(`Failed to connect to ${walletName} wallet`);
-        }
-
-        // Enable the wallet
-        await starknet.enable();
-
-        if (!starknet.selectedAddress) {
-          throw new Error("No account selected");
-        }
-
-        const address = starknet.selectedAddress;
-        setWalletAddress(address);
-        setWalletName(walletName);
-        setIsConnected(true);
-        setShowWalletModal(false);
-
-        localStorage.setItem(
-          "engipay-wallet",
-          JSON.stringify({
-            address,
-            name: walletName,
-          })
-        );
-
-        toast({
-          title: "Wallet connected",
-          description: `Successfully connected to ${walletName}`,
-        });
-
+        // Determine which wallet to connect to
+        const walletId = walletName === "Braavos" ? "braavos" : "argentX";
+        
         try {
-          await fetch('/api/auth/wallet-connect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              wallet_address: address,
-              wallet_type: walletName.toLowerCase()
-            })
+          // Connect to specific StarkNet wallet
+          const starknet = await connect({
+            modalMode: "neverAsk",
+            modalTheme: "dark",
           });
-        } catch (err) {
-          console.error('Failed to register wallet with backend:', err);
-        }
 
-        await fetchBalances();
+          if (!starknet) {
+            throw new Error(`${walletName} wallet not found. Please install ${walletName} extension.`);
+          }
+
+          // Check if it's the right wallet
+          if (walletId === "braavos" && !starknet.id?.includes("braavos")) {
+            throw new Error("Please select Braavos wallet");
+          }
+          if (walletId === "argentX" && !starknet.id?.includes("argent")) {
+            throw new Error("Please select Argent wallet");
+          }
+
+          // Enable the wallet connection
+          await starknet.enable();
+          
+          if (!starknet.isConnected) {
+            throw new Error("Failed to connect wallet");
+          }
+
+          const address = starknet.selectedAddress || starknet.account?.address;
+          
+          if (!address) {
+            throw new Error("No account address found");
+          }
+
+          setWalletAddress(address);
+          setWalletName(walletName);
+          setIsConnected(true);
+          setShowWalletModal(false);
+
+          localStorage.setItem(
+            "engipay-wallet",
+            JSON.stringify({
+              address,
+              name: walletName,
+            })
+          );
+
+          toast({
+            title: "Wallet connected",
+            description: `Successfully connected to ${walletName}`,
+          });
+
+          try {
+            await fetch('/api/auth/wallet-connect', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                wallet_address: address,
+                wallet_type: walletName.toLowerCase()
+              })
+            });
+          } catch (err) {
+            console.error('Failed to register wallet with backend:', err);
+          }
+
+          await fetchBalances();
+        } catch (error: any) {
+          // If get-starknet fails, try direct window object
+          console.log("Trying direct wallet connection...");
+          
+          let walletProvider;
+          if (walletName === "Braavos" && window.starknet_braavos) {
+            walletProvider = window.starknet_braavos;
+          } else if ((walletName === "Argent" || walletName === "ArgentX") && window.starknet_argentX) {
+            walletProvider = window.starknet_argentX;
+          } else if (window.starknet) {
+            walletProvider = window.starknet;
+          }
+
+          if (!walletProvider) {
+            throw new Error(`${walletName} wallet not found. Please install the ${walletName} browser extension.`);
+          }
+
+          // Enable the wallet
+          await walletProvider.enable();
+
+          // Wait a bit for the wallet to be ready
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          if (!walletProvider.isConnected) {
+            throw new Error("Failed to connect to wallet");
+          }
+
+          const address = walletProvider.selectedAddress || walletProvider.account?.address;
+
+          if (!address) {
+            throw new Error("No account address found");
+          }
+
+          setWalletAddress(address);
+          setWalletName(walletName);
+          setIsConnected(true);
+          setShowWalletModal(false);
+
+          localStorage.setItem(
+            "engipay-wallet",
+            JSON.stringify({
+              address,
+              name: walletName,
+            })
+          );
+
+          toast({
+            title: "Wallet connected",
+            description: `Successfully connected to ${walletName}`,
+          });
+
+          // Fetch balances in background (non-blocking)
+          fetchBalances().catch(err => console.error('Failed to fetch balances:', err));
+
+          try {
+            await fetch('/api/auth/wallet-connect', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                wallet_address: address,
+                wallet_type: walletName.toLowerCase()
+              })
+            });
+          } catch (err) {
+            console.error('Failed to register wallet with backend:', err);
+          }
+        }
       } else {
         // Handle Ethereum wallets (MetaMask)
         if (!window.ethereum) {
@@ -270,6 +355,9 @@ export function WalletProvider({ children }: WalletProviderProps) {
           description: `Successfully connected to ${walletName}`,
         });
 
+        // Fetch balances in background (non-blocking)
+        fetchBalances().catch(err => console.error('Failed to fetch balances:', err));
+
         try {
           await fetch('/api/auth/wallet-connect', {
             method: 'POST',
@@ -282,8 +370,6 @@ export function WalletProvider({ children }: WalletProviderProps) {
         } catch (err) {
           console.error('Failed to register wallet with backend:', err);
         }
-
-        await fetchBalances();
       }
     } catch (error: any) {
       console.error("Wallet connection error:", error);

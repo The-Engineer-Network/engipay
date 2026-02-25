@@ -32,7 +32,7 @@ interface OnboardingStep {
 export function UserOnboarding() {
   const [currentStep, setCurrentStep] = useState(0)
   const [showOnboarding, setShowOnboarding] = useState(false)
-  const { isConnected, connectWallet, showWalletModal, setShowWalletModal } = useWallet()
+  const { isConnected, connectWallet } = useWallet()
 
   useEffect(() => {
     // Check if user has completed onboarding
@@ -56,7 +56,7 @@ export function UserOnboarding() {
       description: "Connect your Web3 wallet to start using EngiPay. We support MetaMask, Argent, Braavos, and Xverse.",
       icon: <Wallet className="w-8 h-8" />,
       completed: isConnected,
-      action: () => setShowWalletModal(true),
+      action: () => connectWallet("MetaMask"),
       actionText: "Connect Wallet"
     },
     {
@@ -116,19 +116,19 @@ export function UserOnboarding() {
   const currentStepData = steps[currentStep]
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <Card className="w-full max-w-2xl mx-4 glassmorphism">
-        <CardHeader className="text-center">
-          <div className="flex items-center justify-center mb-4">
-            <div className="w-16 h-16 bg-primary/20 rounded-full flex items-center justify-center text-primary">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto glassmorphism">
+        <CardHeader className="text-center pb-4">
+          <div className="flex items-center justify-center mb-3">
+            <div className="w-12 h-12 bg-primary/20 rounded-full flex items-center justify-center text-primary">
               {currentStepData.icon}
             </div>
           </div>
-          <CardTitle className="text-2xl mb-2">{currentStepData.title}</CardTitle>
-          <p className="text-muted-foreground">{currentStepData.description}</p>
+          <CardTitle className="text-xl mb-1">{currentStepData.title}</CardTitle>
+          <p className="text-sm text-muted-foreground">{currentStepData.description}</p>
         </CardHeader>
         
-        <CardContent className="space-y-6">
+        <CardContent className="space-y-4">
           {/* Progress Bar */}
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
@@ -217,24 +217,24 @@ export function UserOnboarding() {
             )}
 
             {currentStepData.id === "security" && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 gap-3 text-left">
-                  <div className="flex items-start gap-3 p-3 bg-green-500/10 rounded-lg">
-                    <CheckCircle className="w-5 h-5 text-green-400 mt-0.5" />
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 gap-2 text-left">
+                  <div className="flex items-start gap-2 p-2 bg-green-500/10 rounded-lg">
+                    <CheckCircle className="w-4 h-4 text-green-400 mt-0.5" />
                     <div>
                       <p className="font-medium text-sm">Non-Custodial</p>
                       <p className="text-xs text-muted-foreground">You control your private keys</p>
                     </div>
                   </div>
-                  <div className="flex items-start gap-3 p-3 bg-green-500/10 rounded-lg">
-                    <CheckCircle className="w-5 h-5 text-green-400 mt-0.5" />
+                  <div className="flex items-start gap-2 p-2 bg-green-500/10 rounded-lg">
+                    <CheckCircle className="w-4 h-4 text-green-400 mt-0.5" />
                     <div>
                       <p className="font-medium text-sm">Zero-Knowledge Security</p>
                       <p className="text-xs text-muted-foreground">Built on StarkNet's ZK technology</p>
                     </div>
                   </div>
-                  <div className="flex items-start gap-3 p-3 bg-green-500/10 rounded-lg">
-                    <CheckCircle className="w-5 h-5 text-green-400 mt-0.5" />
+                  <div className="flex items-start gap-2 p-2 bg-green-500/10 rounded-lg">
+                    <CheckCircle className="w-4 h-4 text-green-400 mt-0.5" />
                     <div>
                       <p className="font-medium text-sm">Audited Smart Contracts</p>
                       <p className="text-xs text-muted-foreground">Professional security reviews</p>
@@ -245,50 +245,50 @@ export function UserOnboarding() {
             )}
 
             {currentStepData.id === "features" && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 gap-3">
-                  <div className="p-4 border border-border rounded-lg text-left">
-                    <div className="flex items-center gap-3 mb-2">
-                      <Zap className="w-5 h-5 text-blue-400" />
-                      <h4 className="font-medium">Instant Payments</h4>
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 gap-2">
+                  <div className="p-3 border border-border rounded-lg text-left">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Zap className="w-4 h-4 text-blue-400" />
+                      <h4 className="font-medium text-sm">Instant Payments</h4>
                     </div>
-                    <p className="text-sm text-muted-foreground">Send money to friends or pay merchants instantly</p>
+                    <p className="text-xs text-muted-foreground">Send money to friends or pay merchants instantly</p>
                   </div>
-                  <div className="p-4 border border-border rounded-lg text-left">
-                    <div className="flex items-center gap-3 mb-2">
-                      <Coins className="w-5 h-5 text-green-400" />
-                      <h4 className="font-medium">Cross-Chain Swaps</h4>
+                  <div className="p-3 border border-border rounded-lg text-left">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Coins className="w-4 h-4 text-green-400" />
+                      <h4 className="font-medium text-sm">Cross-Chain Swaps</h4>
                     </div>
-                    <p className="text-sm text-muted-foreground">Swap BTC ↔ ETH ↔ STRK seamlessly</p>
+                    <p className="text-xs text-muted-foreground">Swap BTC ↔ ETH ↔ STRK seamlessly</p>
                   </div>
-                  <div className="p-4 border border-border rounded-lg text-left">
-                    <div className="flex items-center gap-3 mb-2">
-                      <TrendingUp className="w-5 h-5 text-purple-400" />
-                      <h4 className="font-medium">DeFi Integration</h4>
+                  <div className="p-3 border border-border rounded-lg text-left">
+                    <div className="flex items-center gap-2 mb-1">
+                      <TrendingUp className="w-4 h-4 text-purple-400" />
+                      <h4 className="font-medium text-sm">DeFi Integration</h4>
                     </div>
-                    <p className="text-sm text-muted-foreground">Access lending, staking, and yield farming</p>
+                    <p className="text-xs text-muted-foreground">Access lending, staking, and yield farming</p>
                   </div>
                 </div>
               </div>
             )}
 
             {currentStepData.id === "defi" && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 gap-3">
-                  <div className="p-4 bg-gradient-to-r from-blue-500/10 to-purple-500/10 rounded-lg text-left">
-                    <h4 className="font-medium mb-2">Vesu Lending</h4>
-                    <p className="text-sm text-muted-foreground">Earn up to 8% APY by lending your assets</p>
-                    <Badge className="mt-2 bg-blue-500/20 text-blue-400">Low Risk</Badge>
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 gap-2">
+                  <div className="p-3 bg-gradient-to-r from-blue-500/10 to-purple-500/10 rounded-lg text-left">
+                    <h4 className="font-medium text-sm mb-1">Vesu Lending</h4>
+                    <p className="text-xs text-muted-foreground">Earn up to 8% APY by lending your assets</p>
+                    <Badge className="mt-1 bg-blue-500/20 text-blue-400 text-xs">Low Risk</Badge>
                   </div>
-                  <div className="p-4 bg-gradient-to-r from-green-500/10 to-emerald-500/10 rounded-lg text-left">
-                    <h4 className="font-medium mb-2">Trove Staking</h4>
-                    <p className="text-sm text-muted-foreground">Stake STRK tokens for up to 12% APY</p>
-                    <Badge className="mt-2 bg-green-500/20 text-green-400">Medium Risk</Badge>
+                  <div className="p-3 bg-gradient-to-r from-green-500/10 to-emerald-500/10 rounded-lg text-left">
+                    <h4 className="font-medium text-sm mb-1">Trove Staking</h4>
+                    <p className="text-xs text-muted-foreground">Stake STRK tokens for up to 12% APY</p>
+                    <Badge className="mt-1 bg-green-500/20 text-green-400 text-xs">Medium Risk</Badge>
                   </div>
-                  <div className="p-4 bg-gradient-to-r from-purple-500/10 to-pink-500/10 rounded-lg text-left">
-                    <h4 className="font-medium mb-2">Endurfi Farming</h4>
-                    <p className="text-sm text-muted-foreground">Provide liquidity for up to 25% APY</p>
-                    <Badge className="mt-2 bg-purple-500/20 text-purple-400">High Risk</Badge>
+                  <div className="p-3 bg-gradient-to-r from-purple-500/10 to-pink-500/10 rounded-lg text-left">
+                    <h4 className="font-medium text-sm mb-1">Endurfi Farming</h4>
+                    <p className="text-xs text-muted-foreground">Provide liquidity for up to 25% APY</p>
+                    <Badge className="mt-1 bg-purple-500/20 text-purple-400 text-xs">High Risk</Badge>
                   </div>
                 </div>
               </div>
