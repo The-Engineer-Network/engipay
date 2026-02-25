@@ -34,7 +34,7 @@ class AtomiqService {
       );
 
       // Configure StarkNet RPC URL
-      const starknetRpcUrl = process.env.STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io';
+      const starknetRpcUrl = process.env.STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP';
 
       // Create swapper factory with StarkNet support
       // Note: "as const" keyword is required for proper TypeScript type inference

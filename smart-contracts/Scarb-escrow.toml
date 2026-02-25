@@ -1,0 +1,15 @@
+[package]
+name = "engipay_contracts"
+version = "1.0.0"
+edition = "2023_01"
+
+[dependencies]
+starknet = "2.6.4"
+
+[[target.starknet-contract]]
+sierra = true
+casm = true
+
+[lib]
+name = "engipay_contracts"
+path = "src/lib-escrow-only.cairo"

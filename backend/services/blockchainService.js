@@ -31,7 +31,7 @@ class BlockchainService {
       console.log('✅ Ethereum RPC connected');
 
       // StarkNet Provider
-      const starknetRPC = process.env.STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io';
+      const starknetRPC = process.env.STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP';
       this.providers.starknet = starknetRPC;
       console.log('✅ StarkNet RPC configured');
 

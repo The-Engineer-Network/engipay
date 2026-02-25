@@ -1,0 +1,429 @@
+{
+  "abi": [
+    {
+      "name": "Transfer",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "from",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "to",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "value",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "Approval",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "owner",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "spender",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "value",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "Staked",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "Unstaked",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "RewardsClaimed",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "ProposalCreated",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "proposal_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "proposer",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "description",
+          "type": "core::felt252"
+        }
+      ]
+    },
+    {
+      "name": "Voted",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "proposal_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "voter",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "option",
+          "type": "core::integer::u8"
+        },
+        {
+          "name": "votes",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "get_name",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "core::felt252"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_symbol",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "core::felt252"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_decimals",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "core::integer::u8"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_total_supply",
+      "type": "function",
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "balance_of",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "allowance",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "owner",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "spender",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "transfer",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "recipient",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::bool"
+        }
+      ],
+      "state_mutability": "external"
+    },
+    {
+      "name": "approve",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "spender",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::bool"
+        }
+      ],
+      "state_mutability": "external"
+    },
+    {
+      "name": "transfer_from",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "sender",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "recipient",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::bool"
+        }
+      ],
+      "state_mutability": "external"
+    },
+    {
+      "name": "stake",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "unstake",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "claim_rewards",
+      "type": "function",
+      "inputs": [],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "create_proposal",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "description",
+          "type": "core::felt252"
+        },
+        {
+          "name": "duration_days",
+          "type": "core::integer::u64"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "external"
+    },
+    {
+      "name": "vote",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "proposal_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "option",
+          "type": "core::integer::u8"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "get_staked_balance",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_pending_rewards",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_proposal",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "proposal_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::array::Array::<core::felt252>"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_vote",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "proposal_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "voter",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u8"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "set_reward_rate",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "new_rate",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "mint_tokens",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "recipient",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    }
+  ]
+}

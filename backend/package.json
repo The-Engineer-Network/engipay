@@ -15,6 +15,7 @@
     "@atomiqlabs/chain-starknet": "^7.0.25",
     "@atomiqlabs/sdk": "^7.0.11",
     "@atomiqlabs/storage-sqlite": "^4.0.0",
+    "@fatsolutions/tongo-sdk": "^1.3.1",
     "@starknet-io/types-js": "^0.10.0",
     "axios": "^1.7.7",
     "bcryptjs": "^2.4.3",

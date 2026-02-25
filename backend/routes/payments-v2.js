@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const { authenticateToken } = require('../middleware/auth');
 const paymentService = require('../services/paymentService');
 const blockchainService = require('../services/blockchainService');
+const tongoService = require('../services/tongoService');
 const { Transaction } = require('../models');
 const crypto = require('crypto');
 
@@ -493,5 +494,306 @@ async function monitorTransactionStatus(txHash, transactionId, userId) {
     console.error('Monitor transaction error:', error);
   }
 }
+
+/**
+ * POST /api/payments/v2/private-send - Send private payment with Tongo encryption
+ * This endpoint prepares a privacy-shielded transaction with hidden amounts
+ */
+router.post('/private-send', authenticateToken, [
+  body('recipient').isString().notEmpty().withMessage('Recipient address is required'),
+  body('asset').isString().notEmpty().withMessage('Asset is required'),
+  body('amount').isString().notEmpty().withMessage('Amount is required'),
+  body('memo').optional().isString().withMessage('Memo must be a string')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid input data',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { recipient, asset, amount, memo } = req.body;
+    const sender = req.user?.walletAddress;
+
+    if (!sender) {
+      return res.status(401).json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Wallet address not found'
+        }
+      });
+    }
+
+    // Validate recipient address format
+    if (!paymentService.isValidStarknetAddress(recipient)) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_ADDRESS',
+          message: 'Invalid Starknet address format'
+        }
+      });
+    }
+
+    const transactionId = `tx_private_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const tokenAddress = paymentService.getTokenAddress(asset);
+
+    // Create pending transaction in database
+    await Transaction.create({
+      transaction_id: transactionId,
+      user_id: req.user.id,
+      transaction_type: 'private_send',
+      description: memo || `Private payment: ${asset} to ${recipient.substring(0, 10)}... (amount hidden)`,
+      amount: parseFloat(amount),
+      asset_symbol: asset,
+      status: 'pending_signature',
+      network: 'starknet',
+      to_address: recipient,
+      from_address: sender,
+      metadata: {
+        is_private: true,
+        privacy_protocol: 'tongo',
+        initiated_at: new Date().toISOString()
+      }
+    });
+
+    console.log(`🔒 Private payment prepared: ${sender} -> ${recipient}, ${asset} (amount encrypted)`);
+
+    // Return transaction data for frontend to sign with Tongo
+    res.json({
+      success: true,
+      transaction_id: transactionId,
+      status: 'pending_signature',
+      from: sender,
+      to: recipient,
+      asset,
+      amount, // Will be encrypted by Tongo SDK
+      is_private: true,
+      privacy_protocol: 'tongo',
+      memo,
+      requires_signature: true,
+      transaction_data: {
+        contract_address: tokenAddress,
+        entry_point: 'private_transfer',
+        privacy_enabled: true,
+        calldata: {
+          recipient,
+          amount // Frontend will encrypt this with Tongo
+        }
+      },
+      instructions: 'This payment will use Tongo encryption to hide the amount'
+    });
+  } catch (error) {
+    console.error('Private payment send error:', error);
+    res.status(500).json({
+      error: {
+        code: 'PAYMENT_FAILED',
+        message: 'Failed to prepare private payment',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * POST /api/payments/v2/shield - Shield (wrap) ERC20 tokens with Tongo encryption
+ */
+router.post('/shield', authenticateToken, [
+  body('asset').isString().notEmpty().withMessage('Asset is required'),
+  body('amount').isString().notEmpty().withMessage('Amount is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid input data',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { asset, amount } = req.body;
+    const userAddress = req.user?.walletAddress;
+
+    if (!userAddress) {
+      return res.status(401).json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Wallet address not found'
+        }
+      });
+    }
+
+    const tokenAddress = paymentService.getTokenAddress(asset);
+
+    console.log(`🛡️ Shield request: ${amount} ${asset} for ${userAddress}`);
+
+    res.json({
+      success: true,
+      status: 'ready_to_shield',
+      asset,
+      amount,
+      token_address: tokenAddress,
+      user_address: userAddress,
+      requires_signature: true,
+      instructions: 'Sign the transaction to wrap your tokens with Tongo encryption',
+      message: 'Ready to shield tokens with privacy encryption'
+    });
+  } catch (error) {
+    console.error('Shield tokens error:', error);
+    res.status(500).json({
+      error: {
+        code: 'SHIELD_FAILED',
+        message: 'Failed to prepare shield transaction',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * POST /api/payments/v2/unshield - Unshield (unwrap) Tongo encrypted tokens back to ERC20
+ */
+router.post('/unshield', authenticateToken, [
+  body('asset').isString().notEmpty().withMessage('Asset is required'),
+  body('amount').isString().notEmpty().withMessage('Amount is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid input data',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { asset, amount } = req.body;
+    const userAddress = req.user?.walletAddress;
+
+    if (!userAddress) {
+      return res.status(401).json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Wallet address not found'
+        }
+      });
+    }
+
+    const tokenAddress = paymentService.getTokenAddress(asset);
+
+    console.log(`🔓 Unshield request: ${amount} ${asset} for ${userAddress}`);
+
+    res.json({
+      success: true,
+      status: 'ready_to_unshield',
+      asset,
+      amount,
+      token_address: tokenAddress,
+      user_address: userAddress,
+      requires_signature: true,
+      instructions: 'Sign the transaction to unwrap your encrypted tokens back to ERC20',
+      message: 'Ready to unshield tokens to public ERC20'
+    });
+  } catch (error) {
+    console.error('Unshield tokens error:', error);
+    res.status(500).json({
+      error: {
+        code: 'UNSHIELD_FAILED',
+        message: 'Failed to prepare unshield transaction',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * GET /api/payments/v2/encrypted-balance - Get encrypted balance for Tongo tokens
+ */
+router.get('/encrypted-balance', authenticateToken, async (req, res) => {
+  try {
+    const { asset = 'STRK' } = req.query;
+    const userAddress = req.user?.walletAddress;
+
+    if (!userAddress) {
+      return res.status(401).json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Wallet address not found'
+        }
+      });
+    }
+
+    const tokenAddress = paymentService.getTokenAddress(asset);
+
+    // Get encrypted balance from Tongo
+    const encryptedBalance = await tongoService.getEncryptedBalance(userAddress, tokenAddress);
+
+    res.json({
+      success: true,
+      address: userAddress,
+      asset,
+      encrypted_balance: encryptedBalance.encrypted_balance,
+      public_key: encryptedBalance.public_key,
+      message: 'Balance is encrypted. Use viewing key to decrypt.',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Get encrypted balance error:', error);
+    res.status(500).json({
+      error: {
+        code: 'BALANCE_FETCH_FAILED',
+        message: 'Failed to fetch encrypted balance',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * POST /api/payments/v2/generate-viewing-key - Generate viewing key for auditing
+ */
+router.post('/generate-viewing-key', authenticateToken, async (req, res) => {
+  try {
+    const userAddress = req.user?.walletAddress;
+
+    if (!userAddress) {
+      return res.status(401).json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Wallet address not found'
+        }
+      });
+    }
+
+    console.log(`🔑 Viewing key generation request for ${userAddress}`);
+
+    res.json({
+      success: true,
+      status: 'ready_to_generate',
+      user_address: userAddress,
+      requires_signature: true,
+      instructions: 'Sign the transaction to generate a viewing key for transaction auditing',
+      message: 'Viewing key allows auditors to decrypt transaction amounts'
+    });
+  } catch (error) {
+    console.error('Generate viewing key error:', error);
+    res.status(500).json({
+      error: {
+        code: 'VIEWING_KEY_FAILED',
+        message: 'Failed to prepare viewing key generation',
+        details: error.message
+      }
+    });
+  }
+});
 
 module.exports = router;

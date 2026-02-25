@@ -2,9 +2,11 @@ const { Contract, RpcProvider, Account, cairo, uint256 } = require('starknet');
 const crypto = require('crypto');
 require('dotenv').config();
 
-// Load ABIs
-const ENGI_TOKEN_ABI = require('../contracts/EngiTokenABI.json').abi;
-const ESCROW_ABI = require('../contracts/EscrowABI.json').abi;
+// Load ABIs (Simplified versions)
+const engiTokenClass = require('../contracts/EngiTokenSimpleABI.json');
+const escrowClass = require('../contracts/EscrowTinyABI.json');
+const ENGI_TOKEN_ABI = engiTokenClass.abi || engiTokenClass;
+const ESCROW_ABI = escrowClass.abi || escrowClass;
 
 // Contract addresses from environment
 const ENGI_TOKEN_ADDRESS = process.env.ENGI_TOKEN_CONTRACT_ADDRESS || '0x0';
@@ -12,7 +14,7 @@ const ESCROW_CONTRACT_ADDRESS = process.env.ESCROW_CONTRACT_ADDRESS || '0x0';
 
 // Initialize Starknet provider
 const provider = new RpcProvider({
-  nodeUrl: process.env.STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io'
+  nodeUrl: process.env.STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP'
 });
 
 class PaymentService {

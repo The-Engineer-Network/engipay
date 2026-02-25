@@ -209,20 +209,40 @@ router.post('/lend', authenticateToken, [
       }
     });
 
-    // TODO: Integrate with actual DeFi protocol (Vesu, etc.)
-    // This would involve:
-    // 1. Calling the protocol's smart contract
-    // 2. Submitting the lending transaction
-    // 3. Monitoring for confirmation
+    // Integrate with VesuService for real lending
+    const VesuService = require('../services/VesuService');
+    const vesuService = new VesuService();
+    
+    try {
+      // Execute supply operation through VesuService
+      const supplyResult = await vesuService.supply(
+        req.user.walletAddress,
+        asset,
+        amount,
+        protocol
+      );
 
-    // Mock transaction hash for now
-    const mockTxHash = `0x${Math.random().toString(16).substring(2, 66)}`;
-
-    // Update position with transaction hash
-    await position.update({
-      tx_hash: mockTxHash,
-      status: 'submitted'
-    });
+      // Update position with real transaction hash
+      await position.update({
+        tx_hash: supplyResult.transactionHash,
+        status: 'submitted',
+        metadata: {
+          ...position.metadata,
+          vesu_position_id: supplyResult.positionId,
+          vtoken_amount: supplyResult.vTokenAmount
+        }
+      });
+    } catch (vesuError) {
+      // If VesuService fails, update position status
+      await position.update({
+        status: 'failed',
+        metadata: {
+          ...position.metadata,
+          error: vesuError.message
+        }
+      });
+      throw vesuError;
+    }
 
     res.json({
       position_id: position.position_id,
@@ -245,25 +265,136 @@ router.post('/lend', authenticateToken, [
 });
 
 // POST /api/defi/borrow
-router.post('/borrow', authenticateToken, (req, res) => {
-  const { protocol, collateral_asset, collateral_amount, borrow_asset, borrow_amount, network } = req.body;
-  res.json({
-    position_id: `pos_${Date.now()}`,
-    transaction_hash: `0x${Math.random().toString(16).substring(2)}`,
-    health_factor: 2.1,
-    liquidation_price: 1800.00,
-    status: 'pending'
-  });
+router.post('/borrow', authenticateToken, [
+  body('protocol').isString().notEmpty().withMessage('Protocol is required'),
+  body('collateral_asset').isString().notEmpty().withMessage('Collateral asset is required'),
+  body('collateral_amount').isFloat({ min: 0.00000001 }).withMessage('Collateral amount must be greater than 0'),
+  body('borrow_asset').isString().notEmpty().withMessage('Borrow asset is required'),
+  body('borrow_amount').isFloat({ min: 0.00000001 }).withMessage('Borrow amount must be greater than 0'),
+  body('network').optional().isIn(['ethereum', 'polygon', 'arbitrum', 'optimism', 'starknet']).withMessage('Invalid network')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid input data',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { protocol, collateral_asset, collateral_amount, borrow_asset, borrow_amount, network = 'starknet' } = req.body;
+
+    // Integrate with VesuService for real borrowing
+    const VesuService = require('../services/VesuService');
+    const vesuService = new VesuService();
+
+    // Execute borrow operation
+    const borrowResult = await vesuService.borrow(
+      req.user.walletAddress,
+      collateral_asset,
+      collateral_amount,
+      borrow_asset,
+      borrow_amount
+    );
+
+    // Create DeFi position record
+    const positionId = `borrow_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const position = await DeFiPosition.create({
+      position_id: positionId,
+      user_id: req.user.id,
+      protocol: protocol,
+      position_type: 'borrowing',
+      asset_symbol: borrow_asset,
+      asset_amount: parseFloat(borrow_amount),
+      value_usd: 0, // Would be calculated based on current price
+      status: 'submitted',
+      network: network,
+      start_date: new Date(),
+      tx_hash: borrowResult.transactionHash,
+      health_factor: borrowResult.healthFactor,
+      liquidation_price: borrowResult.liquidationPrice,
+      metadata: {
+        collateral_asset: collateral_asset,
+        collateral_amount: collateral_amount,
+        vesu_position_id: borrowResult.positionId,
+        initiated_at: new Date().toISOString()
+      }
+    });
+
+    res.json({
+      position_id: position.position_id,
+      transaction_hash: position.tx_hash,
+      health_factor: borrowResult.healthFactor,
+      liquidation_price: borrowResult.liquidationPrice,
+      status: position.status,
+      network: position.network
+    });
+  } catch (error) {
+    console.error('DeFi borrow error:', error);
+    res.status(500).json({
+      error: {
+        code: 'BORROW_ERROR',
+        message: error.message || 'Failed to create borrow position'
+      }
+    });
+  }
 });
 
 // POST /api/defi/stake
-router.post('/stake', authenticateToken, (req, res) => {
-  const { protocol, asset, amount, pool_id, lock_period_days } = req.body;
-  res.json({
-    position_id: `pos_${Date.now()}`,
-    transaction_hash: `0x${Math.random().toString(16).substring(2)}`,
-    status: 'pending'
-  });
+router.post('/stake', authenticateToken, [
+  body('protocol').isString().notEmpty().withMessage('Protocol is required'),
+  body('asset').isString().notEmpty().withMessage('Asset is required'),
+  body('amount').isFloat({ min: 0.00000001 }).withMessage('Amount must be greater than 0'),
+  body('pool_id').optional().isString().withMessage('Pool ID must be a string'),
+  body('lock_period_days').optional().isInt({ min: 0 }).withMessage('Lock period must be a positive integer')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid input data',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { protocol, asset, amount, pool_id, lock_period_days = 0 } = req.body;
+
+    // Integrate with TroveStakingService for real staking
+    const TroveStakingService = require('../services/TroveStakingService');
+    const stakingService = new TroveStakingService();
+
+    // Execute stake operation
+    const stakeResult = await stakingService.stake(
+      req.user.id,
+      pool_id || process.env.DEFAULT_STAKING_CONTRACT,
+      asset,
+      asset, // reward token (same as staking token for now)
+      amount,
+      req.user.walletAddress
+    );
+
+    res.json({
+      position_id: stakeResult.position_id,
+      transaction_hash: stakeResult.transaction_hash,
+      status: stakeResult.status,
+      apy: stakeResult.apy,
+      lock_period_days: lock_period_days
+    });
+  } catch (error) {
+    console.error('DeFi stake error:', error);
+    res.status(500).json({
+      error: {
+        code: 'STAKE_ERROR',
+        message: error.message || 'Failed to create stake position'
+      }
+    });
+  }
 });
 
 // GET /api/defi/rewards
@@ -369,35 +500,67 @@ router.post('/claim-rewards', authenticateToken, [
       return sum + parseFloat(reward.value_usd || 0);
     }, 0);
 
-    // TODO: Integrate with actual reward claiming logic
-    // This would involve calling the protocol's claim function
+    // Integrate with TroveStakingService for real reward claiming
+    const TroveStakingService = require('../services/TroveStakingService');
+    const stakingService = new TroveStakingService();
 
-    // Mock transaction hash for now
-    const mockTxHash = `0x${Math.random().toString(16).substring(2, 66)}`;
-
-    // Update reward statuses
-    await Reward.update(
-      {
-        status: 'claimed',
-        claimed_at: new Date(),
-        tx_hash: mockTxHash
-      },
-      {
-        where: {
-          reward_id: { [Op.in]: reward_ids },
-          user_id: req.user.id
+    try {
+      // Group rewards by position for batch claiming
+      const rewardsByPosition = {};
+      rewards.forEach(reward => {
+        if (!rewardsByPosition[reward.position_id]) {
+          rewardsByPosition[reward.position_id] = [];
         }
-      }
-    );
+        rewardsByPosition[reward.position_id].push(reward);
+      });
 
-    res.json({
-      transaction_hash: mockTxHash,
-      claimed_amount: totalAmount.toString(),
-      claimed_value_usd: totalValueUsd,
-      rewards_claimed: rewards.length,
-      status: 'pending',
-      reward_ids: reward_ids
-    });
+      // Claim rewards for each position
+      const claimResults = [];
+      for (const [positionId, positionRewards] of Object.entries(rewardsByPosition)) {
+        const claimResult = await stakingService.claimRewards(
+          req.user.id,
+          positionId,
+          req.user.walletAddress
+        );
+        claimResults.push(claimResult);
+      }
+
+      // Use the first transaction hash (or combine them)
+      const transactionHash = claimResults[0]?.transaction_hash || `0x${Date.now().toString(16)}`;
+
+      // Update reward statuses
+      await Reward.update(
+        {
+          status: 'claimed',
+          claimed_at: new Date(),
+          tx_hash: transactionHash
+        },
+        {
+          where: {
+            reward_id: { [Op.in]: reward_ids },
+            user_id: req.user.id
+          }
+        }
+      );
+
+      res.json({
+        transaction_hash: transactionHash,
+        claimed_amount: totalAmount.toString(),
+        claimed_value_usd: totalValueUsd,
+        rewards_claimed: rewards.length,
+        status: 'submitted',
+        reward_ids: reward_ids,
+        claim_results: claimResults
+      });
+    } catch (claimError) {
+      console.error('Reward claim error:', claimError);
+      res.status(500).json({
+        error: {
+          code: 'CLAIM_ERROR',
+          message: claimError.message || 'Failed to claim rewards'
+        }
+      });
+    }
   } catch (error) {
     console.error('Claim rewards error:', error);
     res.status(500).json({
@@ -410,3 +573,154 @@ router.post('/claim-rewards', authenticateToken, [
 });
 
 module.exports = router;
+
+
+// GET /api/defi/farming-pools
+router.get('/farming-pools', async (req, res) => {
+  try {
+    // Get active yield farming opportunities from database
+    const farmingPools = await YieldFarm.findAll({
+      where: {
+        is_active: true,
+        farm_type: 'liquidity_mining'
+      },
+      attributes: [
+        'farm_id',
+        'protocol',
+        'title',
+        'asset_symbol',
+        'apy',
+        'tvl_usd',
+        'risk_level',
+        'minimum_deposit',
+        'lock_period_days',
+        'reward_tokens',
+        'tags'
+      ],
+      order: [['apy', 'DESC']],
+      limit: 20
+    });
+
+    // Get staking pools
+    const stakingPools = await YieldFarm.findAll({
+      where: {
+        is_active: true,
+        farm_type: 'staking'
+      },
+      attributes: [
+        'farm_id',
+        'protocol',
+        'title',
+        'asset_symbol',
+        'apy',
+        'tvl_usd',
+        'risk_level',
+        'minimum_deposit',
+        'lock_period_days',
+        'reward_tokens',
+        'tags'
+      ],
+      order: [['apy', 'DESC']],
+      limit: 20
+    });
+
+    // Format farming pools
+    const formattedFarmingPools = farmingPools.map(pool => ({
+      protocol: pool.protocol,
+      pair: pool.title || `${pool.asset_symbol}/STRK`,
+      apy: pool.apy ? `${parseFloat(pool.apy).toFixed(2)}%` : '0%',
+      tvl: pool.tvl_usd ? `$${parseFloat(pool.tvl_usd).toLocaleString()}` : '$0',
+      rewards: pool.reward_tokens || ['STRK'],
+      multiplier: '1x',
+      lockPeriod: pool.lock_period_days ? `${pool.lock_period_days} days` : 'Flexible',
+      risk: pool.risk_level === 1 ? 'Low' : pool.risk_level === 2 ? 'Medium' : 'High'
+    }));
+
+    // Format staking pools
+    const formattedStakingPools = stakingPools.map(pool => ({
+      protocol: pool.protocol,
+      asset: pool.asset_symbol,
+      apy: pool.apy ? `${parseFloat(pool.apy).toFixed(2)}%` : '0%',
+      tvl: pool.tvl_usd ? `$${parseFloat(pool.tvl_usd).toLocaleString()}` : '$0',
+      rewards: pool.reward_tokens || ['STRK'],
+      lockPeriod: pool.lock_period_days ? `${pool.lock_period_days} days` : 'Flexible',
+      risk: pool.risk_level === 1 ? 'Low' : pool.risk_level === 2 ? 'Medium' : 'High'
+    }));
+
+    res.json({
+      success: true,
+      farmingPools: formattedFarmingPools,
+      stakingPools: formattedStakingPools
+    });
+  } catch (error) {
+    console.error('Farming pools error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to fetch farming pools'
+      }
+    });
+  }
+});
+
+// GET /api/defi/user-farms/:walletAddress
+router.get('/user-farms/:walletAddress', authenticateToken, async (req, res) => {
+  try {
+    const { walletAddress } = req.params;
+
+    // Get user's active farming/staking positions
+    const positions = await DeFiPosition.findAll({
+      where: {
+        user_id: req.user.id,
+        status: 'active',
+        position_type: { [Op.in]: ['staking', 'liquidity_mining'] }
+      },
+      attributes: [
+        'position_id',
+        'protocol',
+        'position_type',
+        'asset_symbol',
+        'asset_amount',
+        'value_usd',
+        'apy',
+        'rewards_earned',
+        'start_date',
+        'end_date',
+        'metadata'
+      ]
+    });
+
+    // Format user farms
+    const formattedFarms = positions.map(pos => {
+      const timeLeft = pos.end_date ? 
+        Math.max(0, Math.floor((new Date(pos.end_date) - new Date()) / (1000 * 60 * 60 * 24))) : 
+        null;
+
+      return {
+        protocol: pos.protocol,
+        pair: pos.metadata?.pair || pos.asset_symbol,
+        asset: pos.asset_symbol,
+        staked: pos.asset_amount,
+        value: `$${parseFloat(pos.value_usd || 0).toFixed(2)}`,
+        rewards: pos.rewards_earned || '0',
+        apy: `${parseFloat(pos.apy || 0).toFixed(2)}%`,
+        timeLeft: timeLeft !== null ? `${timeLeft} days` : 'Flexible'
+      };
+    });
+
+    res.json({
+      success: true,
+      farms: formattedFarms
+    });
+  } catch (error) {
+    console.error('User farms error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to fetch user farms'
+      }
+    });
+  }
+});

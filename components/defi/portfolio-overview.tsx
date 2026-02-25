@@ -1,10 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { TrendingUp, DollarSign, Percent, Eye, EyeOff } from "lucide-react"
+import { TrendingUp, DollarSign, Percent, Eye, EyeOff, Loader2 } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import { useWallet } from "@/contexts/WalletContext"
 import {
   LineChart,
   Line,
@@ -18,56 +20,58 @@ import {
   Cell,
 } from "recharts"
 
-const portfolioData = [
-  { name: "Jul", value: 2800 },
-  { name: "Aug", value: 3200 },
-  { name: "Sep", value: 2950 },
-  { name: "Oct", value: 3800 },
-  { name: "Nov", value: 4200 },
-]
-
-const assetData = [
-  { name: "ETH", value: 40, color: "#00D2FF" },
-  { name: "STRK", value: 30, color: "#00FF88" },
-  { name: "USDC", value: 25, color: "#FFB800" },
-  { name: "Others", value: 5, color: "#8B5CF6" },
-]
-
-const positions = [
-  {
-    protocol: "Vesu",
-    asset: "ETH",
-    type: "Lending",
-    amount: "0.85 ETH",
-    apy: "4.2%",
-    value: "$1,680",
-    status: "Active",
-    change: "+2.1%",
-  },
-  {
-    protocol: "Trove",
-    asset: "STRK",
-    type: "Staking",
-    amount: "2,400 STRK",
-    apy: "12.8%",
-    value: "$1,260",
-    status: "Active",
-    change: "+5.3%",
-  },
-  {
-    protocol: "Endurfi",
-    asset: "USDC",
-    type: "Yield Farming",
-    amount: "1,050 USDC",
-    apy: "8.9%",
-    value: "$1,050",
-    status: "Active",
-    change: "+1.2%",
-  },
-]
+const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'
 
 export function PortfolioOverview() {
   const [hideBalances, setHideBalances] = useState(false)
+  const [portfolioData, setPortfolioData] = useState<any[]>([])
+  const [assetData, setAssetData] = useState<any[]>([])
+  const [positions, setPositions] = useState<any[]>([])
+  const [totalValue, setTotalValue] = useState("0")
+  const [totalAPY, setTotalAPY] = useState("0")
+  const [activePositions, setActivePositions] = useState(0)
+  const [pendingRewards, setPendingRewards] = useState("0")
+  const [loading, setLoading] = useState(false)
+  
+  const { toast } = useToast()
+  const { walletAddress } = useWallet()
+
+  useEffect(() => {
+    if (walletAddress) {
+      loadPortfolioData()
+    }
+  }, [walletAddress])
+
+  const loadPortfolioData = async () => {
+    setLoading(true)
+    try {
+      const response = await fetch(`${API_URL}/api/portfolio/overview/${walletAddress}`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      })
+      const data = await response.json()
+      
+      if (data.success) {
+        setTotalValue(data.totalValue || "0")
+        setTotalAPY(data.averageAPY || "0")
+        setActivePositions(data.activePositions || 0)
+        setPendingRewards(data.pendingRewards || "0")
+        setPortfolioData(data.historicalData || [])
+        setAssetData(data.assetAllocation || [])
+        setPositions(data.positions || [])
+      }
+    } catch (error) {
+      console.error('Error loading portfolio:', error)
+      toast({
+        title: "Error",
+        description: "Failed to load portfolio data",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -86,10 +90,10 @@ export function PortfolioOverview() {
             </Button>
           </CardHeader>
           <CardContent>
-            <div className="text-xl sm:text-2xl font-bold text-primary">{hideBalances ? "••••••" : "$4,200"}</div>
+            <div className="text-xl sm:text-2xl font-bold text-primary">{hideBalances ? "••••••" : `$${totalValue}`}</div>
             <div className="flex items-center text-xs text-muted-foreground">
               <TrendingUp className="mr-1 h-3 w-3 text-primary" />
-              +12.5% from last month
+              {loading ? "Loading..." : "Updated just now"}
             </div>
           </CardContent>
         </Card>
@@ -100,7 +104,7 @@ export function PortfolioOverview() {
             <Percent className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl sm:text-2xl font-bold text-primary">8.6%</div>
+            <div className="text-xl sm:text-2xl font-bold text-primary">{totalAPY}%</div>
             <p className="text-xs text-muted-foreground">Weighted average</p>
           </CardContent>
         </Card>
@@ -111,8 +115,8 @@ export function PortfolioOverview() {
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl sm:text-2xl font-bold">3</div>
-            <p className="text-xs text-muted-foreground">Across 3 protocols</p>
+            <div className="text-xl sm:text-2xl font-bold">{activePositions}</div>
+            <p className="text-xs text-muted-foreground">Across multiple protocols</p>
           </CardContent>
         </Card>
 
@@ -122,7 +126,7 @@ export function PortfolioOverview() {
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl sm:text-2xl font-bold text-primary">{hideBalances ? "••••" : "$127"}</div>
+            <div className="text-xl sm:text-2xl font-bold text-primary">{hideBalances ? "••••" : `$${pendingRewards}`}</div>
             <p className="text-xs text-muted-foreground">Ready to claim</p>
           </CardContent>
         </Card>
@@ -156,7 +160,8 @@ export function PortfolioOverview() {
                   dot={{ fill: "oklch(0.7 0.15 160)", strokeWidth: 2, r: 4 }}
                 />
               </LineChart>
-            </ResponsiveContainer>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
@@ -183,17 +188,19 @@ export function PortfolioOverview() {
                 </Pie>
                 <Tooltip />
               </PieChart>
-            </ResponsiveContainer>
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              {assetData.map((asset) => (
-                <div key={asset.name} className="flex items-center gap-2">
-                  <div className="h-3 w-3 rounded-full" style={{ backgroundColor: asset.color }} />
-                  <span className="text-sm">
-                    {asset.name} {asset.value}%
-                  </span>
+                </ResponsiveContainer>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  {assetData.map((asset) => (
+                    <div key={asset.name} className="flex items-center gap-2">
+                      <div className="h-3 w-3 rounded-full" style={{ backgroundColor: asset.color }} />
+                      <span className="text-sm">
+                        {asset.name} {asset.value}%
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -206,7 +213,19 @@ export function PortfolioOverview() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {positions.map((position, index) => (
+            {!walletAddress ? (
+              <div className="text-center p-8 text-muted-foreground">
+                Connect your wallet to view your positions
+              </div>
+            ) : loading ? (
+              <div className="flex items-center justify-center p-8">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              </div>
+            ) : positions.length === 0 ? (
+              <div className="text-center p-8 text-muted-foreground">
+                No active positions. Start lending, staking, or farming to see your positions here.
+              </div>
+            ) : positions.map((position, index) => (
               <div
                 key={index}
                 className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-lg bg-secondary/50 border border-border hover:bg-secondary/70 transition-colors cursor-pointer gap-4"

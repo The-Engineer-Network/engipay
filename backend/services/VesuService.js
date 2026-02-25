@@ -3,6 +3,17 @@ const StarknetContractManager = require('./StarknetContractManager');
 const { PragmaOracleService } = require('./PragmaOracleService');
 const TransactionManager = require('./TransactionManager');
 const { getVesuConfig, getPoolConfig, getAssetConfig } = require('../config/vesu.config');
+const { 
+  VESU_CONTRACTS, 
+  getPoolAddress, 
+  getAssetAddress,
+  createSupplyParams,
+  createWithdrawParams,
+  createBorrowParams,
+  createRepayParams,
+  createLiquidateParams,
+  AmountDenomination
+} = require('../config/vesu-contracts');
 const VesuPosition = require('../models/VesuPosition');
 const VesuTransaction = require('../models/VesuTransaction');
 const VesuPool = require('../models/VesuPool');
@@ -2049,3 +2060,429 @@ module.exports = {
   VesuError,
   ErrorCodes,
 };
+
+
+  // ============================================================================
+  // VESU PROTOCOL CONTRACT INTERACTIONS
+  // Based on official Vesu documentation: https://docs.vesu.xyz/developers/
+  // ============================================================================
+
+  /**
+   * Supply assets to a Vesu pool using manage_position
+   * @param {string} userAddress - User's wallet address
+   * @param {string} assetSymbol - Asset symbol (e.g., 'STRK', 'USDC')
+   * @param {string|number} amount - Amount to supply
+   * @param {string} poolName - Pool name (default: 'PRIME')
+   * @returns {Promise<Object>} Supply operation result
+   */
+  async supply(userAddress, assetSymbol, amount, poolName = 'PRIME') {
+    try {
+      console.log('VesuService.supply called', { userAddress, assetSymbol, amount, poolName });
+
+      // Get contract addresses
+      const poolAddress = getPoolAddress(poolName);
+      const collateralAsset = getAssetAddress(assetSymbol);
+      const debtAsset = getAssetAddress('USDC'); // Use USDC as debt asset (implementation detail)
+
+      // Convert amount to proper format (with decimals)
+      const amountDecimal = new Decimal(amount);
+      const amountWithDecimals = amountDecimal.mul(new Decimal(10).pow(18)).toString();
+
+      // Create ModifyPositionParams for supply
+      const params = createSupplyParams(
+        collateralAsset,
+        debtAsset,
+        userAddress,
+        amountWithDecimals
+      );
+
+      // Initialize pool contract
+      const poolContract = await this.contracts.initializePoolContract(poolAddress);
+
+      // Call manage_position function
+      console.log('Calling manage_position for supply...', params);
+      const result = await poolContract.manage_position(params);
+
+      // Create transaction record
+      const transaction = await VesuTransaction.create({
+        user_address: userAddress,
+        pool_address: poolAddress,
+        transaction_type: 'supply',
+        asset_symbol: assetSymbol,
+        amount: amount.toString(),
+        transaction_hash: result.transaction_hash,
+        status: 'pending',
+        created_at: new Date()
+      });
+
+      return {
+        transactionHash: result.transaction_hash,
+        poolAddress: poolAddress,
+        assetSymbol: assetSymbol,
+        amount: amount.toString(),
+        status: 'pending',
+        transactionId: transaction.transaction_id
+      };
+
+    } catch (error) {
+      console.error('Supply error:', error);
+      throw new VesuError(
+        ErrorCodes.TRANSACTION_FAILED,
+        `Failed to supply assets: ${error.message}`,
+        { userAddress, assetSymbol, amount, poolName }
+      );
+    }
+  }
+
+  /**
+   * Withdraw assets from a Vesu pool using manage_position
+   * @param {string} userAddress - User's wallet address
+   * @param {string} assetSymbol - Asset symbol
+   * @param {string|number} amount - Amount to withdraw
+   * @param {string} poolName - Pool name (default: 'PRIME')
+   * @returns {Promise<Object>} Withdraw operation result
+   */
+  async withdraw(userAddress, assetSymbol, amount, poolName = 'PRIME') {
+    try {
+      console.log('VesuService.withdraw called', { userAddress, assetSymbol, amount, poolName });
+
+      // Get contract addresses
+      const poolAddress = getPoolAddress(poolName);
+      const collateralAsset = getAssetAddress(assetSymbol);
+      const debtAsset = getAssetAddress('USDC');
+
+      // Convert amount to proper format
+      const amountDecimal = new Decimal(amount);
+      const amountWithDecimals = amountDecimal.mul(new Decimal(10).pow(18)).toString();
+
+      // Create ModifyPositionParams for withdraw (negative amount)
+      const params = createWithdrawParams(
+        collateralAsset,
+        debtAsset,
+        userAddress,
+        amountWithDecimals
+      );
+
+      // Initialize pool contract
+      const poolContract = await this.contracts.initializePoolContract(poolAddress);
+
+      // Call manage_position function
+      console.log('Calling manage_position for withdraw...', params);
+      const result = await poolContract.manage_position(params);
+
+      // Create transaction record
+      const transaction = await VesuTransaction.create({
+        user_address: userAddress,
+        pool_address: poolAddress,
+        transaction_type: 'withdraw',
+        asset_symbol: assetSymbol,
+        amount: amount.toString(),
+        transaction_hash: result.transaction_hash,
+        status: 'pending',
+        created_at: new Date()
+      });
+
+      return {
+        transactionHash: result.transaction_hash,
+        poolAddress: poolAddress,
+        assetSymbol: assetSymbol,
+        amount: amount.toString(),
+        status: 'pending',
+        transactionId: transaction.transaction_id
+      };
+
+    } catch (error) {
+      console.error('Withdraw error:', error);
+      throw new VesuError(
+        ErrorCodes.TRANSACTION_FAILED,
+        `Failed to withdraw assets: ${error.message}`,
+        { userAddress, assetSymbol, amount, poolName }
+      );
+    }
+  }
+
+  /**
+   * Borrow assets from a Vesu pool using manage_position
+   * @param {string} userAddress - User's wallet address
+   * @param {string} collateralSymbol - Collateral asset symbol
+   * @param {string|number} collateralAmount - Collateral amount
+   * @param {string} borrowSymbol - Borrow asset symbol
+   * @param {string|number} borrowAmount - Amount to borrow
+   * @param {string} poolName - Pool name (default: 'PRIME')
+   * @returns {Promise<Object>} Borrow operation result
+   */
+  async borrow(userAddress, collateralSymbol, collateralAmount, borrowSymbol, borrowAmount, poolName = 'PRIME') {
+    try {
+      console.log('VesuService.borrow called', { 
+        userAddress, collateralSymbol, collateralAmount, borrowSymbol, borrowAmount, poolName 
+      });
+
+      // Get contract addresses
+      const poolAddress = getPoolAddress(poolName);
+      const collateralAsset = getAssetAddress(collateralSymbol);
+      const debtAsset = getAssetAddress(borrowSymbol);
+
+      // Convert amounts to proper format
+      const collateralDecimal = new Decimal(collateralAmount);
+      const borrowDecimal = new Decimal(borrowAmount);
+      const collateralWithDecimals = collateralDecimal.mul(new Decimal(10).pow(18)).toString();
+      const borrowWithDecimals = borrowDecimal.mul(new Decimal(10).pow(18)).toString();
+
+      // Create ModifyPositionParams for borrow
+      const params = createBorrowParams(
+        collateralAsset,
+        debtAsset,
+        userAddress,
+        collateralWithDecimals,
+        borrowWithDecimals
+      );
+
+      // Initialize pool contract
+      const poolContract = await this.contracts.initializePoolContract(poolAddress);
+
+      // Call manage_position function
+      console.log('Calling manage_position for borrow...', params);
+      const result = await poolContract.manage_position(params);
+
+      // Get prices for health factor calculation
+      const prices = await this.oracle.getPrices([collateralSymbol, borrowSymbol]);
+      
+      // Calculate health factor
+      const position = {
+        collateralAsset: collateralSymbol,
+        debtAsset: borrowSymbol,
+        collateralAmount: collateralAmount,
+        debtAmount: borrowAmount
+      };
+      const healthFactor = this.calculateHealthFactor(position, prices);
+
+      // Create transaction record
+      const transaction = await VesuTransaction.create({
+        user_address: userAddress,
+        pool_address: poolAddress,
+        transaction_type: 'borrow',
+        asset_symbol: borrowSymbol,
+        amount: borrowAmount.toString(),
+        transaction_hash: result.transaction_hash,
+        status: 'pending',
+        metadata: {
+          collateral_symbol: collateralSymbol,
+          collateral_amount: collateralAmount.toString(),
+          health_factor: healthFactor ? healthFactor.toString() : null
+        },
+        created_at: new Date()
+      });
+
+      return {
+        transactionHash: result.transaction_hash,
+        poolAddress: poolAddress,
+        collateralSymbol: collateralSymbol,
+        collateralAmount: collateralAmount.toString(),
+        borrowSymbol: borrowSymbol,
+        borrowAmount: borrowAmount.toString(),
+        healthFactor: healthFactor ? parseFloat(healthFactor.toString()) : null,
+        liquidationPrice: null, // Calculate if needed
+        status: 'pending',
+        transactionId: transaction.transaction_id
+      };
+
+    } catch (error) {
+      console.error('Borrow error:', error);
+      throw new VesuError(
+        ErrorCodes.TRANSACTION_FAILED,
+        `Failed to borrow assets: ${error.message}`,
+        { userAddress, collateralSymbol, collateralAmount, borrowSymbol, borrowAmount, poolName }
+      );
+    }
+  }
+
+  /**
+   * Repay borrowed assets using manage_position
+   * @param {string} userAddress - User's wallet address
+   * @param {string} collateralSymbol - Collateral asset symbol
+   * @param {string} debtSymbol - Debt asset symbol
+   * @param {string|number} repayAmount - Amount to repay
+   * @param {string} poolName - Pool name (default: 'PRIME')
+   * @returns {Promise<Object>} Repay operation result
+   */
+  async repay(userAddress, collateralSymbol, debtSymbol, repayAmount, poolName = 'PRIME') {
+    try {
+      console.log('VesuService.repay called', { userAddress, collateralSymbol, debtSymbol, repayAmount, poolName });
+
+      // Get contract addresses
+      const poolAddress = getPoolAddress(poolName);
+      const collateralAsset = getAssetAddress(collateralSymbol);
+      const debtAsset = getAssetAddress(debtSymbol);
+
+      // Convert amount to proper format
+      const repayDecimal = new Decimal(repayAmount);
+      const repayWithDecimals = repayDecimal.mul(new Decimal(10).pow(18)).toString();
+
+      // Create ModifyPositionParams for repay (negative debt amount)
+      const params = createRepayParams(
+        collateralAsset,
+        debtAsset,
+        userAddress,
+        repayWithDecimals
+      );
+
+      // Initialize pool contract
+      const poolContract = await this.contracts.initializePoolContract(poolAddress);
+
+      // Call manage_position function
+      console.log('Calling manage_position for repay...', params);
+      const result = await poolContract.manage_position(params);
+
+      // Create transaction record
+      const transaction = await VesuTransaction.create({
+        user_address: userAddress,
+        pool_address: poolAddress,
+        transaction_type: 'repay',
+        asset_symbol: debtSymbol,
+        amount: repayAmount.toString(),
+        transaction_hash: result.transaction_hash,
+        status: 'pending',
+        created_at: new Date()
+      });
+
+      return {
+        transactionHash: result.transaction_hash,
+        poolAddress: poolAddress,
+        debtSymbol: debtSymbol,
+        repayAmount: repayAmount.toString(),
+        status: 'pending',
+        transactionId: transaction.transaction_id
+      };
+
+    } catch (error) {
+      console.error('Repay error:', error);
+      throw new VesuError(
+        ErrorCodes.TRANSACTION_FAILED,
+        `Failed to repay debt: ${error.message}`,
+        { userAddress, collateralSymbol, debtSymbol, repayAmount, poolName }
+      );
+    }
+  }
+
+  /**
+   * Liquidate an undercollateralized position
+   * @param {string} liquidatorAddress - Liquidator's wallet address
+   * @param {string} userAddress - User address to liquidate
+   * @param {string} collateralSymbol - Collateral asset symbol
+   * @param {string} debtSymbol - Debt asset symbol
+   * @param {string|number} debtToRepay - Amount of debt to repay
+   * @param {string|number} minCollateralToReceive - Minimum collateral to receive
+   * @param {string} poolName - Pool name (default: 'PRIME')
+   * @returns {Promise<Object>} Liquidation result
+   */
+  async liquidate(liquidatorAddress, userAddress, collateralSymbol, debtSymbol, debtToRepay, minCollateralToReceive, poolName = 'PRIME') {
+    try {
+      console.log('VesuService.liquidate called', { 
+        liquidatorAddress, userAddress, collateralSymbol, debtSymbol, debtToRepay, minCollateralToReceive, poolName 
+      });
+
+      // Get contract addresses
+      const poolAddress = getPoolAddress(poolName);
+      const collateralAsset = getAssetAddress(collateralSymbol);
+      const debtAsset = getAssetAddress(debtSymbol);
+
+      // Convert amounts to proper format
+      const debtDecimal = new Decimal(debtToRepay);
+      const minCollateralDecimal = new Decimal(minCollateralToReceive);
+      const debtWithDecimals = debtDecimal.mul(new Decimal(10).pow(18)).toString();
+      const minCollateralWithDecimals = minCollateralDecimal.mul(new Decimal(10).pow(18)).toString();
+
+      // Create LiquidatePositionParams
+      const params = createLiquidateParams(
+        collateralAsset,
+        debtAsset,
+        userAddress,
+        minCollateralWithDecimals,
+        debtWithDecimals
+      );
+
+      // Initialize pool contract
+      const poolContract = await this.contracts.initializePoolContract(poolAddress);
+
+      // Call liquidate_position function
+      console.log('Calling liquidate_position...', params);
+      const result = await poolContract.liquidate_position(params);
+
+      // Create liquidation record
+      const liquidation = await VesuLiquidation.create({
+        liquidator_address: liquidatorAddress,
+        user_address: userAddress,
+        pool_address: poolAddress,
+        collateral_asset: collateralSymbol,
+        debt_asset: debtSymbol,
+        debt_repaid: debtToRepay.toString(),
+        collateral_received: null, // Will be updated from transaction receipt
+        transaction_hash: result.transaction_hash,
+        status: 'pending',
+        created_at: new Date()
+      });
+
+      return {
+        transactionHash: result.transaction_hash,
+        poolAddress: poolAddress,
+        userAddress: userAddress,
+        debtRepaid: debtToRepay.toString(),
+        status: 'pending',
+        liquidationId: liquidation.liquidation_id
+      };
+
+    } catch (error) {
+      console.error('Liquidation error:', error);
+      throw new VesuError(
+        ErrorCodes.TRANSACTION_FAILED,
+        `Failed to liquidate position: ${error.message}`,
+        { liquidatorAddress, userAddress, collateralSymbol, debtSymbol, debtToRepay, minCollateralToReceive, poolName }
+      );
+    }
+  }
+
+  /**
+   * Get available pools
+   * @returns {Promise<Array>} List of available pools
+   */
+  async getPools() {
+    try {
+      const pools = Object.entries(VESU_CONTRACTS.POOLS).map(([name, address]) => ({
+        name: name,
+        address: address,
+        displayName: name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+      }));
+
+      return pools;
+    } catch (error) {
+      console.error('Get pools error:', error);
+      throw new VesuError(
+        ErrorCodes.INTERNAL_ERROR,
+        `Failed to get pools: ${error.message}`
+      );
+    }
+  }
+
+  /**
+   * Get supported assets
+   * @returns {Promise<Array>} List of supported assets
+   */
+  async getAssets() {
+    try {
+      const assets = Object.entries(VESU_CONTRACTS.ASSETS).map(([symbol, address]) => ({
+        symbol: symbol,
+        address: address
+      }));
+
+      return assets;
+    } catch (error) {
+      console.error('Get assets error:', error);
+      throw new VesuError(
+        ErrorCodes.INTERNAL_ERROR,
+        `Failed to get assets: ${error.message}`
+      );
+    }
+  }
+}
+
+module.exports = { VesuService, VesuError, ErrorCodes };

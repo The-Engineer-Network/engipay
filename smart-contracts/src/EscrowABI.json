@@ -1,0 +1,221 @@
+{
+  "abi": [
+    {
+      "name": "PaymentRequestCreated",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "sender",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "recipient",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "PaymentAccepted",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "recipient",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ]
+    },
+    {
+      "name": "PaymentRejected",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "recipient",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ]
+    },
+    {
+      "name": "PaymentCancelled",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "sender",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ]
+    },
+    {
+      "name": "PaymentExpired",
+      "type": "event",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ]
+    },
+    {
+      "name": "create_payment_request",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "recipient",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "amount",
+          "type": "core::integer::u256"
+        },
+        {
+          "name": "token",
+          "type": "core::starknet::contract_address::ContractAddress"
+        },
+        {
+          "name": "expiry_hours",
+          "type": "core::integer::u64"
+        },
+        {
+          "name": "memo",
+          "type": "core::felt252"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u256"
+        }
+      ],
+      "state_mutability": "external"
+    },
+    {
+      "name": "accept_payment",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "reject_payment",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "cancel_payment",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "claim_expired",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "get_payment_request",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::array::Array::<core::felt252>"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "get_payment_status",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "request_id",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "core::integer::u8"
+        }
+      ],
+      "state_mutability": "view"
+    },
+    {
+      "name": "update_platform_fee",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "new_fee",
+          "type": "core::integer::u256"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "update_fee_recipient",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "new_recipient",
+          "type": "core::starknet::contract_address::ContractAddress"
+        }
+      ],
+      "outputs": [],
+      "state_mutability": "external"
+    },
+    {
+      "name": "emergency_pause",
+      "type": "function",
+      "inputs": [],
+      "outputs": [],
+      "state_mutability": "external"
+    }
+  ]
+}

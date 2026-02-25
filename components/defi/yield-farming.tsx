@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,87 +8,149 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { TrendingUp, Zap, Clock } from "lucide-react"
+import { TrendingUp, Zap, Clock, Loader2 } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import { useWallet } from "@/contexts/WalletContext"
 
-const farmingPools = [
-  {
-    protocol: "Trove",
-    pair: "ETH/STRK",
-    apy: "24.5%",
-    tvl: "$240K",
-    rewards: ["STRK", "TRV"],
-    multiplier: "2x",
-    lockPeriod: "30 days",
-    risk: "Medium",
-  },
-  {
-    protocol: "Endurfi",
-    pair: "USDC/ETH",
-    apy: "18.7%",
-    tvl: "$510K",
-    rewards: ["ENDR", "ETH"],
-    multiplier: "1.5x",
-    lockPeriod: "14 days",
-    risk: "Low",
-  },
-  {
-    protocol: "Trove",
-    pair: "STRK/USDC",
-    apy: "32.1%",
-    tvl: "$180K",
-    rewards: ["STRK", "TRV"],
-    multiplier: "3x",
-    lockPeriod: "60 days",
-    risk: "High",
-  },
-]
+const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'
 
-const stakingPools = [
-  {
-    protocol: "Endurfi",
-    asset: "ENDR",
-    apy: "15.2%",
-    tvl: "$870K",
-    rewards: ["ENDR"],
-    lockPeriod: "Flexible",
-    risk: "Low",
-  },
-  {
-    protocol: "Trove",
-    asset: "TRV",
-    apy: "22.8%",
-    tvl: "$320K",
-    rewards: ["TRV", "STRK"],
-    lockPeriod: "90 days",
-    risk: "Medium",
-  },
-]
+interface FarmingPool {
+  protocol: string
+  pair: string
+  apy: string
+  tvl: string
+  rewards: string[]
+  multiplier: string
+  lockPeriod: string
+  risk: string
+}
 
-const userFarms = [
-  {
-    protocol: "Trove",
-    pair: "ETH/STRK",
-    staked: "0.5 LP",
-    value: "$1,050",
-    rewards: "$25.75",
-    apy: "24.5%",
-    timeLeft: "23 days",
-  },
-  {
-    protocol: "Endurfi",
-    asset: "ENDR",
-    staked: "2,000 ENDR",
-    value: "$640",
-    rewards: "$9.73",
-    apy: "15.2%",
-    timeLeft: "Flexible",
-  },
-]
+interface StakingPool {
+  protocol: string
+  asset: string
+  apy: string
+  tvl: string
+  rewards: string[]
+  lockPeriod: string
+  risk: string
+}
+
+interface UserFarm {
+  protocol: string
+  pair?: string
+  asset?: string
+  staked: string
+  value: string
+  rewards: string
+  apy: string
+  timeLeft: string
+}
 
 export function YieldFarming() {
   const [selectedPool, setSelectedPool] = useState("")
   const [amount, setAmount] = useState("")
   const [activeTab, setActiveTab] = useState("farming")
+  const [farmingPools, setFarmingPools] = useState<FarmingPool[]>([])
+  const [stakingPools, setStakingPools] = useState<StakingPool[]>([])
+  const [userFarms, setUserFarms] = useState<UserFarm[]>([])
+  const [loading, setLoading] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
+  
+  const { toast } = useToast()
+  const { walletAddress } = useWallet()
+
+  useEffect(() => {
+    loadPools()
+    if (walletAddress) {
+      loadUserFarms()
+    }
+  }, [walletAddress])
+
+  const loadPools = async () => {
+    setLoading(true)
+    try {
+      // Load farming pools from Trove/Endurfi APIs
+      const response = await fetch(`${API_URL}/api/defi/farming-pools`)
+      const data = await response.json()
+      
+      if (data.success) {
+        setFarmingPools(data.farmingPools || [])
+        setStakingPools(data.stakingPools || [])
+      }
+    } catch (error) {
+      console.error('Error loading pools:', error)
+      // Fallback to empty arrays if API not available
+      setFarmingPools([])
+      setStakingPools([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadUserFarms = async () => {
+    if (!walletAddress) return
+    
+    try {
+      const response = await fetch(`${API_URL}/api/defi/user-farms/${walletAddress}`)
+      const data = await response.json()
+      
+      if (data.success) {
+        setUserFarms(data.farms || [])
+      }
+    } catch (error) {
+      console.error('Error loading user farms:', error)
+      setUserFarms([])
+    }
+  }
+
+  const handleStake = async () => {
+    if (!walletAddress || !amount || !selectedPool) {
+      toast({
+        title: "Invalid Input",
+        description: "Please select a pool and enter an amount",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const response = await fetch(`${API_URL}/api/staking/stake`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({
+          poolId: selectedPool,
+          amount: amount,
+          walletAddress: walletAddress
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `Successfully staked ${amount} tokens`
+        })
+        setAmount("")
+        loadPools()
+        loadUserFarms()
+      } else {
+        throw new Error(data.error || 'Staking failed')
+      }
+    } catch (error: any) {
+      toast({
+        title: "Staking Failed",
+        description: error.message,
+        variant: "destructive"
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -173,9 +235,23 @@ export function YieldFarming() {
                   <span>30 days</span>
                 </div>
               </div>
-              <Button className="w-full cursor-pointer hover:bg-primary/90 transition-colors" size="lg">
-                <Zap className="mr-2 h-4 w-4" />
-                Start Farming
+              <Button 
+                className="w-full cursor-pointer hover:bg-primary/90 transition-colors" 
+                size="lg"
+                onClick={handleStake}
+                disabled={isProcessing || !walletAddress}
+              >
+                {isProcessing ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Zap className="mr-2 h-4 w-4" />
+                    Start Farming
+                  </>
+                )}
               </Button>
             </TabsContent>
 
@@ -218,9 +294,23 @@ export function YieldFarming() {
                   <span>Flexible</span>
                 </div>
               </div>
-              <Button className="w-full cursor-pointer hover:bg-primary/90 transition-colors" size="lg">
-                <TrendingUp className="mr-2 h-4 w-4" />
-                Start Staking
+              <Button 
+                className="w-full cursor-pointer hover:bg-primary/90 transition-colors" 
+                size="lg"
+                onClick={handleStake}
+                disabled={isProcessing || !walletAddress}
+              >
+                {isProcessing ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <TrendingUp className="mr-2 h-4 w-4" />
+                    Start Staking
+                  </>
+                )}
               </Button>
             </TabsContent>
           </Tabs>
@@ -378,7 +468,15 @@ export function YieldFarming() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {userFarms.map((farm, index) => (
+            {!walletAddress ? (
+              <div className="text-center p-8 text-muted-foreground">
+                Connect your wallet to view your positions
+              </div>
+            ) : userFarms.length === 0 ? (
+              <div className="text-center p-8 text-muted-foreground">
+                No active positions. Start farming or staking to see your positions here.
+              </div>
+            ) : userFarms.map((farm, index) => (
               <div
                 key={index}
                 className="flex items-center justify-between p-4 rounded-lg bg-secondary/50 border border-border hover:bg-secondary/70 transition-colors cursor-pointer"
