@@ -10,11 +10,28 @@ import { QuickActions } from "@/components/dashboard/QuickActions"
 import { ActivityCard } from "@/components/dashboard/ActivityCard"
 import { DeFiCard } from "@/components/dashboard/DeFiCard"
 import { TabType } from "@/types/dashboard"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import dynamic from "next/dynamic"
+
+// Dynamically import payment components
+const SendPayment = dynamic(() => import("@/components/payments/SendPayment").then(mod => ({ default: mod.SendPayment })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const BtcSwap = dynamic(() => import("@/components/payments/BtcSwap").then(mod => ({ default: mod.BtcSwap })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
+const ServicePurchase = dynamic(() => import("@/components/payments/ServicePurchase").then(mod => ({ default: mod.ServicePurchase })), {
+  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
+})
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<TabType>("overview")
+  const [showSendModal, setShowSendModal] = useState(false)
+  const [showReceiveModal, setShowReceiveModal] = useState(false)
+  const [showSwapModal, setShowSwapModal] = useState(false)
+  const [showPayMerchantModal, setShowPayMerchantModal] = useState(false)
   const router = useRouter()
-  const { isConnected, balances, isLoadingBalances } = useWallet()
+  const { isConnected, balances, isLoadingBalances, walletAddress } = useWallet()
 
   useEffect(() => {
     const savedWallet = localStorage.getItem("engipay-wallet")
@@ -34,8 +51,27 @@ export default function DashboardPage() {
 
 
   const handleQuickAction = (action: string) => {
-    console.log(`Quick action: ${action}`)
-    // Handle quick actions here
+    if (!isConnected) {
+      alert("Please connect your wallet first")
+      return
+    }
+
+    switch (action) {
+      case "Send":
+        setShowSendModal(true)
+        break
+      case "Receive":
+        setShowReceiveModal(true)
+        break
+      case "Swap":
+        setShowSwapModal(true)
+        break
+      case "Pay Merchant":
+        setShowPayMerchantModal(true)
+        break
+      default:
+        console.log(`Quick action: ${action}`)
+    }
   }
 
   const handleTabChange = (tab: TabType) => {
@@ -187,6 +223,59 @@ export default function DashboardPage() {
           </div>
         </div>
       </main>
+
+      {/* Quick Action Modals */}
+      <Dialog open={showSendModal} onOpenChange={setShowSendModal}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Send Payment</DialogTitle>
+          </DialogHeader>
+          <SendPayment />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showReceiveModal} onOpenChange={setShowReceiveModal}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Receive Payment</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 p-4">
+            <div className="text-center">
+              <p className="text-sm text-muted-foreground mb-4">Share your wallet address to receive payments</p>
+              <div className="bg-secondary/50 p-4 rounded-lg break-all">
+                <p className="text-xs font-mono">{walletAddress}</p>
+              </div>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(walletAddress || "")
+                  alert("Address copied to clipboard!")
+                }}
+                className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+              >
+                Copy Address
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showSwapModal} onOpenChange={setShowSwapModal}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Cross-Chain Swap</DialogTitle>
+          </DialogHeader>
+          <BtcSwap />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showPayMerchantModal} onOpenChange={setShowPayMerchantModal}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Pay Merchant</DialogTitle>
+          </DialogHeader>
+          <ServicePurchase />
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

@@ -172,11 +172,11 @@ export function YieldFarming() {
 
       {/* Panel for Staking/Farming */}
       <Card className="gradient-card glow-effect">
-        <CardHeader>
-          <CardTitle>Stake or Farm Assets</CardTitle>
-          <CardDescription>Earn rewards by providing liquidity or staking tokens</CardDescription>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg">Stake or Farm Assets</CardTitle>
+          <CardDescription className="text-sm">Earn rewards by providing liquidity or staking tokens</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="pb-4">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="grid w-full grid-cols-2 bg-secondary/50">
               <TabsTrigger
@@ -318,18 +318,18 @@ export function YieldFarming() {
       </Card>
 
       {/* Available Pools */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card className="gradient-card hover:glow-effect transition-all">
-          <CardHeader>
-            <CardTitle>Yield Farming Pools</CardTitle>
-            <CardDescription>High-yield liquidity mining opportunities</CardDescription>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">Yield Farming Pools</CardTitle>
+            <CardDescription className="text-sm">High-yield liquidity mining opportunities</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
+          <CardContent className="max-h-[400px] overflow-y-auto">
+            <div className="space-y-3">
               {farmingPools.map((pool, index) => (
                 <div
                   key={index}
-                  className="p-4 rounded-lg bg-secondary/50 border border-border hover:bg-secondary/70 transition-colors cursor-pointer"
+                  className="p-3 rounded-lg bg-secondary/50 border border-border hover:bg-secondary/70 transition-colors cursor-pointer"
                 >
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-3">

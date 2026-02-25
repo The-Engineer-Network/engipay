@@ -36,12 +36,12 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
     const handleWalletConnect = async (walletName: string) => {
         try {
             await connectWallet(walletName);
-            setTimeout(() => {
-                router.push("/dashboard");
-                onClose();
-            }, 1500);
+            // Connection successful, navigate immediately
+            onClose();
+            router.push("/dashboard");
         } catch (error) {
             console.error("Wallet connection error:", error);
+            // Error is already handled by the connectWallet function with toast
         }
     };
 

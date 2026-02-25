@@ -160,8 +160,7 @@ export function PortfolioOverview() {
                   dot={{ fill: "oklch(0.7 0.15 160)", strokeWidth: 2, r: 4 }}
                 />
               </LineChart>
-              </ResponsiveContainer>
-            )}
+            </ResponsiveContainer>
           </CardContent>
         </Card>
 
@@ -188,19 +187,17 @@ export function PortfolioOverview() {
                 </Pie>
                 <Tooltip />
               </PieChart>
-                </ResponsiveContainer>
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                  {assetData.map((asset) => (
-                    <div key={asset.name} className="flex items-center gap-2">
-                      <div className="h-3 w-3 rounded-full" style={{ backgroundColor: asset.color }} />
-                      <span className="text-sm">
-                        {asset.name} {asset.value}%
-                      </span>
-                    </div>
-                  ))}
+            </ResponsiveContainer>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              {assetData.map((asset) => (
+                <div key={asset.name} className="flex items-center gap-2">
+                  <div className="h-3 w-3 rounded-full" style={{ backgroundColor: asset.color }} />
+                  <span className="text-sm">
+                    {asset.name} {asset.value}%
+                  </span>
                 </div>
-              </>
-            )}
+              ))}
+            </div>
           </CardContent>
         </Card>
       </div>

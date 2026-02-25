@@ -44,9 +44,26 @@ export function BtcSwap() {
   const { walletName, account, isConnected } = useWallet();
 
   const tokens = [
-    { symbol: 'BTC', name: 'Bitcoin', icon: <Bitcoin className="w-4 h-4" /> },
-    { symbol: 'STRK', name: 'Starknet', icon: <Zap className="w-4 h-4" /> },
+    { symbol: 'BTC', name: 'Bitcoin', icon: <Bitcoin className="w-4 h-4" />, requiresWallet: 'Xverse' },
+    { symbol: 'STRK', name: 'Starknet', icon: <Zap className="w-4 h-4" />, requiresWallet: 'Argent/Braavos' },
   ];
+
+  // Filter tokens based on connected wallet
+  const getAvailableTokens = () => {
+    if (walletName === 'Xverse') {
+      // Xverse can swap BTC to STRK (but needs StarkNet wallet for receiving)
+      return tokens;
+    } else if (walletName === 'Argent' || walletName === 'ArgentX' || walletName === 'Braavos') {
+      // StarkNet wallets can only do STRK operations
+      return tokens.filter(t => t.symbol === 'STRK');
+    } else if (walletName === 'MetaMask') {
+      // MetaMask can't do BTC or STRK directly
+      return [];
+    }
+    return tokens;
+  };
+
+  const availableTokens = getAvailableTokens();
 
   const getQuote = async () => {
     if (!swapParams.amount || parseFloat(swapParams.amount) <= 0) {
@@ -302,7 +319,26 @@ export function BtcSwap() {
     return error.message || 'Swap failed, please try again';
   };
 
-  const availableToTokens = tokens.filter(t => t.symbol !== swapParams.fromToken);
+  const availableToTokens = availableTokens.filter(t => t.symbol !== swapParams.fromToken);
+
+  // Show wallet requirement message
+  const getWalletRequirementMessage = () => {
+    if (!isConnected) {
+      return 'Please connect a wallet to start swapping';
+    }
+    if (availableTokens.length === 0) {
+      return `${walletName} wallet doesn't support cross-chain swaps. Please connect Xverse (for BTC) or Argent/Braavos (for STRK)`;
+    }
+    if (swapParams.fromToken === 'BTC' && walletName !== 'Xverse') {
+      return 'Swapping from BTC requires Xverse wallet';
+    }
+    if (swapParams.toToken === 'BTC' && walletName !== 'Xverse') {
+      return 'Swapping to BTC requires Xverse wallet';
+    }
+    return null;
+  };
+
+  const walletMessage = getWalletRequirementMessage();
 
   return (
     <Card className="glassmorphism">
@@ -327,7 +363,7 @@ export function BtcSwap() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {tokens.map((token) => (
+                {availableTokens.map((token) => (
                   <SelectItem key={token.symbol} value={token.symbol}>
                     <div className="flex items-center gap-2">
                       {token.icon}
@@ -400,7 +436,25 @@ export function BtcSwap() {
           </Select>
         </div>
 
-        {!swapQuote && swapParams.amount && (
+        {walletMessage && (
+          <div className="bg-orange-500/10 border border-orange-500/20 rounded-lg p-4">
+            <p className="text-sm text-orange-300 flex items-center gap-2">
+              ⚠️ {walletMessage}
+            </p>
+            {!isConnected && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={() => window.location.href = '/'}
+              >
+                Connect Wallet
+              </Button>
+            )}
+          </div>
+        )}
+
+        {!swapQuote && swapParams.amount && !walletMessage && (
           <Button
             onClick={getQuote}
             disabled={isGettingQuote}
@@ -472,7 +526,7 @@ export function BtcSwap() {
 
         <Button
           onClick={handleSwap}
-          disabled={isSwapping || !swapQuote || !swapParams.amount}
+          disabled={isSwapping || !swapQuote || !swapParams.amount || !!walletMessage}
           className="glow-button bg-primary hover:bg-primary/90 text-primary-foreground w-full"
         >
           {isSwapping ? (
@@ -487,14 +541,6 @@ export function BtcSwap() {
             </>
           )}
         </Button>
-
-        {(swapParams.fromToken === 'BTC' || swapParams.toToken === 'BTC') && walletName !== 'Xverse' && (
-          <div className="bg-orange-500/10 border border-orange-500/20 rounded-lg p-3">
-            <p className="text-sm text-orange-300">
-              ⚠️ BTC operations require Xverse wallet. Please connect Xverse wallet first.
-            </p>
-          </div>
-        )}
       </CardContent>
     </Card>
   );
