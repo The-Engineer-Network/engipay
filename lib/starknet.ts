@@ -15,7 +15,7 @@ const getProvider = async () => {
   
   const { RpcProvider } = await import('starknet');
   providerInstance = new RpcProvider({
-    nodeUrl: process.env.NEXT_PUBLIC_STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io',
+    nodeUrl: process.env.NEXT_PUBLIC_STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP',
   });
   return providerInstance;
 };
@@ -412,7 +412,7 @@ export class PaymentService {
     // Lazy load starknet only when needed
     const { RpcProvider } = await import('starknet');
     this.provider = new RpcProvider({
-      nodeUrl: process.env.NEXT_PUBLIC_STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io',
+      nodeUrl: process.env.NEXT_PUBLIC_STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP',
     });
     return this.provider;
   }

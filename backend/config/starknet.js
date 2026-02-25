@@ -8,18 +8,15 @@ require('dotenv').config();
 
 const getStarknetProvider = () => {
   const network = process.env.STARKNET_NETWORK || 'sepolia';
-  const rpcUrl = process.env.STARKNET_RPC_URL;
-
-  if (!rpcUrl) {
-    throw new Error('STARKNET_RPC_URL environment variable is not set');
-  }
+  // Use Lava RPC as primary provider for better reliability
+  const rpcUrl = process.env.STARKNET_RPC_URL || 'https://rpc.starknet.lava.build';
 
   // Create RPC provider
   const provider = new RpcProvider({
     nodeUrl: rpcUrl,
   });
 
-  console.log(`Starknet provider initialized for ${network} network`);
+  console.log(`Starknet provider initialized for ${network} network using ${rpcUrl}`);
   return provider;
 };
 

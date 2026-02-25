@@ -1,33 +1,15 @@
 {
-  "name": "engipay-smart-contracts",
+  "name": "smart-contracts",
   "version": "1.0.0",
-  "description": "EngiPay StarkNet Smart Contracts",
-  "main": "index.js",
+  "description": "",
+  "main": "deploy.js",
   "scripts": {
-    "compile": "node scripts/compile.js",
-    "deploy": "node scripts/deploy.js",
-    "deploy:sepolia": "STARKNET_NETWORK=sepolia node scripts/deploy.js",
-    "deploy:mainnet": "STARKNET_NETWORK=mainnet node scripts/deploy.js",
-    "test": "echo \"Run tests with StarkNet Foundry\" && exit 1",
-    "clean": "rm -rf artifacts deployments.json"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [
-    "starknet",
-    "cairo",
-    "smart-contracts",
-    "defi",
-    "blockchain"
-  ],
-  "author": "EngiPay",
-  "license": "MIT",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "starknet": "^6.0.0",
-    "dotenv": "^16.3.1"
-  },
-  "devDependencies": {
-    "@starknet-foundry/starknet-foundry": "^0.15.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "starknet": "^6.23.1"
   }
 }

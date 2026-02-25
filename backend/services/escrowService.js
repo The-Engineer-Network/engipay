@@ -2,15 +2,16 @@ const { Contract, RpcProvider, Account, cairo, uint256 } = require('starknet');
 const crypto = require('crypto');
 require('dotenv').config();
 
-// Load Escrow ABI
-const ESCROW_ABI = require('../contracts/EscrowABI.json').abi;
+// Load Escrow ABI (EscrowTiny)
+const escrowClass = require('../contracts/EscrowTinyABI.json');
+const ESCROW_ABI = escrowClass.abi || escrowClass;
 
 // Contract address from environment
 const ESCROW_CONTRACT_ADDRESS = process.env.ESCROW_CONTRACT_ADDRESS || '0x0';
 
 // Initialize Starknet provider
 const provider = new RpcProvider({
-  nodeUrl: process.env.STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io'
+  nodeUrl: process.env.STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP'
 });
 
 /**

@@ -1,0 +1,66 @@
+{
+  "networks": {
+    "sepolia": {
+      "rpc": "https://starknet-sepolia.public.blastapi.io/rpc/v0_7",
+      "explorer": "https://sepolia.starkscan.co",
+      "chainId": "SN_SEPOLIA"
+    },
+    "mainnet": {
+      "rpc": "https://starknet-mainnet.public.blastapi.io/rpc/v0_7",
+      "explorer": "https://starkscan.co",
+      "chainId": "SN_MAIN"
+    }
+  },
+  "contracts": {
+    "EngiToken": {
+      "name": "EngiPay Token",
+      "symbol": "ENGI",
+      "initialSupply": "1000000000000000000000000",
+      "description": "ERC20 token with minting capabilities for EngiPay platform"
+    },
+    "EscrowV2": {
+      "platformFee": "250",
+      "description": "Payment request and escrow system (2.5% fee)"
+    },
+    "RewardDistributorV2": {
+      "description": "Staking and rewards distribution system"
+    },
+    "AtomiqAdapter": {
+      "platformFee": "100",
+      "swapTimeout": "86400",
+      "description": "Bitcoin/STRK swap integration (1% fee, 24h timeout)"
+    },
+    "VesuAdapter": {
+      "vesuProtocol": "0x0000000000000000000000000000000000000000000000000000000000000001",
+      "description": "Lending/borrowing protocol integration (update vesuProtocol address)"
+    }
+  },
+  "postDeployment": {
+    "rewardPools": [
+      {
+        "name": "STRK Staking Pool",
+        "token": "STRK_TOKEN_ADDRESS",
+        "rewardRate": "1000000000000000000"
+      },
+      {
+        "name": "ENGI Staking Pool",
+        "token": "ENGI_TOKEN_ADDRESS",
+        "rewardRate": "2000000000000000000"
+      }
+    ],
+    "vesuAssets": [
+      {
+        "name": "STRK",
+        "address": "STRK_TOKEN_ADDRESS",
+        "lendingRate": "500",
+        "borrowingRate": "800"
+      },
+      {
+        "name": "USDC",
+        "address": "USDC_TOKEN_ADDRESS",
+        "lendingRate": "400",
+        "borrowingRate": "700"
+      }
+    ]
+  }
+}

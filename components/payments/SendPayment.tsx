@@ -17,6 +17,7 @@ export function SendPayment() {
   const [memo, setMemo] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [txHash, setTxHash] = useState('')
+  const [isPrivate, setIsPrivate] = useState(false)
   const { walletAddress, isConnected, starknetAccount } = useWallet()
 
   const handleSend = async () => {
@@ -43,7 +44,8 @@ export function SendPayment() {
 
     try {
       // Step 1: Prepare transaction via backend
-      const prepareResponse = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/payments/v2/send`, {
+      const endpoint = isPrivate ? '/api/payments/v2/private-send' : '/api/payments/v2/send';
+      const prepareResponse = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -54,6 +56,7 @@ export function SendPayment() {
           asset,
           amount,
           memo,
+          is_private: isPrivate,
         }),
       })
 
@@ -103,10 +106,10 @@ export function SendPayment() {
       }
 
       toast({
-        title: 'Payment Sent! 🎉',
+        title: isPrivate ? 'Private Payment Sent! 🔒' : 'Payment Sent! 🎉',
         description: (
           <div className="flex flex-col gap-2">
-            <p>Transaction submitted successfully</p>
+            <p>{isPrivate ? 'Private transaction with hidden amount' : 'Transaction submitted successfully'}</p>
             <a
               href={executeData.explorer_url}
               target="_blank"
@@ -191,6 +194,22 @@ export function SendPayment() {
             className="glassmorphism"
             rows={2}
           />
+        </div>
+
+        <div className="flex items-center justify-between p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg">
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="private-payment"
+              checked={isPrivate}
+              onChange={(e) => setIsPrivate(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-300"
+            />
+            <label htmlFor="private-payment" className="text-sm font-medium cursor-pointer">
+              Private Payment (Hide Amount) 🔒
+            </label>
+          </div>
+          <span className="text-xs text-gray-400">Powered by Tongo</span>
         </div>
 
         <Button

@@ -29,7 +29,7 @@ class AtomiqAdapterService {
 
       // Initialize provider
       this.provider = new RpcProvider({
-        nodeUrl: process.env.STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io'
+        nodeUrl: process.env.STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP'
       });
 
       // Initialize account (for contract interactions)

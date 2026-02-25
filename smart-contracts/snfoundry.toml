@@ -1,0 +1,9 @@
+[sncast.sepolia]
+account = "engipay-deployer"
+accounts-file = "~/.starknet_accounts/starknet_open_zeppelin_accounts.json"
+url = "https://starknet-sepolia.public.blastapi.io/rpc/v0_7"
+
+[sncast.mainnet]
+account = "engipay-deployer"
+accounts-file = "~/.starknet_accounts/starknet_open_zeppelin_accounts.json"
+url = "https://starknet-mainnet.public.blastapi.io/rpc/v0_7"
