@@ -3,9 +3,9 @@ const StarknetContractManager = require('./StarknetContractManager');
 const { PragmaOracleService } = require('./PragmaOracleService');
 const TransactionManager = require('./TransactionManager');
 const { getVesuConfig, getPoolConfig, getAssetConfig } = require('../config/vesu.config');
-const { 
-  VESU_CONTRACTS, 
-  getPoolAddress, 
+const {
+  VESU_CONTRACTS,
+  getPoolAddress,
   getAssetAddress,
   createSupplyParams,
   createWithdrawParams,
@@ -28,19 +28,19 @@ const ErrorCodes = {
   INSUFFICIENT_BALANCE: 'INSUFFICIENT_BALANCE',
   INVALID_ASSET: 'INVALID_ASSET',
   INVALID_POOL: 'INVALID_POOL',
-  
+
   // Business logic errors (422)
   LTV_EXCEEDED: 'LTV_EXCEEDED',
   INSUFFICIENT_LIQUIDITY: 'INSUFFICIENT_LIQUIDITY',
   POSITION_UNDERCOLLATERALIZED: 'POSITION_UNDERCOLLATERALIZED',
   HEALTH_FACTOR_TOO_LOW: 'HEALTH_FACTOR_TOO_LOW',
   POOL_NOT_ACTIVE: 'POOL_NOT_ACTIVE',
-  
+
   // External service errors (502/503)
   STARKNET_RPC_ERROR: 'STARKNET_RPC_ERROR',
   ORACLE_UNAVAILABLE: 'ORACLE_UNAVAILABLE',
   TRANSACTION_FAILED: 'TRANSACTION_FAILED',
-  
+
   // System errors (500)
   DATABASE_ERROR: 'DATABASE_ERROR',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
@@ -76,13 +76,13 @@ class VesuService {
     this.contracts = contractManager || new StarknetContractManager();
     this.oracle = oracleService || new PragmaOracleService();
     this.txManager = transactionManager || new TransactionManager(this.contracts.provider);
-    
+
     // Load configuration
     this.config = getVesuConfig();
-    
+
     // Set precision for decimal calculations
     Decimal.set({ precision: 36, rounding: Decimal.ROUND_DOWN });
-    
+
     console.log('VesuService initialized');
   }
 
@@ -324,7 +324,7 @@ class VesuService {
   validateAmount(amount, fieldName = 'amount') {
     try {
       const amountDecimal = new Decimal(amount);
-      
+
       if (amountDecimal.isNaN()) {
         throw new VesuError(
           ErrorCodes.INVALID_AMOUNT,
@@ -422,7 +422,7 @@ class VesuService {
 
     // Check if pool exists in database
     const pool = await VesuPool.findOne({ where: { pool_address: poolAddress } });
-    
+
     if (!pool) {
       throw new VesuError(
         ErrorCodes.INVALID_POOL,
@@ -826,7 +826,7 @@ class VesuService {
     // Fetch current vToken balance from contract
     // Note: We need wallet address here - this would come from the User model in production
     // For now, we'll skip the actual contract call and just update based on exchange rate
-    
+
     // Get current exchange rate
     const exchangeRate = await this._withContractErrorHandling(async () => {
       return await this.contracts.getVTokenExchangeRateForPool(
@@ -1564,7 +1564,7 @@ class VesuService {
     });
 
     const exchangeRateDecimal = new Decimal(exchangeRate);
-    
+
     // vTokens to burn = amount / exchangeRate (same formula as calculateVTokensToReceive)
     const vTokensToBurn = this.calculateVTokensToReceive(amountDecimal, exchangeRateDecimal);
 
@@ -2053,14 +2053,6 @@ class VesuService {
       lastUpdated: position.last_updated
     };
   }
-}
-
-module.exports = {
-  VesuService,
-  VesuError,
-  ErrorCodes,
-};
-
 
   // ============================================================================
   // VESU PROTOCOL CONTRACT INTERACTIONS
@@ -2213,8 +2205,8 @@ module.exports = {
    */
   async borrow(userAddress, collateralSymbol, collateralAmount, borrowSymbol, borrowAmount, poolName = 'PRIME') {
     try {
-      console.log('VesuService.borrow called', { 
-        userAddress, collateralSymbol, collateralAmount, borrowSymbol, borrowAmount, poolName 
+      console.log('VesuService.borrow called', {
+        userAddress, collateralSymbol, collateralAmount, borrowSymbol, borrowAmount, poolName
       });
 
       // Get contract addresses
@@ -2246,7 +2238,7 @@ module.exports = {
 
       // Get prices for health factor calculation
       const prices = await this.oracle.getPrices([collateralSymbol, borrowSymbol]);
-      
+
       // Calculate health factor
       const position = {
         collateralAsset: collateralSymbol,
@@ -2377,8 +2369,8 @@ module.exports = {
    */
   async liquidate(liquidatorAddress, userAddress, collateralSymbol, debtSymbol, debtToRepay, minCollateralToReceive, poolName = 'PRIME') {
     try {
-      console.log('VesuService.liquidate called', { 
-        liquidatorAddress, userAddress, collateralSymbol, debtSymbol, debtToRepay, minCollateralToReceive, poolName 
+      console.log('VesuService.liquidate called', {
+        liquidatorAddress, userAddress, collateralSymbol, debtSymbol, debtToRepay, minCollateralToReceive, poolName
       });
 
       // Get contract addresses
