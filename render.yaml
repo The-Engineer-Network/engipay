@@ -1,7 +1,7 @@
 services:
   - type: web
     name: engipay-backend
-    env: node
+    runtime: node
     region: oregon
     plan: free
     buildCommand: cd backend && npm install
