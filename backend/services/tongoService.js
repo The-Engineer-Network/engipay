@@ -1,4 +1,17 @@
-const { TongoClient } = require('@fatsolutions/tongo-sdk');
+let TongoClient;
+try {
+  const tongoSdk = require('@fatsolutions/tongo-sdk');
+  TongoClient = tongoSdk.TongoClient;
+} catch (error) {
+  console.warn('⚠️  Tongo SDK import failed:', error.message);
+  // Create a mock TongoClient for graceful degradation
+  TongoClient = class MockTongoClient {
+    constructor() {}
+    async init() {
+      throw new Error('Tongo SDK is not available');
+    }
+  };
+}
 require('dotenv').config();
 
 /**
@@ -31,6 +44,13 @@ class TongoService {
 
       console.log('Initializing Tongo SDK for privacy-shielded transactions...');
 
+      // Check if TongoClient is available
+      if (!TongoClient || TongoClient.name === 'MockTongoClient') {
+        console.warn('⚠️  Tongo SDK not available. Privacy features will be limited.');
+        this.initialized = false;
+        return;
+      }
+
       // Initialize Tongo client with StarkNet RPC
       this.client = new TongoClient({
         rpcUrl: process.env.STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP',
@@ -46,8 +66,9 @@ class TongoService {
       console.log('✅ Tongo SDK initialized successfully');
 
     } catch (error) {
-      console.error('❌ Failed to initialize Tongo SDK:', error);
-      throw error;
+      console.error('❌ Failed to initialize Tongo SDK:', error.message);
+      console.warn('⚠️  Privacy features will be limited');
+      this.initialized = false;
     }
   }
 
