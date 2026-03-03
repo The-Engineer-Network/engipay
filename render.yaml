@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: engipay-backend
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: DATABASE_URL
+        fromDatabase:
+          name: engipay-db
+          property: connectionString
+      - key: DB_HOST
+        fromDatabase:
+          name: engipay-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: engipay-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: engipay-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: engipay-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: engipay-db
+          property: password
+      - key: FRONTEND_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: REDIS_URL
+        sync: false
+
+databases:
+  - name: engipay-db
+    databaseName: engipay_db
+    user: engipay_user
+    plan: free
