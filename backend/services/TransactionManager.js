@@ -41,6 +41,12 @@ class TransactionManager {
    */
   initializeAccount() {
     try {
+      // Validate that we have the required credentials
+      if (!this.accountAddress || !this.privateKey) {
+        console.warn('⚠️  StarkNet account credentials not configured. Transaction signing will be unavailable.');
+        return;
+      }
+
       this.account = new Account(
         this.provider,
         this.accountAddress,
@@ -49,7 +55,8 @@ class TransactionManager {
       console.log(`Account initialized: ${this.accountAddress}`);
     } catch (error) {
       console.error('Failed to initialize account:', error.message);
-      throw new Error(`Account initialization failed: ${error.message}`);
+      console.warn('⚠️  Transaction signing will be unavailable.');
+      this.account = null;
     }
   }
 
