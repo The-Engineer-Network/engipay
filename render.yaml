@@ -46,5 +46,5 @@ services:
 databases:
   - name: engipay-db
     databaseName: engipay_db
-    user: engipay_user
+    user: engipay_db_user
     plan: free
