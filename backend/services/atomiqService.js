@@ -1,6 +1,3 @@
-const { newSwapper, Tokens, SwapAmountType } = require('@atomiqlabs/sdk');
-const { initializeStarknet } = require('@atomiqlabs/chain-starknet');
-const { SqliteStorageManager } = require('@atomiqlabs/storage-sqlite');
 const path = require('path');
 require('dotenv').config();
 
@@ -14,6 +11,9 @@ class AtomiqService {
   constructor() {
     this.swapper = null;
     this.initialized = false;
+    this.sdk = null;
+    this.chainModule = null;
+    this.storageModule = null;
   }
 
   /**
@@ -27,6 +27,15 @@ class AtomiqService {
       }
 
       console.log('Initializing Atomiq SDK...');
+
+      // Dynamic import for ES modules
+      this.sdk = await import('@atomiqlabs/sdk');
+      this.chainModule = await import('@atomiqlabs/chain-starknet');
+      this.storageModule = await import('@atomiqlabs/storage-sqlite');
+
+      const { newSwapper, Tokens, SwapAmountType } = this.sdk;
+      const { initializeStarknet } = this.chainModule;
+      const { SqliteStorageManager } = this.storageModule;
 
       // Set up storage for swap state persistence (NodeJS requires sqlite)
       const storageManager = new SqliteStorageManager(
@@ -96,6 +105,7 @@ class AtomiqService {
     try {
       await this.ensureInitialized();
 
+      const { Tokens, SwapAmountType } = this.sdk;
       const amountBigInt = BigInt(amount);
       const swapAmountType = exactIn ? SwapAmountType.EXACT_IN : SwapAmountType.EXACT_OUT;
 
@@ -149,6 +159,7 @@ class AtomiqService {
     try {
       await this.ensureInitialized();
 
+      const { Tokens, SwapAmountType } = this.sdk;
       const amountBigInt = BigInt(amount);
       const swapAmountType = exactIn ? SwapAmountType.EXACT_IN : SwapAmountType.EXACT_OUT;
 
@@ -348,6 +359,7 @@ class AtomiqService {
     try {
       await this.ensureInitialized();
 
+      const { Tokens } = this.sdk;
       const btcToStrkLimits = this.swapper.getSwapLimits(Tokens.BITCOIN.BTC, Tokens.STARKNET.STRK);
       const strkToBtcLimits = this.swapper.getSwapLimits(Tokens.STARKNET.STRK, Tokens.BITCOIN.BTC);
 
