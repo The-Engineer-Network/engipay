@@ -1,5 +1,5 @@
 const { newSwapper, Tokens, SwapAmountType } = require('@atomiqlabs/sdk');
-const { StarknetChain } = require('@atomiqlabs/chain-starknet');
+const { initializeStarknet } = require('@atomiqlabs/chain-starknet');
 const { SqliteStorageManager } = require('@atomiqlabs/storage-sqlite');
 const path = require('path');
 require('dotenv').config();
@@ -36,11 +36,13 @@ class AtomiqService {
       // Configure StarkNet RPC URL
       const starknetRpcUrl = process.env.STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP';
 
+      // Initialize Starknet chain
+      const starknetChain = await initializeStarknet(starknetRpcUrl);
+
       // Create swapper factory with StarkNet support
-      // Note: "as const" keyword is required for proper TypeScript type inference
       this.swapper = await newSwapper(
         {
-          starknet: new StarknetChain(starknetRpcUrl)
+          starknet: starknetChain
         },
         storageManager,
         {
