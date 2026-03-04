@@ -407,7 +407,82 @@ export function WalletProvider({ children }: WalletProviderProps) {
     try {
       const balances = [];
 
-      if (walletName === "Xverse") {
+      if (walletName === "Argent X" || walletName === "Braavos") {
+        // Fetch StarkNet balances
+        try {
+          const { Provider, Contract } = await import("starknet");
+          const provider = new Provider({ 
+            sequencer: { network: "mainnet-alpha" } 
+          });
+
+          // Common StarkNet tokens
+          const tokens = [
+            {
+              symbol: "ETH",
+              name: "Ethereum",
+              address: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+              decimals: 18,
+              icon: "🔷"
+            },
+            {
+              symbol: "STRK",
+              name: "StarkNet Token",
+              address: "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+              decimals: 18,
+              icon: "⭐"
+            },
+            {
+              symbol: "USDC",
+              name: "USD Coin",
+              address: "0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8",
+              decimals: 6,
+              icon: "💰"
+            }
+          ];
+
+          const erc20Abi = [
+            {
+              name: "balanceOf",
+              type: "function",
+              inputs: [{ name: "account", type: "felt" }],
+              outputs: [{ name: "balance", type: "Uint256" }],
+              stateMutability: "view"
+            }
+          ];
+
+          for (const token of tokens) {
+            try {
+              const contract = new Contract(erc20Abi, token.address, provider);
+              const result = await contract.balanceOf(walletAddress);
+              const balance = result.balance || result;
+              
+              // Convert Uint256 to number
+              const balanceBigInt = typeof balance === 'object' && balance.low !== undefined
+                ? BigInt(balance.low) + (BigInt(balance.high || 0) << 128n)
+                : BigInt(balance.toString());
+              
+              const formattedBalance = Number(balanceBigInt) / Math.pow(10, token.decimals);
+
+              if (formattedBalance > 0.0001) {
+                balances.push({
+                  symbol: token.symbol,
+                  name: token.name,
+                  balance: formattedBalance.toFixed(token.decimals === 18 ? 4 : 2),
+                  value: "$0.00",
+                  change: "+0.0%",
+                  icon: token.icon,
+                  trend: "stable" as const,
+                  volume: "Real balance"
+                });
+              }
+            } catch (error) {
+              console.error(`Error fetching ${token.symbol} balance:`, error);
+            }
+          }
+        } catch (error) {
+          console.error("Error fetching StarkNet balances:", error);
+        }
+      } else if (walletName === "Xverse") {
         // Fetch BTC balance from Xverse
         const { getBitcoinBalance } = await import("@/lib/xverse");
         const btcBalance = await getBitcoinBalance();
