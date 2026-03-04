@@ -129,8 +129,11 @@ const connectDatabase = async () => {
 
 // Security middleware
 app.use(helmet());
+
+// CORS configuration - remove trailing slash if present
+const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: [frontendUrl, 'http://localhost:3000'],
   credentials: true
 }));
 

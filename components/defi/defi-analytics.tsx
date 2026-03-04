@@ -20,7 +20,7 @@ import {
   Bar,
 } from "recharts"
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
+const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || 'http://localhost:3001'
 
 interface PositionAnalytics {
   positionId: string
