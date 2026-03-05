@@ -40,6 +40,9 @@ const kycRoutes = require('./routes/kyc');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust proxy - required for Render deployment
+app.set('trust proxy', 1);
+
 // PostgreSQL Database connection
 // Use DATABASE_URL if available (Render), otherwise use individual vars (local dev)
 const sequelize = process.env.DATABASE_URL 
