@@ -92,14 +92,17 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS sync_user_insert ON "User";
 CREATE TRIGGER sync_user_insert
 AFTER INSERT ON "User"
 FOR EACH ROW EXECUTE FUNCTION sync_user_tables();
 
+DROP TRIGGER IF EXISTS sync_user_update ON "User";
 CREATE TRIGGER sync_user_update
 AFTER UPDATE ON "User"
 FOR EACH ROW EXECUTE FUNCTION sync_user_tables();
 
+DROP TRIGGER IF EXISTS sync_user_delete ON "User";
 CREATE TRIGGER sync_user_delete
 AFTER DELETE ON "User"
 FOR EACH ROW EXECUTE FUNCTION sync_user_tables();
