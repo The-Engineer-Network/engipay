@@ -87,7 +87,7 @@ export function VesuLendingIntegrated() {
     if (!walletAddress) return
     
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       const response = await fetch(`${API_URL}/vesu/positions`, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -136,7 +136,7 @@ export function VesuLendingIntegrated() {
 
     setIsProcessing(true)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       const response = await fetch(`${API_URL}/vesu/supply`, {
         method: 'POST',
         headers: {
@@ -188,7 +188,7 @@ export function VesuLendingIntegrated() {
 
     setIsProcessing(true)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       const response = await fetch(`${API_URL}/vesu/borrow`, {
         method: 'POST',
         headers: {
@@ -232,7 +232,7 @@ export function VesuLendingIntegrated() {
 
     setIsProcessing(true)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       const response = await fetch(`${API_URL}/vesu/withdraw`, {
         method: 'POST',
         headers: {
@@ -276,7 +276,7 @@ export function VesuLendingIntegrated() {
 
     setIsProcessing(true)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       const response = await fetch(`${API_URL}/vesu/repay`, {
         method: 'POST',
         headers: {

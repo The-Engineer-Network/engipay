@@ -113,7 +113,7 @@ export function DeFiAnalytics() {
     setLoading(true)
     try {
       // Get authentication token from localStorage
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       if (!token) {
         toast({
           title: "Authentication Required",

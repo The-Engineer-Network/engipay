@@ -49,7 +49,7 @@ export function SendPayment() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+          'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
         },
         body: JSON.stringify({
           recipient,
@@ -90,7 +90,7 @@ export function SendPayment() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+          'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
         },
         body: JSON.stringify({
           transaction_id: prepareData.transaction_id,

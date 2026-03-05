@@ -30,7 +30,7 @@ const paymentsV2Routes = require('./routes/payments-v2');
 const escrowRoutes = require('./routes/escrow');
 const analyticsRoutes = require('./routes/analytics');
 const webhookRoutes = require('./routes/webhooks');
-const chipiPayRoutes = require('./routes/chipipay');
+// ChipiPay is frontend-only SDK - no backend route needed
 const atomiqService = require('./services/atomiqService');
 const vesuRoutes = require('./routes/vesu');
 const stakingRoutes = require('./routes/staking');
@@ -73,10 +73,9 @@ const connectDatabase = async () => {
     console.log('✅ Connected to PostgreSQL database');
 
     // Sync database (create tables if they don't exist)
-    if (process.env.NODE_ENV === 'development') {
-      await sequelize.sync({ alter: true });
-      console.log('✅ Database synchronized');
-    }
+    // Force sync in development to ensure tables exist
+    await sequelize.sync({ alter: true });
+    console.log('✅ Database synchronized');
 
     // Connect to Redis if configured
     if (redisClient) {
@@ -144,7 +143,7 @@ app.use('/api/payments/v2', paymentsV2Routes);
 app.use('/api/escrow', escrowRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/webhooks', webhookRoutes);
-app.use('/api/chipipay', chipiPayRoutes);
+// ChipiPay route removed - use ChipiPay SDK directly in frontend
 app.use('/api/vesu', vesuRoutes);
 app.use('/api/staking', stakingRoutes);
 app.use('/api/help', helpRoutes);
