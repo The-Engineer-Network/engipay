@@ -92,7 +92,9 @@ export function ServicePurchase() {
         variant: 'destructive',
       })
     }
-  }  const handlePurchase = async (sku: SKU) => {
+  }
+
+  const handlePurchase = async (sku: SKU) => {
     if (!isConnected || !walletAddress) {
       toast({
         title: 'Wallet Not Connected',
