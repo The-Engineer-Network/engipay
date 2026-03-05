@@ -410,12 +410,27 @@ export function WalletProvider({ children }: WalletProviderProps) {
       if (walletName === "Argent X" || walletName === "Braavos") {
         // Fetch StarkNet balances
         try {
-          const { Provider, Contract } = await import("starknet");
+          const { Provider, Contract, constants } = await import("starknet");
+          
+          // Try to detect network from wallet, default to mainnet
+          let network = "mainnet-alpha";
+          try {
+            if (typeof window !== 'undefined' && (window as any).starknet) {
+              const starknetWallet = (window as any).starknet;
+              const chainId = await starknetWallet.provider?.getChainId?.();
+              if (chainId === constants.StarknetChainId.SN_SEPOLIA) {
+                network = "sepolia";
+              }
+            }
+          } catch (e) {
+            console.log("Could not detect network, using mainnet");
+          }
+
           const provider = new Provider({ 
-            sequencer: { network: "mainnet-alpha" } 
+            sequencer: { network: network as any } 
           });
 
-          // Common StarkNet tokens
+          // Common StarkNet tokens (mainnet addresses)
           const tokens = [
             {
               symbol: "ETH",
