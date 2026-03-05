@@ -34,10 +34,11 @@ interface ChipiPayProviderProps {
 export function ChipiPayProviderWrapper({ children }: ChipiPayProviderProps) {
   // Use a placeholder key if not set to prevent build errors
   // The actual key should be set in production via environment variables
-  const apiKey = process.env.NEXT_PUBLIC_CHIPIPAY_API_KEY || 'pk_placeholder_key_for_build'
+  // Note: @chipi-stack/nextjs looks for NEXT_PUBLIC_CHIPI_API_KEY (without PAY)
+  const apiKey = process.env.NEXT_PUBLIC_CHIPI_API_KEY || process.env.NEXT_PUBLIC_CHIPIPAY_API_KEY || 'pk_placeholder_key_for_build'
   
-  if (!process.env.NEXT_PUBLIC_CHIPIPAY_API_KEY) {
-    console.warn('NEXT_PUBLIC_CHIPIPAY_API_KEY environment variable is not set. Using placeholder. ChipiPay features will not work.')
+  if (!process.env.NEXT_PUBLIC_CHIPI_API_KEY && !process.env.NEXT_PUBLIC_CHIPIPAY_API_KEY) {
+    console.warn('NEXT_PUBLIC_CHIPI_API_KEY environment variable is not set. Using placeholder. ChipiPay features will not work.')
   }
   
   const getSKUs = async (): Promise<SKU[]> => {
