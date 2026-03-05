@@ -173,7 +173,7 @@ export function WalletProvider({ children }: WalletProviderProps) {
         fetchBalances().catch(err => console.error('Failed to fetch balances:', err));
 
         try {
-          await fetch('/api/auth/wallet-connect', {
+          const response = await fetch('/api/auth/wallet-connect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -181,6 +181,14 @@ export function WalletProvider({ children }: WalletProviderProps) {
               wallet_type: 'xverse'
             })
           });
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (data.token) {
+              localStorage.setItem('engipay-token', data.token);
+              localStorage.setItem('engipay-user', JSON.stringify(data.user));
+            }
+          }
         } catch (err) {
           console.error('Failed to register wallet with backend:', err);
         }
@@ -242,7 +250,7 @@ export function WalletProvider({ children }: WalletProviderProps) {
           });
 
           try {
-            await fetch('/api/auth/wallet-connect', {
+            const response = await fetch('/api/auth/wallet-connect', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -250,6 +258,14 @@ export function WalletProvider({ children }: WalletProviderProps) {
                 wallet_type: walletName.toLowerCase()
               })
             });
+            
+            if (response.ok) {
+              const data = await response.json();
+              if (data.token) {
+                localStorage.setItem('engipay-token', data.token);
+                localStorage.setItem('engipay-user', JSON.stringify(data.user));
+              }
+            }
           } catch (err) {
             console.error('Failed to register wallet with backend:', err);
           }
@@ -310,7 +326,7 @@ export function WalletProvider({ children }: WalletProviderProps) {
           fetchBalances().catch(err => console.error('Failed to fetch balances:', err));
 
           try {
-            await fetch('/api/auth/wallet-connect', {
+            const response = await fetch('/api/auth/wallet-connect', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -318,6 +334,14 @@ export function WalletProvider({ children }: WalletProviderProps) {
                 wallet_type: walletName.toLowerCase()
               })
             });
+            
+            if (response.ok) {
+              const data = await response.json();
+              if (data.token) {
+                localStorage.setItem('engipay-token', data.token);
+                localStorage.setItem('engipay-user', JSON.stringify(data.user));
+              }
+            }
           } catch (err) {
             console.error('Failed to register wallet with backend:', err);
           }
@@ -359,7 +383,7 @@ export function WalletProvider({ children }: WalletProviderProps) {
         fetchBalances().catch(err => console.error('Failed to fetch balances:', err));
 
         try {
-          await fetch('/api/auth/wallet-connect', {
+          const response = await fetch('/api/auth/wallet-connect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -367,6 +391,14 @@ export function WalletProvider({ children }: WalletProviderProps) {
               wallet_type: walletName.toLowerCase()
             })
           });
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (data.token) {
+              localStorage.setItem('engipay-token', data.token);
+              localStorage.setItem('engipay-user', JSON.stringify(data.user));
+            }
+          }
         } catch (err) {
           console.error('Failed to register wallet with backend:', err);
         }
@@ -600,6 +632,8 @@ export function WalletProvider({ children }: WalletProviderProps) {
     setWalletName(null);
     setBalances([]);
     localStorage.removeItem("engipay-wallet");
+    localStorage.removeItem("engipay-token");
+    localStorage.removeItem("engipay-user");
     toast({
       title: "Wallet disconnected",
       description: "Your wallet has been disconnected",
