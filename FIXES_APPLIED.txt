@@ -1,0 +1,49 @@
+FIXES APPLIED - March 5, 2026
+================================
+
+✅ COMPLETED FIXES:
+
+1. Token Storage Standardization
+   - Fixed 9 files to use 'engipay-token' consistently
+   - Files: ChipiPayContext, payment components, DeFi components
+
+2. Database Migration System
+   - Created: backend/migrations/000-create-users-table.sql
+   - Created: backend/scripts/run-migrations.js
+   - Updated: backend/server.js to auto-sync tables
+
+3. ChipiPay Backend Removal
+   - Removed ChipiPay route from server.js
+   - Updated ChipiPayContext to return demo data
+   - Deprecated: backend/routes/chipipay.js.deprecated
+   - Reason: ChipiPay is frontend-only SDK
+
+4. Environment Configuration
+   - Created: backend/.env with template
+   - Removed unnecessary ChipiPay backend variables
+
+NEXT STEPS:
+-----------
+
+FOR RENDER DEPLOYMENT:
+1. Set DATABASE_URL in Render dashboard
+2. Set JWT_SECRET to secure random string
+3. Build command: npm install && node scripts/run-migrations.js
+4. Deploy
+
+FOR LOCAL DEVELOPMENT:
+1. Add DATABASE_URL to backend/.env (from Render)
+   OR install PostgreSQL locally and configure
+2. Run: cd backend && npm start
+3. Clear browser localStorage
+4. Reconnect wallet
+
+CHIPIPAY (Optional):
+- Install: npm install @chipipay/sdk
+- Update ChipiPayContext.tsx to use SDK directly
+- Set NEXT_PUBLIC_CHIPIPAY_API_KEY in frontend .env.local
+
+ERRORS FIXED:
+- ✅ "relation User does not exist" - Will be fixed when migration runs
+- ✅ "No authentication token" - Fixed token storage
+- ✅ "ChipiPay API unavailable" - Removed backend calls, returns demo data

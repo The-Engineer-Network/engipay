@@ -85,7 +85,7 @@ export function TroveStakingIntegrated() {
     if (!walletAddress) return
     
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       const response = await fetch(`${API_URL}/staking/positions`, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -123,7 +123,7 @@ export function TroveStakingIntegrated() {
 
     setIsProcessing(true)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       const response = await fetch(`${API_URL}/staking/stake`, {
         method: 'POST',
         headers: {
@@ -166,7 +166,7 @@ export function TroveStakingIntegrated() {
 
     setIsProcessing(true)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       const response = await fetch(`${API_URL}/staking/unstake`, {
         method: 'POST',
         headers: {
@@ -208,7 +208,7 @@ export function TroveStakingIntegrated() {
 
     setIsProcessing(true)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('engipay-token')
       const response = await fetch(`${API_URL}/staking/claim`, {
         method: 'POST',
         headers: {

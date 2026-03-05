@@ -47,7 +47,7 @@ export function PortfolioOverview() {
     try {
       const response = await fetch(`${API_URL}/api/portfolio/overview/${walletAddress}`, {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`
         }
       })
       const data = await response.json()

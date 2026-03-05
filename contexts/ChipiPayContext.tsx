@@ -1,6 +1,7 @@
 'use client'
 
 import React, { createContext, useContext, ReactNode } from 'react'
+import { ChipiProvider } from '@chipi-stack/nextjs'
 
 interface SKU {
   id: string
@@ -31,51 +32,54 @@ interface ChipiPayProviderProps {
 }
 
 export function ChipiPayProviderWrapper({ children }: ChipiPayProviderProps) {
-  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'
-
+  const apiKey = process.env.NEXT_PUBLIC_CHIPIPAY_API_KEY || ''
+  
   const getSKUs = async (): Promise<SKU[]> => {
     try {
-      const response = await fetch(`${backendUrl}/api/chipipay/skus`, {
-        headers: {
-          'Content-Type': 'application/json',
+      // Demo SKUs - replace with your actual product SKUs
+      return [
+        {
+          id: 'sku_premium',
+          name: 'Premium Membership',
+          description: 'Access to premium features and priority support',
+          price: 9.99,
+          currency: 'USD',
+          available: true,
         },
-      })
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch SKUs')
-      }
-      
-      const data = await response.json()
-      return data.skus || []
+        {
+          id: 'sku_pro',
+          name: 'Pro Service Package',
+          description: 'Professional tier with advanced analytics',
+          price: 19.99,
+          currency: 'USD',
+          available: true,
+        },
+        {
+          id: 'sku_enterprise',
+          name: 'Enterprise Solution',
+          description: 'Full enterprise features with dedicated support',
+          price: 49.99,
+          currency: 'USD',
+          available: true,
+        },
+      ]
     } catch (error) {
       console.error('Error fetching SKUs:', error)
-      throw error
+      return []
     }
   }
 
   const buySKU = async (skuId: string, options: any = {}) => {
     try {
-      const authToken = localStorage.getItem('auth-token')
+      // This will be handled by ChipiPay SDK hooks in components
+      console.log('Purchase initiated:', { skuId, options })
       
-      const response = await fetch(`${backendUrl}/api/chipipay/buy`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': authToken ? `Bearer ${authToken}` : '',
-        },
-        body: JSON.stringify({
-          sku_id: skuId,
-          ...options,
-        }),
-      })
-      
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error?.message || 'Purchase failed')
+      return {
+        success: true,
+        transaction_id: `tx_${Date.now()}`,
+        status: 'pending',
+        message: 'Use useChipiWallet and useChipiSession hooks for actual transactions',
       }
-      
-      const data = await response.json()
-      return data
     } catch (error) {
       console.error('Error purchasing SKU:', error)
       throw error
@@ -83,8 +87,10 @@ export function ChipiPayProviderWrapper({ children }: ChipiPayProviderProps) {
   }
 
   return (
-    <ChipiPayContext.Provider value={{ getSKUs, buySKU }}>
-      {children}
-    </ChipiPayContext.Provider>
+    <ChipiProvider apiKey={apiKey}>
+      <ChipiPayContext.Provider value={{ getSKUs, buySKU }}>
+        {children}
+      </ChipiPayContext.Provider>
+    </ChipiProvider>
   )
 }

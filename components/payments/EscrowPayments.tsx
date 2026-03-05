@@ -53,7 +53,7 @@ export function EscrowPayments() {
         `${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/escrow/requests?type=all`,
         {
           headers: {
-            'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+            'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
           },
         }
       );
@@ -91,7 +91,7 @@ export function EscrowPayments() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+            'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
           },
           body: JSON.stringify({
             to_address: recipient,
@@ -135,7 +135,7 @@ export function EscrowPayments() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+            'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
           },
           body: JSON.stringify({
             transaction_id: prepareData.transaction_id,
@@ -209,7 +209,7 @@ export function EscrowPayments() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+            'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
           },
           body: JSON.stringify({ request_id: requestId }),
         }
@@ -240,7 +240,7 @@ export function EscrowPayments() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+            'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
           },
           body: JSON.stringify({
             transaction_id: prepareData.transaction_id,
@@ -294,7 +294,7 @@ export function EscrowPayments() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+            'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
           },
           body: JSON.stringify({ request_id: requestId }),
         }
@@ -325,7 +325,7 @@ export function EscrowPayments() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+            'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
           },
           body: JSON.stringify({
             transaction_id: prepareData.transaction_id,

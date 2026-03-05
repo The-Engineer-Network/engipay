@@ -74,7 +74,7 @@ export function PaymentModals({ activeModal, onClose }: PaymentModalsProps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+          'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
         },
         body: JSON.stringify({
           tx_hash: result.transaction_hash,
@@ -222,7 +222,7 @@ export function PaymentModals({ activeModal, onClose }: PaymentModalsProps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('auth-token')}`,
+          'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
         },
         body: JSON.stringify({
           tx_hash: result.transaction_hash,
