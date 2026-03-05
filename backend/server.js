@@ -111,6 +111,9 @@ if (process.env.REDIS_URL && createClient) {
 // Test database connection
 const connectDatabase = async () => {
   try {
+    console.log('🔄 Attempting to connect to PostgreSQL...');
+    console.log(`   Using ${process.env.DATABASE_URL ? 'DATABASE_URL' : 'individual DB vars'}`);
+    
     await sequelize.authenticate();
     console.log('✅ Connected to PostgreSQL database');
 
@@ -125,7 +128,12 @@ const connectDatabase = async () => {
       await redisClient.connect();
     }
   } catch (error) {
-    console.error('❌ Database connection failed:', error);
+    console.error('❌ Database connection failed:', error.message);
+    console.error('   Check that:');
+    console.error('   1. PostgreSQL database is running');
+    console.error('   2. DATABASE_URL or DB_* environment variables are set correctly');
+    console.error('   3. Database accepts connections (check firewall/security groups)');
+    console.error('   4. SSL is configured correctly (DB_SSL=true for Render)');
     process.exit(1);
   }
 };
