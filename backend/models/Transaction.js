@@ -25,7 +25,7 @@ const Transaction = sequelize.define('Transaction', {
     type: DataTypes.UUID,
     allowNull: false,
     references: {
-      model: 'Users',
+      model: 'User',
       key: 'id'
     }
   },
@@ -117,7 +117,7 @@ const Transaction = sequelize.define('Transaction', {
     type: DataTypes.UUID,
     allowNull: true,
     references: {
-      model: 'Users',
+      model: 'User',
       key: 'id'
     }
   },

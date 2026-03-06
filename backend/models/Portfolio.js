@@ -14,7 +14,7 @@ const Portfolio = sequelize.define('Portfolio', {
     type: DataTypes.UUID,
     allowNull: false,
     references: {
-      model: 'Users',
+      model: 'User',
       key: 'id'
     }
   },

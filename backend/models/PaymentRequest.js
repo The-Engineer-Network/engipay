@@ -21,7 +21,7 @@ const PaymentRequest = sequelize.define('PaymentRequest', {
     type: DataTypes.UUID,
     allowNull: false,
     references: {
-      model: 'Users',
+      model: 'User',
       key: 'id'
     }
   },
@@ -31,7 +31,7 @@ const PaymentRequest = sequelize.define('PaymentRequest', {
     type: DataTypes.UUID,
     allowNull: true,
     references: {
-      model: 'Users',
+      model: 'User',
       key: 'id'
     }
   },
@@ -97,7 +97,7 @@ const PaymentRequest = sequelize.define('PaymentRequest', {
     type: DataTypes.UUID,
     allowNull: true,
     references: {
-      model: 'Users',
+      model: 'User',
       key: 'id'
     }
   },
