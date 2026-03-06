@@ -254,7 +254,7 @@ const Transaction = sequelize.define('Transaction', {
     type: DataTypes.UUID,
     allowNull: true,
     references: {
-      model: 'Transactions',
+      model: 'Transaction',
       key: 'id'
     }
   },
