@@ -89,7 +89,7 @@ const PaymentRequest = sequelize.define('PaymentRequest', {
     type: DataTypes.UUID,
     allowNull: true,
     references: {
-      model: 'Transactions',
+      model: 'Transaction',
       key: 'id'
     }
   },
