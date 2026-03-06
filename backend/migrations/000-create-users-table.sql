@@ -44,8 +44,45 @@ CREATE INDEX IF NOT EXISTS idx_user_deleted_at ON "User"(deleted_at);
 
 -- Create lowercase alias for compatibility
 CREATE TABLE IF NOT EXISTS users (
-  LIKE "User" INCLUDING ALL
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username VARCHAR(50) UNIQUE,
+  email VARCHAR(255) UNIQUE,
+  password VARCHAR(255),
+  wallet_address VARCHAR(100) UNIQUE,
+  wallet_type VARCHAR(50) CHECK (wallet_type IN ('metamask', 'argent', 'braavos', 'xverse', 'walletconnect')),
+  first_name VARCHAR(50),
+  last_name VARCHAR(50),
+  avatar_url TEXT,
+  bio TEXT CHECK (LENGTH(bio) <= 500),
+  kyc_status VARCHAR(20) DEFAULT 'pending' CHECK (kyc_status IN ('pending', 'in_review', 'approved', 'rejected', 'not_required')),
+  kyc_verified_at TIMESTAMP WITH TIME ZONE,
+  two_factor_enabled BOOLEAN DEFAULT FALSE,
+  two_factor_secret TEXT,
+  settings JSONB DEFAULT '{"notifications":{"email":true,"push":true,"sms":false,"marketing":false},"currency":"USD","language":"en","theme":"auto","timezone":"UTC"}',
+  is_active BOOLEAN DEFAULT TRUE,
+  is_email_verified BOOLEAN DEFAULT FALSE,
+  email_verified_at TIMESTAMP WITH TIME ZONE,
+  last_login TIMESTAMP WITH TIME ZONE,
+  login_count INTEGER DEFAULT 0,
+  risk_score INTEGER DEFAULT 50 CHECK (risk_score >= 0 AND risk_score <= 100),
+  risk_level VARCHAR(20) DEFAULT 'medium' CHECK (risk_level IN ('low', 'medium', 'high', 'very_high')),
+  referral_code VARCHAR(50) UNIQUE,
+  referral_count INTEGER DEFAULT 0,
+  referred_by UUID REFERENCES users(id),
+  social_links JSONB DEFAULT '{}',
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  deleted_at TIMESTAMP WITH TIME ZONE
 );
+
+-- Create indexes for users table
+CREATE INDEX IF NOT EXISTS idx_users_wallet_address ON users(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_kyc_status ON users(kyc_status);
+CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
+CREATE INDEX IF NOT EXISTS idx_users_last_login ON users(last_login);
+CREATE INDEX IF NOT EXISTS idx_users_deleted_at ON users(deleted_at);
 
 -- Create trigger to sync data between User and users tables
 CREATE OR REPLACE FUNCTION sync_user_tables()
