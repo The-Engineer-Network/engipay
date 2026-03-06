@@ -72,10 +72,10 @@ const connectDatabase = async () => {
     await sequelize.authenticate();
     console.log('✅ Connected to PostgreSQL database');
 
-    // Sync database (create tables if they don't exist)
-    // Force sync in development to ensure tables exist
-    await sequelize.sync({ alter: true });
-    console.log('✅ Database synchronized');
+    // Don't sync database - we use migrations for schema management
+    // Sequelize sync with alter can cause issues with existing tables
+    // await sequelize.sync({ alter: true });
+    console.log('✅ Database ready (schema managed by migrations)');
 
     // Connect to Redis if configured
     if (redisClient) {
