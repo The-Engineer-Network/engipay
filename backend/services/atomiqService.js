@@ -18,7 +18,7 @@ class AtomiqService {
 
   /**
    * Initialize Atomiq SDK with StarkNet support
-   * Based on: https://www.npmjs.com/package/@atomiqlabs/sdk
+   * Based on: https://github.com/atomiqlabs/atomiq-sdk
    */
   async initialize() {
     try {
@@ -29,40 +29,46 @@ class AtomiqService {
       console.log('Initializing Atomiq SDK...');
 
       // Dynamic import for ES modules
-      this.sdk = await import('@atomiqlabs/sdk');
-      this.chainModule = await import('@atomiqlabs/chain-starknet');
-      this.storageModule = await import('@atomiqlabs/storage-sqlite');
+      const sdkModule = await import('@atomiqlabs/sdk');
+      const chainModule = await import('@atomiqlabs/chain-starknet');
+      const storageModule = await import('@atomiqlabs/storage-sqlite');
 
-      const { newSwapper, Tokens, SwapAmountType } = this.sdk;
-      const { initializeStarknet } = this.chainModule;
-      const { SqliteStorageManager } = this.storageModule;
+      // Extract required classes and functions
+      const { SwapperFactory, BitcoinNetwork, SwapAmountType } = sdkModule;
+      const { StarknetInitializer } = chainModule;
+      const { SqliteStorageManager, SqliteUnifiedStorage } = storageModule;
 
-      // Set up storage for swap state persistence (NodeJS requires sqlite)
-      const storageManager = new SqliteStorageManager(
-        path.join(__dirname, '../data/atomiq-swaps.db')
-      );
+      // Store for later use
+      this.sdk = sdkModule;
+      this.SwapAmountType = SwapAmountType;
 
       // Configure StarkNet RPC URL
       const starknetRpcUrl = process.env.STARKNET_RPC_URL || 'https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/Dij4b08u9UCGvFQ6sfgDP';
 
-      // Initialize Starknet chain
-      const starknetChain = await initializeStarknet(starknetRpcUrl);
-
       // Create swapper factory with StarkNet support
-      this.swapper = await newSwapper(
-        {
-          starknet: starknetChain
+      const chains = [StarknetInitializer];
+      const Factory = new SwapperFactory(chains);
+      
+      // Store tokens for later use
+      this.Tokens = Factory.Tokens;
+
+      // Create swapper instance for NodeJS with SQLite storage
+      this.swapper = Factory.newSwapper({
+        chains: {
+          STARKNET: {
+            rpcUrl: starknetRpcUrl
+          }
         },
-        storageManager,
-        {
-          // Optional: Custom pricing API
-          pricingApiUrl: process.env.ATOMIQ_PRICING_API,
-          // Optional: Custom mempool.space RPC
-          bitcoinRpcUrl: process.env.BITCOIN_RPC_URL,
-          // HTTP request timeout
-          requestTimeout: 30000
-        }
-      );
+        bitcoinNetwork: BitcoinNetwork.TESTNET, // Use MAINNET for production
+        // NodeJS requires SQLite storage (browser uses IndexedDB by default)
+        swapStorage: chainId => new SqliteUnifiedStorage(path.join(__dirname, '../data/CHAIN_' + chainId + '.sqlite3')),
+        chainStorageCtor: name => new SqliteStorageManager(path.join(__dirname, '../data/STORE_' + name + '.sqlite3')),
+        // Optional configurations
+        pricingApiUrl: process.env.ATOMIQ_PRICING_API,
+        bitcoinRpcUrl: process.env.BITCOIN_RPC_URL,
+        getRequestTimeout: 30000,
+        postRequestTimeout: 30000
+      });
 
       // Initialize the swapper (checks existing swaps and does LP discovery)
       await this.swapper.init();
@@ -105,14 +111,13 @@ class AtomiqService {
     try {
       await this.ensureInitialized();
 
-      const { Tokens, SwapAmountType } = this.sdk;
       const amountBigInt = BigInt(amount);
-      const swapAmountType = exactIn ? SwapAmountType.EXACT_IN : SwapAmountType.EXACT_OUT;
+      const swapAmountType = exactIn ? this.SwapAmountType.EXACT_IN : this.SwapAmountType.EXACT_OUT;
 
       // Create swap quote
       const swap = await this.swapper.swap(
-        Tokens.BITCOIN.BTC,           // From Bitcoin
-        Tokens.STARKNET.STRK,          // To StarkNet STRK
+        this.Tokens.BITCOIN.BTC,           // From Bitcoin
+        this.Tokens.STARKNET.STRK,          // To StarkNet STRK
         amountBigInt,                  // Amount
         swapAmountType,                // Exact in or out
         undefined,                     // Source address (not needed for BTC -> STRK)
@@ -159,15 +164,13 @@ class AtomiqService {
     try {
       await this.ensureInitialized();
 
-      const { Tokens, SwapAmountType } = this.sdk;
       const amountBigInt = BigInt(amount);
-      const swapAmountType = exactIn ? SwapAmountType.EXACT_IN : SwapAmountType.EXACT_OUT;
+      const swapAmountType = exactIn ? this.SwapAmountType.EXACT_IN : this.SwapAmountType.EXACT_OUT;
 
       // Create swap quote (STRK -> BTC)
-      // For STRK -> BTC, we use the main swapper (not chain-specific)
       const swap = await this.swapper.swap(
-        Tokens.STARKNET.STRK,          // From StarkNet STRK
-        Tokens.BITCOIN.BTC,            // To Bitcoin
+        this.Tokens.STARKNET.STRK,          // From StarkNet STRK
+        this.Tokens.BITCOIN.BTC,            // To Bitcoin
         amountBigInt,                  // Amount
         swapAmountType,                // Exact in or out
         sourceAddress,                 // Source StarkNet address
@@ -359,9 +362,8 @@ class AtomiqService {
     try {
       await this.ensureInitialized();
 
-      const { Tokens } = this.sdk;
-      const btcToStrkLimits = this.swapper.getSwapLimits(Tokens.BITCOIN.BTC, Tokens.STARKNET.STRK);
-      const strkToBtcLimits = this.swapper.getSwapLimits(Tokens.STARKNET.STRK, Tokens.BITCOIN.BTC);
+      const btcToStrkLimits = this.swapper.getSwapLimits(this.Tokens.BITCOIN.BTC, this.Tokens.STARKNET.STRK);
+      const strkToBtcLimits = this.swapper.getSwapLimits(this.Tokens.STARKNET.STRK, this.Tokens.BITCOIN.BTC);
 
       return {
         btc_to_strk: {
