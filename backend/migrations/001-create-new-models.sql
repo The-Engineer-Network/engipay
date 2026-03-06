@@ -16,9 +16,9 @@ CREATE TABLE IF NOT EXISTS wallets (
   deleted_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX idx_wallets_user_id ON wallets(user_id);
-CREATE INDEX idx_wallets_address ON wallets(wallet_address);
-CREATE INDEX idx_wallets_user_primary ON wallets(user_id, is_primary);
+CREATE INDEX IF NOT EXISTS idx_wallets_user_id ON wallets(user_id);
+CREATE INDEX IF NOT EXISTS idx_wallets_address ON wallets(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_wallets_user_primary ON wallets(user_id, is_primary);
 
 -- Notifications table
 CREATE TABLE IF NOT EXISTS notifications (
@@ -37,10 +37,10 @@ CREATE TABLE IF NOT EXISTS notifications (
   deleted_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX idx_notifications_user_id ON notifications(user_id);
-CREATE INDEX idx_notifications_user_read ON notifications(user_id, read);
-CREATE INDEX idx_notifications_user_created ON notifications(user_id, created_at DESC);
-CREATE INDEX idx_notifications_type_created ON notifications(type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, read);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_type_created ON notifications(type, created_at DESC);
 
 -- Swaps table
 CREATE TABLE IF NOT EXISTS swaps (
@@ -64,10 +64,10 @@ CREATE TABLE IF NOT EXISTS swaps (
   deleted_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX idx_swaps_user_id ON swaps(user_id);
-CREATE INDEX idx_swaps_tx_hash ON swaps(tx_hash);
-CREATE INDEX idx_swaps_status ON swaps(status);
-CREATE INDEX idx_swaps_user_created ON swaps(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_swaps_user_id ON swaps(user_id);
+CREATE INDEX IF NOT EXISTS idx_swaps_tx_hash ON swaps(tx_hash);
+CREATE INDEX IF NOT EXISTS idx_swaps_status ON swaps(status);
+CREATE INDEX IF NOT EXISTS idx_swaps_user_created ON swaps(user_id, created_at DESC);
 
 -- Swap Quotes table
 CREATE TABLE IF NOT EXISTS swap_quotes (
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS swap_quotes (
   deleted_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX idx_swap_quotes_expires ON swap_quotes(expires_at);
+CREATE INDEX IF NOT EXISTS idx_swap_quotes_expires ON swap_quotes(expires_at);
 
 -- Rewards table
 CREATE TABLE IF NOT EXISTS rewards (
@@ -112,11 +112,11 @@ CREATE TABLE IF NOT EXISTS rewards (
   deleted_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX idx_rewards_user_id ON rewards(user_id);
-CREATE INDEX idx_rewards_user_status ON rewards(user_id, status);
-CREATE INDEX idx_rewards_position ON rewards(position_id);
-CREATE INDEX idx_rewards_protocol_type ON rewards(protocol, type);
-CREATE INDEX idx_rewards_expires ON rewards(expires_at);
+CREATE INDEX IF NOT EXISTS idx_rewards_user_id ON rewards(user_id);
+CREATE INDEX IF NOT EXISTS idx_rewards_user_status ON rewards(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_rewards_position ON rewards(position_id);
+CREATE INDEX IF NOT EXISTS idx_rewards_protocol_type ON rewards(protocol, type);
+CREATE INDEX IF NOT EXISTS idx_rewards_expires ON rewards(expires_at);
 
 -- DeFi Positions table
 CREATE TABLE IF NOT EXISTS defi_positions (
@@ -147,11 +147,11 @@ CREATE TABLE IF NOT EXISTS defi_positions (
   deleted_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX idx_defi_positions_user_id ON defi_positions(user_id);
-CREATE INDEX idx_defi_positions_user_status ON defi_positions(user_id, status);
-CREATE INDEX idx_defi_positions_protocol_type ON defi_positions(protocol, type);
-CREATE INDEX idx_defi_positions_network_protocol ON defi_positions(network, protocol);
-CREATE INDEX idx_defi_positions_health ON defi_positions(health_factor);
+CREATE INDEX IF NOT EXISTS idx_defi_positions_user_id ON defi_positions(user_id);
+CREATE INDEX IF NOT EXISTS idx_defi_positions_user_status ON defi_positions(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_defi_positions_protocol_type ON defi_positions(protocol, type);
+CREATE INDEX IF NOT EXISTS idx_defi_positions_network_protocol ON defi_positions(network, protocol);
+CREATE INDEX IF NOT EXISTS idx_defi_positions_health ON defi_positions(health_factor);
 
 -- Analytics table
 CREATE TABLE IF NOT EXISTS analytics (
@@ -173,10 +173,10 @@ CREATE TABLE IF NOT EXISTS analytics (
   deleted_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX idx_analytics_type_period_dates ON analytics(type, period, start_date, end_date);
-CREATE INDEX idx_analytics_user_type_created ON analytics(user_id, type, created_at DESC);
-CREATE INDEX idx_analytics_aggregation_type ON analytics(aggregation_level, type);
-CREATE INDEX idx_analytics_expires ON analytics(expires_at);
+CREATE INDEX IF NOT EXISTS idx_analytics_type_period_dates ON analytics(type, period, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_analytics_user_type_created ON analytics(user_id, type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analytics_aggregation_type ON analytics(aggregation_level, type);
+CREATE INDEX IF NOT EXISTS idx_analytics_expires ON analytics(expires_at);
 
 -- Yield Farms table
 CREATE TABLE IF NOT EXISTS yield_farms (
@@ -210,8 +210,8 @@ CREATE TABLE IF NOT EXISTS yield_farms (
   deleted_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX idx_yield_farms_protocol_network ON yield_farms(protocol, network);
-CREATE INDEX idx_yield_farms_type_status ON yield_farms(type, status);
-CREATE INDEX idx_yield_farms_tvl ON yield_farms(tvl DESC);
-CREATE INDEX idx_yield_farms_apy ON yield_farms(apy DESC);
-CREATE INDEX idx_yield_farms_contract ON yield_farms(farm_contract_address);
+CREATE INDEX IF NOT EXISTS idx_yield_farms_protocol_network ON yield_farms(protocol, network);
+CREATE INDEX IF NOT EXISTS idx_yield_farms_type_status ON yield_farms(type, status);
+CREATE INDEX IF NOT EXISTS idx_yield_farms_tvl ON yield_farms(tvl DESC);
+CREATE INDEX IF NOT EXISTS idx_yield_farms_apy ON yield_farms(apy DESC);
+CREATE INDEX IF NOT EXISTS idx_yield_farms_contract ON yield_farms(farm_contract_address);
