@@ -52,6 +52,10 @@ class AtomiqService {
       // Store tokens for later use
       this.Tokens = Factory.Tokens;
 
+      // Determine storage path - use /tmp on Render, local data folder otherwise
+      const storagePath = process.env.RENDER ? '/tmp' : path.join(__dirname, '../data');
+      console.log(`Using storage path: ${storagePath}`);
+
       // Create swapper instance for NodeJS with SQLite storage
       this.swapper = Factory.newSwapper({
         chains: {
@@ -61,8 +65,8 @@ class AtomiqService {
         },
         bitcoinNetwork: BitcoinNetwork.TESTNET, // Use MAINNET for production
         // NodeJS requires SQLite storage (browser uses IndexedDB by default)
-        swapStorage: chainId => new SqliteUnifiedStorage(path.join(__dirname, '../data/CHAIN_' + chainId + '.sqlite3')),
-        chainStorageCtor: name => new SqliteStorageManager(path.join(__dirname, '../data/STORE_' + name + '.sqlite3')),
+        swapStorage: chainId => new SqliteUnifiedStorage(path.join(storagePath, 'CHAIN_' + chainId + '.sqlite3')),
+        chainStorageCtor: name => new SqliteStorageManager(path.join(storagePath, 'STORE_' + name + '.sqlite3')),
         // Optional configurations
         pricingApiUrl: process.env.ATOMIQ_PRICING_API,
         bitcoinRpcUrl: process.env.BITCOIN_RPC_URL,
