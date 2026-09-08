@@ -29,3 +29,12 @@ yarn-error.log*
 next-env.d.ts
 
 .kiro
+
+# --- security hardening (added after 2026-05 supply-chain incident) ---
+# Never commit wallet keys or account files
+smart-contracts/accounts.json
+**/accounts.json
+*.keystore
+*_keystore.json
+# Large binaries do not belong in git
+starkli.zip
