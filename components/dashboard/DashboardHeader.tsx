@@ -4,97 +4,129 @@ import { useRouter } from "next/navigation"
 import { useState, useEffect } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { Wallet, ExternalLink, Bitcoin } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Wallet, ExternalLink, Bitcoin, Copy, LogOut, ChevronDown } from "lucide-react"
 import { useWallet } from "@/contexts/WalletContext"
+import { useToast } from "@/hooks/use-toast"
 import { getBitcoinBalance } from "@/lib/xverse"
+
+const EXPLORER_BASE =
+  process.env.NEXT_PUBLIC_STARKNET_EXPLORER || "https://sepolia.starkscan.co"
 
 export function DashboardHeader() {
   const router = useRouter()
+  const { toast } = useToast()
   const { walletAddress, walletName, disconnectWallet } = useWallet()
-  const [btcBalance, setBtcBalance] = useState(0)
+  const [btcBalance, setBtcBalance] = useState<number | null>(null)
 
   useEffect(() => {
-    const loadBtcBalance = async () => {
-      if (walletName === 'Xverse') {
-        try {
-          const balance = await getBitcoinBalance()
-          setBtcBalance(balance.total / 100000000) // Convert satoshis to BTC
-        } catch (error) {
-          console.error('Error loading BTC balance:', error)
-        }
-      }
+    if (walletName !== "Xverse") {
+      setBtcBalance(null)
+      return
     }
-    loadBtcBalance()
+    let cancelled = false
+    getBitcoinBalance()
+      .then((b) => {
+        if (!cancelled) setBtcBalance(b.total / 100_000_000)
+      })
+      .catch((error) => console.error("Error loading BTC balance:", error))
+    return () => {
+      cancelled = true
+    }
   }, [walletName])
 
-  const handleWalletDisconnect = () => {
+  const handleDisconnect = () => {
     disconnectWallet()
-    router.push('/')
+    router.push("/")
   }
 
-  return (
-    <header style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}>
-      <div className="container mx-auto px-4 py-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          {/* Logo and Title Section */}
-          <div className="flex items-center space-x-3 sm:space-x-4 min-w-0">
-            <Link href="/" className="flex items-center space-x-2 cursor-pointer hover:opacity-80 transition-opacity flex-shrink-0">
-              <div className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center flex-shrink-0">
-                <img src="/engipay.png" alt="EngiPay Logo"
-                className="h-full w-full object-contain drop-shadow-lg filter brightness-0 invert"
-                />
-              </div>
-            </Link>
-            <div className="flex-1 min-w-0">
-              <h1 className="-ml-2text-lg sm:text-xl font-bold text-white truncate">Dashboard</h1>
-              <p className="text-gray-300 text-xs sm:text-sm hidden sm:block">
-                Welcome back! Here's your financial overview
-              </p>
-              {walletName === 'Xverse' && (
-                <div className="flex items-center gap-2 mt-2">
-                  <Bitcoin className="w-4 h-4 text-orange-400" />
-                  <span className="text-sm text-orange-400">
-                    BTC: {btcBalance.toFixed(8)}
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
+  const copyAddress = async () => {
+    if (!walletAddress) return
+    try {
+      await navigator.clipboard.writeText(walletAddress)
+      toast({ title: "Address copied" })
+    } catch {
+      toast({ title: "Could not copy address", variant: "destructive" })
+    }
+  }
 
-          {/* Action Buttons Section */}
-          <div className="flex items-center space-x-2 flex-shrink-0">
-            <Button
-              variant="outline"
-              size="sm"
-              style={{
-                borderColor: 'rgba(255, 255, 255, 0.2)',
-                color: '#00d084'
-              }}
-              className="hidden sm:flex"
-            >
-              <ExternalLink className="w-4 h-4 mr-2" />
-              <span className="hidden md:inline">Explorer</span>
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleWalletDisconnect}
-              style={{
-                backgroundColor: '#00d084',
-                color: '#000000',
-                border: 'none'
-              }}
-              className="hover:opacity-90"
-            >
-              <Wallet className="w-4 h-4 mr-2" />
-              <span className="hidden sm:inline">
-                {walletAddress ? `${walletName} (${walletAddress.slice(0, 6)}...)` : 'Connect'}
-              </span>
-              <span className="sm:hidden">
-                {walletAddress ? walletAddress.slice(0, 4) + '...' : 'Connect'}
-              </span>
-            </Button>
-          </div>
+  const shortAddress = walletAddress
+    ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`
+    : null
+
+  return (
+    <header className="border-b border-border">
+      <div className="container flex items-center justify-between gap-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <Link href="/" className="flex shrink-0 items-center transition-opacity hover:opacity-80">
+            <img
+              src="/engipay.png"
+              alt="EngiPay"
+              className="h-8 w-8 object-contain brightness-0 invert"
+            />
+          </Link>
+
+          {btcBalance !== null && (
+            <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+              <Bitcoin className="h-4 w-4 text-warning" aria-hidden="true" />
+              <span className="tabular-nums">{btcBalance.toFixed(8)} BTC</span>
+            </span>
+          )}
         </div>
+
+        {walletAddress ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              {/* Previously a bare button labelled "Connect" that silently
+                  disconnected the wallet on click. Now it opens a menu. */}
+              <Button variant="outline" size="sm" className="gap-2">
+                <Wallet className="h-4 w-4" aria-hidden="true" />
+                <span className="hidden font-mono text-xs sm:inline">{shortAddress}</span>
+                <ChevronDown className="h-3.5 w-3.5 opacity-60" aria-hidden="true" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel className="font-normal">
+                <span className="block text-xs text-muted-foreground">
+                  {walletName ?? "Wallet"}
+                </span>
+                <span className="block truncate font-mono text-xs">{shortAddress}</span>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={copyAddress}>
+                <Copy className="mr-2 h-4 w-4" aria-hidden="true" />
+                Copy address
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <a
+                  href={`${EXPLORER_BASE}/contract/${walletAddress}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="mr-2 h-4 w-4" aria-hidden="true" />
+                  View on explorer
+                </a>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={handleDisconnect} className="text-destructive">
+                <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+                Disconnect
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <Button size="sm" onClick={() => router.push("/")}>
+            <Wallet className="mr-2 h-4 w-4" aria-hidden="true" />
+            Connect wallet
+          </Button>
+        )}
       </div>
     </header>
   )

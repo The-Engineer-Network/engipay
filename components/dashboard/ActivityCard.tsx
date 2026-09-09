@@ -2,189 +2,94 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Clock, ArrowUpRight, ArrowLeftRight, Target, ArrowDownLeft, Zap, Activity } from "lucide-react"
-
-interface Activity {
-  id: number
-  type: "payment" | "swap" | "lending" | "staking" | "airdrop"
-  description: string
-  amount: string
-  time: string
-  status: "completed" | "active" | "pending"
-  network?: string
-  txHash?: string
-}
+import {
+  ArrowUpRight,
+  ArrowLeftRight,
+  ArrowDownLeft,
+  Target,
+  Zap,
+  Activity as ActivityIcon,
+} from "lucide-react"
+import { cn } from "@/lib/utils"
+import type { Activity } from "@/types/dashboard"
 
 interface ActivityCardProps {
   activities: Activity[]
 }
 
+const TYPE_ICON = {
+  payment: ArrowUpRight,
+  swap: ArrowLeftRight,
+  lending: Target,
+  staking: Zap,
+  airdrop: ArrowDownLeft,
+} as const
+
+const STATUS_STYLE: Record<Activity["status"], string> = {
+  completed: "border-primary/40 bg-primary/15 text-primary",
+  active: "border-border bg-muted text-foreground",
+  pending: "border-warning/40 bg-warning/15 text-warning",
+}
+
+function amountTone(amount: string) {
+  if (amount.startsWith("+")) return "text-success"
+  if (amount.startsWith("-")) return "text-destructive"
+  return "text-foreground"
+}
+
 export function ActivityCard({ activities }: ActivityCardProps) {
-  const getActivityIcon = (type: string) => {
-    switch (type) {
-      case "payment":
-        return <ArrowUpRight className="w-5 h-5" />
-      case "swap":
-        return <ArrowLeftRight className="w-5 h-5" />
-      case "lending":
-        return <Target className="w-5 h-5" />
-      case "staking":
-        return <Zap className="w-5 h-5" />
-      case "airdrop":
-        return <ArrowDownLeft className="w-5 h-5" />
-      default:
-        return <Activity className="w-5 h-5" />
-    }
-  }
-
-  const getActivityColor = (type: string) => {
-    switch (type) {
-      case "payment":
-        return "#3b82f6"
-      case "swap":
-        return "#8b5cf6"
-      case "lending":
-        return "#00d084"
-      case "staking":
-        return "#f59e0b"
-      case "airdrop":
-        return "#ec4899"
-      default:
-        return "#6b7280"
-    }
-  }
-
-  const getActivityGradient = (type: string) => {
-    switch (type) {
-      case "payment":
-        return "from-blue-500/20 to-blue-600/20"
-      case "swap":
-        return "from-purple-500/20 to-purple-600/20"
-      case "lending":
-        return "from-green-500/20 to-green-600/20"
-      case "staking":
-        return "from-yellow-500/20 to-orange-600/20"
-      case "airdrop":
-        return "from-pink-500/20 to-pink-600/20"
-      default:
-        return "from-gray-500/20 to-gray-600/20"
-    }
-  }
-
-  const getAmountColor = (amount: string) => {
-    if (amount.startsWith("+")) return "#10b981"
-    if (amount.startsWith("-")) return "#ef4444"
-    return "#ffffff"
-  }
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "completed":
-        return { bg: "#00d084", text: "#000000" }
-      case "active":
-        return { bg: "#3b82f6", text: "#ffffff" }
-      case "pending":
-        return { bg: "#f59e0b", text: "#000000" }
-      default:
-        return { bg: "rgba(26, 26, 26, 0.8)", text: "#ffffff" }
-    }
-  }
-
   return (
-    <Card
-      className="glassmorphism hover:scale-105 transition-all duration-500 relative overflow-hidden group"
-      style={{
-        backgroundColor: 'rgba(20, 20, 20, 0.9)',
-        backdropFilter: 'blur(10px)',
-        border: '1px solid rgba(255, 255, 255, 0.1)',
-        color: '#ffffff'
-      }}
-    >
-      {/* Animated background */}
-      <div className="absolute inset-0 bg-gradient-to-br from-green-500/5 via-transparent to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-
+    <Card>
       <CardHeader>
-        <CardTitle className="flex items-center space-x-3" style={{ color: '#ffffff' }}>
-          <div className="relative">
-            <Clock className="w-6 h-6" style={{ color: '#00d084' }} />
-            <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-          </div>
-          <span>Recent Activity</span>
-          <div className="ml-auto">
-            <Badge className="bg-green-500/20 text-green-300 border-green-500/30 animate-pulse">
-              Live
-            </Badge>
-          </div>
-        </CardTitle>
+        <CardTitle className="text-lg">Recent activity</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="space-y-4">
-          {activities.length === 0 ? (
-            <div className="text-center py-8">
-              <div className="text-gray-400 text-lg mb-2">No recent activity</div>
-              <div className="text-gray-500 text-sm">Your transactions will appear here</div>
-            </div>
-          ) : (
-            activities.map((activity, index) => (
-            <div
-              key={activity.id}
-              className="flex items-center justify-between p-4 rounded-xl border hover:scale-102 transition-all duration-300 relative overflow-hidden group/item"
-              style={{
-                backgroundColor: 'rgba(26, 26, 26, 0.5)',
-                borderColor: 'rgba(0, 208, 132, 0.2)'
-              }}
-            >
-              {/* Activity type gradient background */}
-              <div className={`absolute inset-0 bg-gradient-to-r ${getActivityGradient(activity.type)} opacity-0 group-hover/item:opacity-100 transition-opacity duration-300`} />
+        {activities.length === 0 ? (
+          <div className="py-10 text-center">
+            <ActivityIcon className="mx-auto mb-3 h-8 w-8 text-muted-foreground" aria-hidden="true" />
+            <p className="font-medium">No activity yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Your payments and swaps will appear here.
+            </p>
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {activities.map((activity) => {
+              const Icon = TYPE_ICON[activity.type] ?? ActivityIcon
+              return (
+                <li key={activity.id} className="flex items-center gap-4 py-3 first:pt-0 last:pb-0">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                    <Icon className="h-4 w-4" aria-hidden="true" />
+                  </span>
 
-              <div className="flex items-center space-x-4 relative z-10">
-                <div
-                  className="w-12 h-12 rounded-full flex items-center justify-center shadow-lg animate-pulse"
-                  style={{
-                    backgroundColor: 'rgba(26, 26, 26, 0.8)',
-                    color: getActivityColor(activity.type),
-                    boxShadow: `0 0 20px ${getActivityColor(activity.type)}40`
-                  }}
-                >
-                  {getActivityIcon(activity.type)}
-                </div>
-                <div className="flex-1">
-                  <p className="font-semibold text-sm" style={{ color: '#ffffff' }}>{activity.description}</p>
-                  <div className="flex items-center space-x-2 mt-1">
-                    <p style={{ color: 'rgba(255, 255, 255, 0.7)', fontSize: '12px' }}>{activity.time}</p>
-                    {activity.network && (
-                      <Badge variant="outline" className="text-xs bg-purple-500/20 text-purple-300 border-purple-500/30">
-                        {activity.network}
-                      </Badge>
-                    )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{activity.description}</p>
+                    <div className="mt-0.5 flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">{activity.time}</span>
+                      {activity.network && (
+                        <Badge variant="outline" className="text-[10px]">
+                          {activity.network}
+                        </Badge>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </div>
 
-              <div className="text-right relative z-10">
-                <p
-                  className="font-bold text-lg"
-                  style={{ color: getAmountColor(activity.amount) }}
-                >
-                  {activity.amount}
-                </p>
-                <Badge
-                  className="text-xs mt-1"
-                  style={{
-                    backgroundColor: getStatusColor(activity.status).bg,
-                    color: getStatusColor(activity.status).text
-                  }}
-                >
-                  {activity.status}
-                </Badge>
-              </div>
-
-              {/* Floating animation elements */}
-              <div className="absolute top-2 right-2 w-2 h-2 bg-green-400 rounded-full opacity-0 group-hover/item:opacity-60 animate-ping" />
-              <div className="absolute bottom-2 left-2 w-1 h-1 bg-blue-400 rounded-full opacity-0 group-hover/item:opacity-40 animate-bounce" style={{ animationDelay: '0.2s' }} />
-            </div>
-          )))}
-        </div>
+                  <div className="shrink-0 text-right">
+                    <p className={cn("text-sm font-medium tabular-nums", amountTone(activity.amount))}>
+                      {activity.amount}
+                    </p>
+                    <Badge
+                      variant="outline"
+                      className={cn("mt-1 text-[10px] capitalize", STATUS_STYLE[activity.status])}
+                    >
+                      {activity.status}
+                    </Badge>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </CardContent>
     </Card>
   )

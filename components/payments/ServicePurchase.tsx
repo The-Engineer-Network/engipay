@@ -83,7 +83,7 @@ function ServicePurchaseInner() {
     }
 
     try {
-      await createWallet({ encryptKey: walletAddress.slice(0, 8), chain: 'STARKNET' })
+      await createWallet({ encryptKey: walletAddress.slice(0, 8) })
       toast({
         title: 'Gasless wallet created',
         description: 'Your ChipiPay wallet is ready for transactions.',

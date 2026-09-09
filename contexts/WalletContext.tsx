@@ -5,18 +5,29 @@ import React, {
   useContext,
   useState,
   useEffect,
+  useCallback,
   ReactNode,
 } from "react";
 import { ethers } from "ethers";
 import { toast } from "@/hooks/use-toast";
+import type { AccountInterface } from "starknet";
+import type { Balance } from "@/types/dashboard";
+
+type WalletKind = "MetaMask" | "Argent" | "ArgentX" | "Braavos" | "Xverse";
 
 interface WalletContextType {
   isConnected: boolean;
   walletAddress: string | null;
   walletName: string | null;
   isConnecting: boolean;
-  balances: any[];
+  balances: Balance[];
   isLoadingBalances: boolean;
+  /** Starknet account used to sign transactions. Null unless a Starknet
+   *  wallet (Argent/Braavos) is connected. Payment and escrow components
+   *  require this. */
+  starknetAccount: AccountInterface | null;
+  /** Alias kept for components that read `account`. */
+  account: AccountInterface | null;
   connectWallet: (walletName: string) => Promise<void>;
   disconnectWallet: () => void;
   openWalletModal: () => void;
@@ -36,612 +47,351 @@ export function useWallet() {
   return context;
 }
 
-interface WalletProviderProps {
-  children: ReactNode;
+const STARKNET_WALLETS = new Set(["Argent", "ArgentX", "Braavos"]);
+
+const STARKNET_RPC =
+  process.env.NEXT_PUBLIC_STARKNET_RPC_URL ||
+  "https://starknet-sepolia.public.blastapi.io/rpc/v0_7";
+
+/** Sepolia token addresses; override per-network via env. */
+const STARKNET_TOKENS = [
+  {
+    symbol: "ETH",
+    name: "Ethereum",
+    address:
+      process.env.NEXT_PUBLIC_ERC20_ETH_ADDRESS ||
+      "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+    decimals: 18,
+    icon: "\u{1F537}",
+  },
+  {
+    symbol: "STRK",
+    name: "Starknet Token",
+    address:
+      process.env.NEXT_PUBLIC_ERC20_STRK_ADDRESS ||
+      "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+    decimals: 18,
+    icon: "⭐",
+  },
+];
+
+const ERC20_BALANCE_ABI = [
+  {
+    name: "balanceOf",
+    type: "function",
+    inputs: [{ name: "account", type: "core::starknet::contract_address::ContractAddress" }],
+    outputs: [{ type: "core::integer::u256" }],
+    state_mutability: "view",
+  },
+];
+
+function getWalletDownloadUrl(walletName: string): string {
+  switch (walletName) {
+    case "MetaMask":
+      return "https://metamask.io/download/";
+    case "Argent":
+    case "ArgentX":
+      return "https://www.argent.xyz/argent-x/";
+    case "Braavos":
+      return "https://braavos.app/download-braavos-wallet/";
+    case "Xverse":
+      return "https://www.xverse.app/download";
+    default:
+      return "#";
+  }
 }
 
-export function WalletProvider({ children }: WalletProviderProps) {
+export function WalletProvider({ children }: { children: ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletName, setWalletName] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [showWalletModal, setShowWalletModal] = useState(false);
-  const [balances, setBalances] = useState<any[]>([]);
+  const [balances, setBalances] = useState<Balance[]>([]);
   const [isLoadingBalances, setIsLoadingBalances] = useState(false);
+  const [starknetAccount, setStarknetAccount] = useState<AccountInterface | null>(null);
 
-  // Check for existing connection on mount
-  useEffect(() => {
-    const savedWallet = localStorage.getItem("engipay-wallet");
-    if (savedWallet) {
-      const { address, name } = JSON.parse(savedWallet);
-      setWalletAddress(address);
-      setWalletName(name);
-      setIsConnected(true);
-    }
-
-    // Listen for account changes
-    if (window.ethereum) {
-      window.ethereum.on("accountsChanged", handleAccountsChanged);
-      window.ethereum.on("chainChanged", handleChainChanged);
-    }
-
-    return () => {
-      if (window.ethereum) {
-        window.ethereum.removeListener(
-          "accountsChanged",
-          handleAccountsChanged
-        );
-        window.ethereum.removeListener("chainChanged", handleChainChanged);
-      }
-    };
-  }, []);
-
-  const handleAccountsChanged = (accounts: string[]) => {
-    if (accounts.length === 0) {
-      disconnectWallet();
-    } else {
-      setWalletAddress(accounts[0]);
-      localStorage.setItem(
-        "engipay-wallet",
-        JSON.stringify({
-          address: accounts[0],
-          name: walletName,
-        })
-      );
-    }
-  };
-
-  const handleChainChanged = () => {
-    window.location.reload();
-  };
-
-  const checkWalletInstalled = (walletName: string): boolean => {
-    if (typeof window === "undefined") return false;
-
-    switch (walletName) {
-      case "MetaMask":
-        return !!window.ethereum && window.ethereum.isMetaMask;
-      case "Argent":
-      case "ArgentX":
-        // Check for StarkNet Argent wallet - it injects starknet_argentX
-        return !!(window.starknet_argentX || (window.starknet && window.starknet.id === "argentX"));
-      case "Braavos":
-        // Check for StarkNet Braavos wallet - it injects starknet_braavos
-        return !!(window.starknet_braavos || (window.starknet && window.starknet.id === "braavos"));
-      case "Xverse":
-        // Xverse is a browser extension for Bitcoin
-        return !!window.xverse;
-      default:
-        return false;
-    }
-  };
-
-  const connectWallet = async (walletName: string) => {
-    if (!checkWalletInstalled(walletName)) {
-      toast({
-        title: "Wallet not found",
-        description: `${walletName} is not installed. Please download ${walletName} wallet to continue.`,
-        action: (
-          <a
-            href={getWalletDownloadUrl(walletName)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none ring-offset-background bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2"
-          >
-            Download {walletName}
-          </a>
-        ),
-      });
-      return;
-    }
-
-    setIsConnecting(true);
-
-    try {
-      if (walletName === "Xverse") {
-        // Handle Xverse BTC wallet connection
-        const { xverseWallet } = await import("@/lib/xverse");
-        const connected = await xverseWallet.connect();
-        if (!connected) {
-          throw new Error("Failed to connect to Xverse wallet");
-        }
-
-        const address = xverseWallet.address;
-        if (!address) {
-          throw new Error("Failed to get wallet address");
-        }
-
-        setWalletAddress(address);
-        setWalletName(walletName);
-        setIsConnected(true);
-        setShowWalletModal(false);
-
-        localStorage.setItem(
-          "engipay-wallet",
-          JSON.stringify({
-            address,
-            name: walletName,
-          })
-        );
-
-        toast({
-          title: "Xverse Wallet connected",
-          description: "Successfully connected to Xverse Bitcoin wallet",
-        });
-
-        // Fetch balances in background (non-blocking)
-        fetchBalances().catch(err => console.error('Failed to fetch balances:', err));
-
-        try {
-          const response = await fetch('/api/auth/wallet-connect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              wallet_address: address,
-              wallet_type: 'xverse'
-            })
-          });
-          
-          if (response.ok) {
-            const data = await response.json();
-            if (data.token) {
-              localStorage.setItem('engipay-token', data.token);
-              localStorage.setItem('engipay-user', JSON.stringify(data.user));
-            }
-          }
-        } catch (err) {
-          console.error('Failed to register wallet with backend:', err);
-        }
-      } else if (walletName === "Argent" || walletName === "ArgentX" || walletName === "Braavos") {
-        // Handle StarkNet wallets using get-starknet
-        const { connect } = await import("get-starknet");
-        
-        // Determine which wallet to connect to
-        const walletId = walletName === "Braavos" ? "braavos" : "argentX";
-        
-        try {
-          // Connect to specific StarkNet wallet
-          const starknet = await connect({
-            modalMode: "neverAsk",
-            modalTheme: "dark",
-          });
-
-          if (!starknet) {
-            throw new Error(`${walletName} wallet not found. Please install ${walletName} extension.`);
-          }
-
-          // Check if it's the right wallet
-          if (walletId === "braavos" && !starknet.id?.includes("braavos")) {
-            throw new Error("Please select Braavos wallet");
-          }
-          if (walletId === "argentX" && !starknet.id?.includes("argent")) {
-            throw new Error("Please select Argent wallet");
-          }
-
-          // Enable the wallet connection
-          await starknet.enable();
-          
-          if (!starknet.isConnected) {
-            throw new Error("Failed to connect wallet");
-          }
-
-          const address = starknet.selectedAddress || starknet.account?.address;
-          
-          if (!address) {
-            throw new Error("No account address found");
-          }
-
-          setWalletAddress(address);
-          setWalletName(walletName);
-          setIsConnected(true);
-          setShowWalletModal(false);
-
-          localStorage.setItem(
-            "engipay-wallet",
-            JSON.stringify({
-              address,
-              name: walletName,
-            })
-          );
-
-          toast({
-            title: "Wallet connected",
-            description: `Successfully connected to ${walletName}`,
-          });
-
-          try {
-            const response = await fetch('/api/auth/wallet-connect', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                wallet_address: address,
-                wallet_type: walletName.toLowerCase()
-              })
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              if (data.token) {
-                localStorage.setItem('engipay-token', data.token);
-                localStorage.setItem('engipay-user', JSON.stringify(data.user));
-              }
-            }
-          } catch (err) {
-            console.error('Failed to register wallet with backend:', err);
-          }
-
-          await fetchBalances();
-        } catch (error: any) {
-          // If get-starknet fails, try direct window object
-          console.log("Trying direct wallet connection...");
-          
-          let walletProvider;
-          if (walletName === "Braavos" && window.starknet_braavos) {
-            walletProvider = window.starknet_braavos;
-          } else if ((walletName === "Argent" || walletName === "ArgentX") && window.starknet_argentX) {
-            walletProvider = window.starknet_argentX;
-          } else if (window.starknet) {
-            walletProvider = window.starknet;
-          }
-
-          if (!walletProvider) {
-            throw new Error(`${walletName} wallet not found. Please install the ${walletName} browser extension.`);
-          }
-
-          // Enable the wallet
-          await walletProvider.enable();
-
-          // Wait a bit for the wallet to be ready
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-          if (!walletProvider.isConnected) {
-            throw new Error("Failed to connect to wallet");
-          }
-
-          const address = walletProvider.selectedAddress || walletProvider.account?.address;
-
-          if (!address) {
-            throw new Error("No account address found");
-          }
-
-          setWalletAddress(address);
-          setWalletName(walletName);
-          setIsConnected(true);
-          setShowWalletModal(false);
-
-          localStorage.setItem(
-            "engipay-wallet",
-            JSON.stringify({
-              address,
-              name: walletName,
-            })
-          );
-
-          toast({
-            title: "Wallet connected",
-            description: `Successfully connected to ${walletName}`,
-          });
-
-          // Fetch balances in background (non-blocking)
-          fetchBalances().catch(err => console.error('Failed to fetch balances:', err));
-
-          try {
-            const response = await fetch('/api/auth/wallet-connect', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                wallet_address: address,
-                wallet_type: walletName.toLowerCase()
-              })
-            });
-            
-            if (response.ok) {
-              const data = await response.json();
-              if (data.token) {
-                localStorage.setItem('engipay-token', data.token);
-                localStorage.setItem('engipay-user', JSON.stringify(data.user));
-              }
-            }
-          } catch (err) {
-            console.error('Failed to register wallet with backend:', err);
-          }
-        }
-      } else {
-        // Handle Ethereum wallets (MetaMask)
-        if (!window.ethereum) {
-          throw new Error("No Ethereum provider found");
-        }
-
-        const accounts = await window.ethereum.request({
-          method: "eth_requestAccounts",
-        });
-
-        if (accounts.length === 0) {
-          throw new Error("No accounts found");
-        }
-
-        const address = accounts[0];
-        setWalletAddress(address);
-        setWalletName(walletName);
-        setIsConnected(true);
-        setShowWalletModal(false);
-
-        localStorage.setItem(
-          "engipay-wallet",
-          JSON.stringify({
-            address,
-            name: walletName,
-          })
-        );
-
-        toast({
-          title: "Wallet connected",
-          description: `Successfully connected to ${walletName}`,
-        });
-
-        // Fetch balances in background (non-blocking)
-        fetchBalances().catch(err => console.error('Failed to fetch balances:', err));
-
-        try {
-          const response = await fetch('/api/auth/wallet-connect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              wallet_address: address,
-              wallet_type: walletName.toLowerCase()
-            })
-          });
-          
-          if (response.ok) {
-            const data = await response.json();
-            if (data.token) {
-              localStorage.setItem('engipay-token', data.token);
-              localStorage.setItem('engipay-user', JSON.stringify(data.user));
-            }
-          }
-        } catch (err) {
-          console.error('Failed to register wallet with backend:', err);
-        }
-      }
-    } catch (error: any) {
-      console.error("Wallet connection error:", error);
-      toast({
-        title: "Connection failed",
-        description:
-          error.message || "Failed to connect wallet. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsConnecting(false);
-    }
-  };
-
-  const getWalletDownloadUrl = (walletName: string): string => {
-    switch (walletName) {
-      case "MetaMask":
-        return "https://metamask.io/download/";
-      case "Argent":
-      case "ArgentX":
-        return "https://www.argent.xyz/argent-x/";
-      case "Braavos":
-        return "https://braavos.app/download-braavos-wallet/";
-      case "Xverse":
-        return "https://www.xverse.app/download";
-      default:
-        return "#";
-    }
-  };
-
-  const fetchBalances = async () => {
-    if (!walletAddress) return;
-
+  /**
+   * Balance loading takes the address and wallet explicitly rather than
+   * reading state. The previous version called this immediately after
+   * setWalletAddress(), so it closed over the stale `null` address and always
+   * bailed out at the guard — balances never loaded on first connect.
+   */
+  const loadBalances = useCallback(async (address: string, kind: string | null) => {
+    if (!address) return;
     setIsLoadingBalances(true);
+    const next: Balance[] = [];
+
     try {
-      const balances = [];
+      if (kind && STARKNET_WALLETS.has(kind)) {
+        const { RpcProvider, Contract, uint256 } = await import("starknet");
+        const provider = new RpcProvider({ nodeUrl: STARKNET_RPC });
 
-      if (walletName === "Argent X" || walletName === "Braavos") {
-        // Fetch StarkNet balances
-        try {
-          const { Provider, Contract, constants } = await import("starknet");
-          
-          // Try to detect network from wallet, default to mainnet
-          let network = "mainnet-alpha";
+        for (const token of STARKNET_TOKENS) {
           try {
-            if (typeof window !== 'undefined' && (window as any).starknet) {
-              const starknetWallet = (window as any).starknet;
-              const chainId = await starknetWallet.provider?.getChainId?.();
-              if (chainId === constants.StarknetChainId.SN_SEPOLIA) {
-                network = "sepolia";
-              }
-            }
-          } catch (e) {
-            console.log("Could not detect network, using mainnet");
-          }
+            const contract = new Contract({
+              abi: ERC20_BALANCE_ABI as any,
+              address: token.address,
+              providerOrAccount: provider,
+            });
+            const raw: any = await contract.call("balanceOf", [address]);
+            const value = raw?.balance ?? raw;
+            const asBigInt =
+              typeof value === "object" && value !== null && "low" in value
+                ? uint256.uint256ToBN(value as any)
+                : BigInt(value?.toString?.() ?? "0");
 
-          const provider = new Provider({ 
-            sequencer: { network: network as any } 
-          });
-
-          // Common StarkNet tokens (mainnet addresses)
-          const tokens = [
-            {
-              symbol: "ETH",
-              name: "Ethereum",
-              address: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
-              decimals: 18,
-              icon: "🔷"
-            },
-            {
-              symbol: "STRK",
-              name: "StarkNet Token",
-              address: "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
-              decimals: 18,
-              icon: "⭐"
-            },
-            {
-              symbol: "USDC",
-              name: "USD Coin",
-              address: "0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8",
-              decimals: 6,
-              icon: "💰"
-            }
-          ];
-
-          const erc20Abi = [
-            {
-              name: "balanceOf",
-              type: "function",
-              inputs: [{ name: "account", type: "felt" }],
-              outputs: [{ name: "balance", type: "Uint256" }],
-              stateMutability: "view"
-            }
-          ];
-
-          for (const token of tokens) {
-            try {
-              const contract = new Contract(erc20Abi, token.address, provider);
-              const result = await contract.balanceOf(walletAddress);
-              const balance = result.balance || result;
-              
-              // Convert Uint256 to number
-              const balanceBigInt = typeof balance === 'object' && balance.low !== undefined
-                ? BigInt(balance.low) + (BigInt(balance.high || 0) << 128n)
-                : BigInt(balance.toString());
-              
-              const formattedBalance = Number(balanceBigInt) / Math.pow(10, token.decimals);
-
-              if (formattedBalance > 0.0001) {
-                balances.push({
-                  symbol: token.symbol,
-                  name: token.name,
-                  balance: formattedBalance.toFixed(token.decimals === 18 ? 4 : 2),
-                  value: "$0.00",
-                  change: "+0.0%",
-                  icon: token.icon,
-                  trend: "stable" as const,
-                  volume: "Real balance"
-                });
-              }
-            } catch (error) {
-              console.error(`Error fetching ${token.symbol} balance:`, error);
-            }
-          }
-        } catch (error) {
-          console.error("Error fetching StarkNet balances:", error);
-        }
-      } else if (walletName === "Xverse") {
-        // Fetch BTC balance from Xverse
-        const { getBitcoinBalance } = await import("@/lib/xverse");
-        const btcBalance = await getBitcoinBalance();
-        const btcAmount = btcBalance.total / 100000000; // Convert satoshis to BTC
-
-        if (btcAmount > 0) {
-          balances.push({
-            symbol: "BTC",
-            name: "Bitcoin",
-            balance: btcAmount.toFixed(8),
-            value: "$0.00", // Would need price API for real values
-            change: "+0.0%",
-            icon: "₿",
-            trend: "stable" as const,
-            volume: "Real balance"
-          });
-        }
-      } else if (window.ethereum) {
-        // Fetch Ethereum balances
-        const provider = new ethers.BrowserProvider(window.ethereum);
-
-        // Common token contracts (Ethereum mainnet)
-        const tokens = [
-          {
-            symbol: "ETH",
-            name: "Ethereum",
-            address: null, // Native ETH
-            decimals: 18,
-            icon: "🔷"
-          },
-          {
-            symbol: "USDT",
-            name: "Tether",
-            address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", // USDT contract
-            decimals: 6,
-            icon: "💵"
-          },
-          {
-            symbol: "USDC",
-            name: "USD Coin",
-            address: "0xA0b86a33E6441e88C5F2712C3E9b74F63F8F8E8b", // USDC contract
-            decimals: 6,
-            icon: "💰"
-          }
-        ];
-
-        for (const token of tokens) {
-          try {
-            let balance;
-            if (token.address === null) {
-              // Native ETH balance
-              balance = await provider.getBalance(walletAddress);
-            } else {
-              // ERC-20 token balance
-              const contract = new ethers.Contract(
-                token.address,
-                ["function balanceOf(address) view returns (uint256)"],
-                provider
-              );
-              balance = await contract.balanceOf(walletAddress);
-            }
-
-            const formattedBalance = ethers.formatUnits(balance, token.decimals);
-            const numericBalance = parseFloat(formattedBalance);
-
-            if (numericBalance > 0) {
-              balances.push({
+            const amount = Number(asBigInt) / 10 ** token.decimals;
+            if (amount > 0) {
+              next.push({
                 symbol: token.symbol,
                 name: token.name,
-                balance: numericBalance.toFixed(token.decimals === 18 ? 4 : 2),
-                value: "$0.00", // Would need price API for real values
+                balance: amount.toFixed(4),
+                value: "$0.00",
                 change: "+0.0%",
                 icon: token.icon,
-                trend: "stable" as const,
-                volume: "Real balance"
+                trend: "stable",
+                volume: "On-chain",
               });
             }
           } catch (error) {
             console.error(`Error fetching ${token.symbol} balance:`, error);
           }
         }
+      } else if (kind === "Xverse") {
+        const { getBitcoinBalance } = await import("@/lib/xverse");
+        const btc = await getBitcoinBalance();
+        const amount = btc.total / 100_000_000;
+        if (amount > 0) {
+          next.push({
+            symbol: "BTC",
+            name: "Bitcoin",
+            balance: amount.toFixed(8),
+            value: "$0.00",
+            change: "+0.0%",
+            icon: "₿",
+            trend: "stable",
+            volume: "On-chain",
+          });
+        }
+      } else if (typeof window !== "undefined" && window.ethereum) {
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const wei = await provider.getBalance(address);
+        const amount = Number.parseFloat(ethers.formatUnits(wei, 18));
+        if (amount > 0) {
+          next.push({
+            symbol: "ETH",
+            name: "Ethereum",
+            balance: amount.toFixed(4),
+            value: "$0.00",
+            change: "+0.0%",
+            icon: "\u{1F537}",
+            trend: "stable",
+            volume: "On-chain",
+          });
+        }
       }
 
-      setBalances(balances);
+      setBalances(next);
     } catch (error) {
       console.error("Error fetching balances:", error);
       toast({
-        title: "Error",
-        description: "Failed to fetch wallet balances",
+        title: "Could not load balances",
+        description: "Your wallet is connected, but balances are unavailable right now.",
         variant: "destructive",
       });
     } finally {
       setIsLoadingBalances(false);
     }
-  };
+  }, []);
 
-  const disconnectWallet = () => {
+  const fetchBalances = useCallback(
+    () => loadBalances(walletAddress ?? "", walletName),
+    [loadBalances, walletAddress, walletName]
+  );
+
+  const disconnectWallet = useCallback(() => {
     setIsConnected(false);
     setWalletAddress(null);
     setWalletName(null);
+    setStarknetAccount(null);
     setBalances([]);
     localStorage.removeItem("engipay-wallet");
     localStorage.removeItem("engipay-token");
     localStorage.removeItem("engipay-user");
-    toast({
-      title: "Wallet disconnected",
-      description: "Your wallet has been disconnected",
-    });
-  };
+    toast({ title: "Wallet disconnected" });
+  }, []);
 
-  const openWalletModal = () => setShowWalletModal(true);
-  const closeWalletModal = () => setShowWalletModal(false);
+  /** Restore a previous session. Reconnects silently so `starknetAccount` is
+   *  available again after a page refresh, which payments depend on. */
+  useEffect(() => {
+    const saved = localStorage.getItem("engipay-wallet");
+    if (!saved) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const { address, name } = JSON.parse(saved);
+        if (cancelled || !address) return;
+
+        setWalletAddress(address);
+        setWalletName(name);
+        setIsConnected(true);
+
+        if (STARKNET_WALLETS.has(name)) {
+          const { connect } = await import("get-starknet");
+          const wallet: any = await connect({ modalMode: "neverAsk" });
+          if (!cancelled && wallet?.account) setStarknetAccount(wallet.account);
+        }
+
+        if (!cancelled) void loadBalances(address, name);
+      } catch (error) {
+        console.error("Failed to restore wallet session:", error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadBalances]);
+
+  /** Account/chain change listeners for EVM wallets. */
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.ethereum) return;
+
+    const onAccountsChanged = (accounts: string[]) => {
+      if (accounts.length === 0) {
+        disconnectWallet();
+      } else {
+        setWalletAddress(accounts[0]);
+        localStorage.setItem(
+          "engipay-wallet",
+          JSON.stringify({ address: accounts[0], name: walletName })
+        );
+      }
+    };
+    const onChainChanged = () => window.location.reload();
+
+    window.ethereum.on("accountsChanged", onAccountsChanged);
+    window.ethereum.on("chainChanged", onChainChanged);
+    return () => {
+      window.ethereum?.removeListener("accountsChanged", onAccountsChanged);
+      window.ethereum?.removeListener("chainChanged", onChainChanged);
+    };
+  }, [walletName, disconnectWallet]);
+
+  const checkWalletInstalled = useCallback((name: string): boolean => {
+    if (typeof window === "undefined") return false;
+    switch (name) {
+      case "MetaMask":
+        return !!window.ethereum?.isMetaMask;
+      case "Argent":
+      case "ArgentX":
+        return !!(window.starknet_argentX || window.starknet?.id === "argentX");
+      case "Braavos":
+        return !!(window.starknet_braavos || window.starknet?.id === "braavos");
+      case "Xverse":
+        return !!window.xverse;
+      default:
+        return false;
+    }
+  }, []);
+
+  /** Persist session and register the wallet with the backend. */
+  const finalizeConnection = useCallback(
+    async (address: string, name: string, sn: AccountInterface | null) => {
+      setWalletAddress(address);
+      setWalletName(name);
+      setStarknetAccount(sn);
+      setIsConnected(true);
+      setShowWalletModal(false);
+      localStorage.setItem("engipay-wallet", JSON.stringify({ address, name }));
+
+      toast({ title: "Wallet connected", description: `Connected to ${name}.` });
+
+      void loadBalances(address, name);
+
+      try {
+        const response = await fetch("/api/auth/wallet-connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ wallet_address: address, wallet_type: name.toLowerCase() }),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.token) {
+            localStorage.setItem("engipay-token", data.token);
+            localStorage.setItem("engipay-user", JSON.stringify(data.user));
+          }
+        }
+      } catch (error) {
+        // Non-fatal: the wallet is usable even if the backend is unreachable.
+        console.error("Failed to register wallet with backend:", error);
+      }
+    },
+    [loadBalances]
+  );
+
+  const connectWallet = useCallback(
+    async (name: string) => {
+      if (!checkWalletInstalled(name)) {
+        toast({
+          title: "Wallet not found",
+          description: `${name} is not installed.`,
+          action: (
+            <a
+              href={getWalletDownloadUrl(name)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              Install {name}
+            </a>
+          ),
+        });
+        return;
+      }
+
+      setIsConnecting(true);
+      try {
+        if (name === "Xverse") {
+          const { xverseWallet } = await import("@/lib/xverse");
+          if (!(await xverseWallet.connect())) throw new Error("Failed to connect to Xverse.");
+          const address = xverseWallet.address;
+          if (!address) throw new Error("Could not read the Xverse wallet address.");
+          await finalizeConnection(address, name, null);
+        } else if (STARKNET_WALLETS.has(name)) {
+          const { connect } = await import("get-starknet");
+          const wallet: any = await connect({ modalMode: "canAsk", modalTheme: "dark" });
+          if (!wallet) throw new Error(`${name} wallet not found.`);
+
+          await wallet.enable?.();
+          const address: string | undefined =
+            wallet.selectedAddress || wallet.account?.address;
+          if (!address) throw new Error("No account address found.");
+
+          await finalizeConnection(address, name, wallet.account ?? null);
+        } else {
+          if (!window.ethereum) throw new Error("No Ethereum provider found.");
+          const accounts: string[] = await window.ethereum.request({
+            method: "eth_requestAccounts",
+          });
+          if (!accounts.length) throw new Error("No accounts found.");
+          await finalizeConnection(accounts[0], name, null);
+        }
+      } catch (error: any) {
+        console.error("Wallet connection error:", error);
+        toast({
+          title: "Connection failed",
+          description: error?.message || "Could not connect the wallet. Please try again.",
+          variant: "destructive",
+        });
+      } finally {
+        setIsConnecting(false);
+      }
+    },
+    [checkWalletInstalled, finalizeConnection]
+  );
 
   const value: WalletContextType = {
     isConnected,
@@ -650,21 +400,20 @@ export function WalletProvider({ children }: WalletProviderProps) {
     isConnecting,
     balances,
     isLoadingBalances,
+    starknetAccount,
+    account: starknetAccount,
     connectWallet,
     disconnectWallet,
-    openWalletModal,
-    closeWalletModal,
+    openWalletModal: () => setShowWalletModal(true),
+    closeWalletModal: () => setShowWalletModal(false),
     showWalletModal,
     checkWalletInstalled,
     fetchBalances,
   };
 
-  return (
-    <WalletContext.Provider value={value}>{children}</WalletContext.Provider>
-  );
+  return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }
 
-// Extend window interface for TypeScript
 declare global {
   interface Window {
     ethereum?: any;

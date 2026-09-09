@@ -36,10 +36,23 @@ const getContracts = async () => {
     import('../smart-contracts/contracts/RewardDistributorABI.json'),
   ]);
   
+  // starknet v9 takes a single options object, not (abi, address, provider)
   contractsCache = {
-    engiToken: new Contract(EngiTokenABI.abi, CONTRACT_ADDRESSES.engiToken, provider),
-    escrow: new Contract(EscrowABI.abi, CONTRACT_ADDRESSES.escrow, provider),
-    rewardDistributor: new Contract(RewardDistributorABI.abi, CONTRACT_ADDRESSES.rewardDistributor, provider),
+    engiToken: new Contract({
+      abi: EngiTokenABI.abi,
+      address: CONTRACT_ADDRESSES.engiToken,
+      providerOrAccount: provider,
+    }),
+    escrow: new Contract({
+      abi: EscrowABI.abi,
+      address: CONTRACT_ADDRESSES.escrow,
+      providerOrAccount: provider,
+    }),
+    rewardDistributor: new Contract({
+      abi: RewardDistributorABI.abi,
+      address: CONTRACT_ADDRESSES.rewardDistributor,
+      providerOrAccount: provider,
+    }),
   };
   
   return contractsCache;
@@ -174,7 +187,15 @@ export class EscrowService {
     if (this.contract) return this.contract;
     
     const { Contract } = await import('starknet');
-    this.contract = new Contract(EscrowABI.abi, CONTRACT_ADDRESSES.escrow, provider);
+    // EscrowABI and provider were referenced here but declared in another
+    // function, so this threw ReferenceError on every call.
+    const EscrowABI = await import('../smart-contracts/contracts/EscrowABI.json');
+    const provider = await getProvider();
+    this.contract = new Contract({
+      abi: EscrowABI.abi,
+      address: CONTRACT_ADDRESSES.escrow,
+      providerOrAccount: provider,
+    });
     return this.contract;
   }
 
@@ -398,7 +419,7 @@ export const getStarknetProvider = async () => await getProvider();
 export const createStarknetAccount = async (address: string, privateKey: string) => {
   const { Account } = await import('starknet');
   const provider = await getProvider();
-  return new Account(provider, address, privateKey);
+  return new Account({ provider, address, signer: privateKey });
 };
 
 
