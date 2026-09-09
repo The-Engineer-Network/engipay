@@ -68,30 +68,6 @@ export function HelpCenter() {
       difficulty: "Intermediate"
     },
     {
-      id: "defi-lending",
-      title: "DeFi Lending with Vesu",
-      description: "Earn interest by lending your crypto assets through the Vesu protocol",
-      category: "defi",
-      readTime: "10 min",
-      difficulty: "Intermediate"
-    },
-    {
-      id: "staking-rewards",
-      title: "Staking STRK Tokens",
-      description: "Stake your STRK tokens with Trove protocol to earn rewards",
-      category: "defi",
-      readTime: "8 min",
-      difficulty: "Intermediate"
-    },
-    {
-      id: "yield-farming",
-      title: "Yield Farming Strategies",
-      description: "Advanced strategies for maximizing yields through liquidity provision",
-      category: "defi",
-      readTime: "15 min",
-      difficulty: "Advanced"
-    },
-    {
       id: "security-best-practices",
       title: "Security Best Practices",
       description: "Keep your funds safe with these essential security tips",
@@ -133,14 +109,6 @@ export function HelpCenter() {
       duration: "7:20",
       thumbnail: "/placeholder-video-thumb.jpg",
       category: "swaps"
-    },
-    {
-      id: "defi-basics",
-      title: "DeFi Basics for Beginners",
-      description: "Understanding lending, borrowing, and yield farming",
-      duration: "12:15",
-      thumbnail: "/placeholder-video-thumb.jpg",
-      category: "defi"
     }
   ]
 
@@ -149,7 +117,6 @@ export function HelpCenter() {
     { id: "basics", name: "Getting Started", icon: <Zap className="w-4 h-4" /> },
     { id: "wallets", name: "Wallets", icon: <Wallet className="w-4 h-4" /> },
     { id: "swaps", name: "Token Swaps", icon: <ArrowLeftRight className="w-4 h-4" /> },
-    { id: "defi", name: "DeFi", icon: <TrendingUp className="w-4 h-4" /> },
     { id: "security", name: "Security", icon: <Shield className="w-4 h-4" /> },
     { id: "troubleshooting", name: "Troubleshooting", icon: <HelpCircle className="w-4 h-4" /> }
   ]

@@ -32,7 +32,7 @@ export default function FAQPage() {
     {
       question: "What is EngiPay?",
       answer:
-        "EngiPay is a next-generation Web3 super app that combines everyday payments with powerful DeFi tools. You can send money, swap tokens across chains, and access lending, borrowing, and yield farming - all in one wallet-native experience.",
+        "EngiPay is a Web3 payments app. You can send and receive crypto, swap tokens across chains, make private transfers, and track your portfolio - all in one wallet-native experience.",
     },
     {
       question: "How does cross-chain swapping work?",
@@ -60,9 +60,9 @@ export default function FAQPage() {
         "Simply connect your Web3 wallet to EngiPay and you're ready to go! No lengthy onboarding process or KYC requirements. Start sending, swapping, and earning immediately.",
     },
     {
-      question: "What DeFi features are available?",
+      question: "Can I earn yield on my holdings?",
       answer:
-        "EngiPay offers lending, borrowing, yield farming, and staking opportunities across multiple protocols. Earn passive income on your crypto holdings while maintaining full control of your assets.",
+        "Not in this release. EngiPay is focused on payments, cross-chain swaps and portfolio tracking for now. Lending, borrowing and staking are planned for a future version.",
     },
     {
       question: "Is EngiPay available globally?",

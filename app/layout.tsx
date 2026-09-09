@@ -10,8 +10,9 @@ import { Suspense } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "EngiPay - DeFi Dashboard",
-  description: "Your comprehensive DeFi portfolio management dashboard",
+  title: "EngiPay - Crypto Payments & Swaps",
+  description:
+    "Send crypto, swap across chains, and track your portfolio in one wallet-native app.",
   generator: "EngiPay",
 };
 

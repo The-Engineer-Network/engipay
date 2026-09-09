@@ -46,10 +46,10 @@ export default function FeaturesPage() {
     },
     {
       icon: <TrendingUp className="w-12 h-12" />,
-      title: "DeFi Power Tools",
-      description: "Lending, Borrowing, Yield Farming, Staking",
+      title: "Portfolio Tracking",
+      description: "See every balance in one place",
       details:
-        "Access the full DeFi ecosystem with lending protocols, yield farming opportunities, and staking rewards. Maximize your crypto earnings with professional-grade tools.",
+        "Track your holdings across Starknet and Bitcoin in a single view, with live balances and a complete history of your payments and swaps.",
     },
   ]
 

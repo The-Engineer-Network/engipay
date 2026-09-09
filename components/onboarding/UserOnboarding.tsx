@@ -69,15 +69,8 @@ export function UserOnboarding() {
     {
       id: "features",
       title: "Explore Features",
-      description: "Send payments, swap tokens across chains, and earn with DeFi - all in one app.",
+      description: "Send payments, swap tokens across chains, and track your portfolio - all in one app.",
       icon: <Coins className="w-8 h-8" />,
-      completed: false,
-    },
-    {
-      id: "defi",
-      title: "DeFi Opportunities",
-      description: "Discover lending, staking, and yield farming opportunities to grow your crypto.",
-      icon: <TrendingUp className="w-8 h-8" />,
       completed: false,
     },
   ]
@@ -263,36 +256,15 @@ export function UserOnboarding() {
                   </div>
                   <div className="p-3 border border-border rounded-lg text-left">
                     <div className="flex items-center gap-2 mb-1">
-                      <TrendingUp className="w-4 h-4 text-purple-400" />
-                      <h4 className="font-medium text-sm">DeFi Integration</h4>
+                      <TrendingUp className="w-4 h-4 text-primary" />
+                      <h4 className="font-medium text-sm">Portfolio Tracking</h4>
                     </div>
-                    <p className="text-xs text-muted-foreground">Access lending, staking, and yield farming</p>
+                    <p className="text-xs text-muted-foreground">See every balance and transaction in one place</p>
                   </div>
                 </div>
               </div>
             )}
 
-            {currentStepData.id === "defi" && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-1 gap-2">
-                  <div className="p-3 bg-gradient-to-r from-blue-500/10 to-purple-500/10 rounded-lg text-left">
-                    <h4 className="font-medium text-sm mb-1">Vesu Lending</h4>
-                    <p className="text-xs text-muted-foreground">Earn up to 8% APY by lending your assets</p>
-                    <Badge className="mt-1 bg-blue-500/20 text-blue-400 text-xs">Low Risk</Badge>
-                  </div>
-                  <div className="p-3 bg-gradient-to-r from-green-500/10 to-emerald-500/10 rounded-lg text-left">
-                    <h4 className="font-medium text-sm mb-1">Trove Staking</h4>
-                    <p className="text-xs text-muted-foreground">Stake STRK tokens for up to 12% APY</p>
-                    <Badge className="mt-1 bg-green-500/20 text-green-400 text-xs">Medium Risk</Badge>
-                  </div>
-                  <div className="p-3 bg-gradient-to-r from-purple-500/10 to-pink-500/10 rounded-lg text-left">
-                    <h4 className="font-medium text-sm mb-1">Endurfi Farming</h4>
-                    <p className="text-xs text-muted-foreground">Provide liquidity for up to 25% APY</p>
-                    <Badge className="mt-1 bg-purple-500/20 text-purple-400 text-xs">High Risk</Badge>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Action Buttons */}

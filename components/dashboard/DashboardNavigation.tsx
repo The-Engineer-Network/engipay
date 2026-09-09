@@ -1,75 +1,54 @@
 "use client"
 
 import Link from "next/link"
-import { Wallet, TrendingUp, Target } from "lucide-react"
+import { Wallet, ArrowLeftRight, PieChart } from "lucide-react"
 import { TabType } from "@/types/dashboard"
+import { cn } from "@/lib/utils"
 
 interface DashboardNavigationProps {
   activeTab: TabType
   onTabChange: (tab: TabType) => void
 }
 
-export function DashboardNavigation({ activeTab, onTabChange }: DashboardNavigationProps) {
-  const tabs = [
-    { id: "overview", label: "Overview", icon: <Wallet className="w-4 h-4" />, href: "/dashboard" },
-    { id: "payments", label: "Payments & Swaps", icon: <TrendingUp className="w-4 h-4" />, href: "/payments-swaps" },
-    { id: "defi", label: "DeFi & Profile", icon: <Target className="w-4 h-4" />, href: "/defi" },
-  ]
+const TABS: { id: TabType; label: string; icon: React.ReactNode; href: string }[] = [
+  { id: "overview", label: "Overview", icon: <Wallet className="h-4 w-4" />, href: "/dashboard" },
+  {
+    id: "payments",
+    label: "Pay & Swap",
+    icon: <ArrowLeftRight className="h-4 w-4" />,
+    href: "/payments-swaps",
+  },
+  { id: "defi", label: "Portfolio", icon: <PieChart className="h-4 w-4" />, href: "/defi" },
+]
 
+export function DashboardNavigation({ activeTab }: DashboardNavigationProps) {
   return (
-    <nav style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}>
-      <div className="container mx-auto px-4">
-        <div className="flex space-x-8">
-          {tabs.map((tab) => (
-            tab.href ? (
-              <Link
-                key={tab.id}
-                href={tab.href}
-                className="flex items-center space-x-2 py-4 px-2 font-medium transition-colors"
-                style={{
-                  borderBottom: activeTab === tab.id ? '2px solid #00d084' : '2px solid transparent',
-                  color: activeTab === tab.id ? '#00d084' : 'rgba(255, 255, 255, 0.7)',
-                }}
-                onMouseEnter={(e) => {
-                  if (activeTab !== tab.id) {
-                    e.currentTarget.style.color = '#ffffff'
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (activeTab !== tab.id) {
-                    e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)'
-                  }
-                }}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-              </Link>
-            ) : (
-              <button
-                key={tab.id}
-                onClick={() => onTabChange(tab.id as TabType)}
-                className="flex items-center space-x-2 py-4 px-2 font-medium transition-colors"
-                style={{
-                  borderBottom: activeTab === tab.id ? '2px solid #00d084' : '2px solid transparent',
-                  color: activeTab === tab.id ? '#00d084' : 'rgba(255, 255, 255, 0.7)',
-                }}
-                onMouseEnter={(e) => {
-                  if (activeTab !== tab.id) {
-                    e.currentTarget.style.color = '#ffffff'
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (activeTab !== tab.id) {
-                    e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)'
-                  }
-                }}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-              </button>
+    <nav aria-label="Main" className="border-b border-border bg-background/80 backdrop-blur">
+      <div className="container">
+        {/* Scrolls rather than wrapping on narrow screens */}
+        <ul className="-mb-px flex gap-1 overflow-x-auto">
+          {TABS.map((tab) => {
+            const isActive = activeTab === tab.id
+            return (
+              <li key={tab.id}>
+                <Link
+                  href={tab.href}
+                  aria-current={isActive ? "page" : undefined}
+                  className={cn(
+                    "flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-3.5 text-sm font-medium transition-colors",
+                    "hover:text-foreground focus-visible:outline-none",
+                    isActive
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground"
+                  )}
+                >
+                  {tab.icon}
+                  <span>{tab.label}</span>
+                </Link>
+              </li>
             )
-          ))}
-        </div>
+          })}
+        </ul>
       </div>
     </nav>
   )

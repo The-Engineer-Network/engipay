@@ -9,99 +9,73 @@ import { DashboardHeader } from "@/components/dashboard/DashboardHeader"
 import { DashboardNavigation } from "@/components/dashboard/DashboardNavigation"
 import { TabType } from "@/types/dashboard"
 
-// Dynamically import heavy components
-const PortfolioOverview = dynamic(() => import("@/components/defi/portfolio-overview").then(mod => ({ default: mod.PortfolioOverview })), {
-  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
-})
-const YieldFarming = dynamic(() => import("@/components/defi/yield-farming").then(mod => ({ default: mod.YieldFarming })), {
-  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
-})
-const LendingBorrowing = dynamic(() => import("@/components/defi/lending-borrowing").then(mod => ({ default: mod.LendingBorrowing })), {
-  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
-})
-const ClaimRewards = dynamic(() => import("@/components/defi/claim-rewards").then(mod => ({ default: mod.ClaimRewards })), {
-  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
-})
-const ProfileSettings = dynamic(() => import("@/components/defi/profile-settings").then(mod => ({ default: mod.ProfileSettings })), {
-  loading: () => <div className="animate-pulse bg-gray-800 h-64 rounded-lg" />
-})
+const PanelSkeleton = () => (
+  <div className="h-64 animate-pulse rounded-lg border border-border bg-card" />
+)
 
-export default function DeFiPage() {
+// Lending, yield farming and staking rewards are withheld from this release.
+// Their components remain in components/defi/ so they can be restored.
+const PortfolioOverview = dynamic(
+  () => import("@/components/defi/portfolio-overview").then((mod) => ({ default: mod.PortfolioOverview })),
+  { loading: PanelSkeleton }
+)
+const ProfileSettings = dynamic(
+  () => import("@/components/defi/profile-settings").then((mod) => ({ default: mod.ProfileSettings })),
+  { loading: PanelSkeleton }
+)
+
+export default function PortfolioPage() {
   const [activeTab, setActiveTab] = useState<TabType>("defi")
-  const [defiSubTab, setDefiSubTab] = useState("portfolio")
+  const [subTab, setSubTab] = useState("portfolio")
+  const [mounted, setMounted] = useState(false)
   const router = useRouter()
   const { isConnected } = useWallet()
 
   useEffect(() => {
-    const savedWallet = localStorage.getItem("engipay-wallet")
-    if (!isConnected && !savedWallet) {
-      router.push('/')
-    }
-  }, [isConnected, router])
-
-  const [mounted, setMounted] = useState(false)
-  useEffect(() => {
     setMounted(true)
   }, [])
 
-  if (!mounted) {
-    return null
-  }
+  useEffect(() => {
+    if (!mounted) return
+    const savedWallet = localStorage.getItem("engipay-wallet")
+    if (!isConnected && !savedWallet) router.push("/")
+  }, [mounted, isConnected, router])
+
+  if (!mounted) return null
 
   const handleTabChange = (tab: TabType) => {
     setActiveTab(tab)
-    // Handle navigation for overview tab
-    if (tab === "overview") {
-      router.push('/dashboard')
-    }
+    if (tab === "overview") router.push("/dashboard")
   }
 
   return (
-    <div className="min-h-screen text-white"
-      style={{
-        background: '#0a0a0a',
-        color: '#ffffff'
-      }}
-    >
+    <div className="min-h-screen bg-background text-foreground">
       <DashboardHeader />
       <DashboardNavigation activeTab={activeTab} onTabChange={handleTabChange} />
 
-      <div className="container mx-auto px-4 py-8">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold mb-2">DeFi Dashboard</h1>
-          <p className="text-gray-400">Manage your decentralized finance positions and earn rewards</p>
-        </div>
+      <main className="container py-8">
+        <header className="mb-8">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Portfolio</h1>
+          <p className="mt-1 text-muted-foreground">
+            Track your holdings and manage your account settings.
+          </p>
+        </header>
 
-        <Tabs value={defiSubTab} onValueChange={setDefiSubTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-5 bg-gray-800">
-            <TabsTrigger value="portfolio" className="data-[state=active]:bg-green-600">Portfolio</TabsTrigger>
-            <TabsTrigger value="farming" className="data-[state=active]:bg-green-600">Yield Farming</TabsTrigger>
-            <TabsTrigger value="lending" className="data-[state=active]:bg-green-600">Lending</TabsTrigger>
-            <TabsTrigger value="rewards" className="data-[state=active]:bg-green-600">Rewards</TabsTrigger>
-            <TabsTrigger value="settings" className="data-[state=active]:bg-green-600">Settings</TabsTrigger>
+        <Tabs value={subTab} onValueChange={setSubTab} className="w-full">
+          <TabsList className="grid w-full max-w-md grid-cols-2">
+            <TabsTrigger value="portfolio">Holdings</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
 
           <TabsContent value="portfolio" className="mt-6">
             <PortfolioOverview />
           </TabsContent>
 
-          <TabsContent value="farming" className="mt-6">
-            <YieldFarming />
-          </TabsContent>
-
-          <TabsContent value="lending" className="mt-6">
-            <LendingBorrowing />
-          </TabsContent>
-
-          <TabsContent value="rewards" className="mt-6">
-            <ClaimRewards />
-          </TabsContent>
-
           <TabsContent value="settings" className="mt-6">
             <ProfileSettings />
           </TabsContent>
         </Tabs>
-      </div>
+      </main>
     </div>
   )
 }

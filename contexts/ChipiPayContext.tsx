@@ -1,9 +1,13 @@
 'use client'
 
 import React, { createContext, useContext, ReactNode } from 'react'
-import { ChipiProvider } from '@chipi-stack/nextjs'
+// NOTE: import from `/client`. The package root exports an *async server*
+// ChipiProvider which cannot be rendered from a client component and which
+// additionally requires CHIPI_SECRET_KEY. The client provider takes its key
+// through the `config` prop, which is what we want here.
+import { ChipiProvider } from '@chipi-stack/nextjs/client'
 
-interface SKU {
+export interface SKU {
   id: string
   name: string
   description: string
@@ -13,8 +17,10 @@ interface SKU {
 }
 
 interface ChipiPayContextType {
+  /** False when no NEXT_PUBLIC_CHIPI_API_KEY is set. Consumers must check this
+   *  before calling any @chipi-stack hook, because the provider is not mounted. */
+  isConfigured: boolean
   getSKUs: () => Promise<SKU[]>
-  buySKU: (skuId: string, options?: any) => Promise<any>
 }
 
 const ChipiPayContext = createContext<ChipiPayContextType | undefined>(undefined)
@@ -22,82 +28,35 @@ const ChipiPayContext = createContext<ChipiPayContextType | undefined>(undefined
 export function useChipiPay() {
   const context = useContext(ChipiPayContext)
   if (!context) {
-    throw new Error('useChipiPay must be used within ChipiPayProvider')
+    throw new Error('useChipiPay must be used within ChipiPayProviderWrapper')
   }
   return context
 }
 
-interface ChipiPayProviderProps {
-  children: ReactNode
+const CHIPI_API_KEY =
+  process.env.NEXT_PUBLIC_CHIPI_API_KEY || process.env.NEXT_PUBLIC_CHIPIPAY_API_KEY || ''
+
+async function getSKUs(): Promise<SKU[]> {
+  const res = await fetch('/api/chipipay/skus', { cache: 'no-store' })
+  if (!res.ok) throw new Error(`Failed to load services (${res.status})`)
+  const data = await res.json()
+  return Array.isArray(data?.skus) ? data.skus : []
 }
 
-export function ChipiPayProviderWrapper({ children }: ChipiPayProviderProps) {
-  // Use a placeholder key if not set to prevent build errors
-  // The actual key should be set in production via environment variables
-  // Note: @chipi-stack/nextjs looks for NEXT_PUBLIC_CHIPI_API_KEY (without PAY)
-  const apiKey = process.env.NEXT_PUBLIC_CHIPI_API_KEY || process.env.NEXT_PUBLIC_CHIPIPAY_API_KEY || 'pk_placeholder_key_for_build'
-  
-  if (!process.env.NEXT_PUBLIC_CHIPI_API_KEY && !process.env.NEXT_PUBLIC_CHIPIPAY_API_KEY) {
-    console.warn('NEXT_PUBLIC_CHIPI_API_KEY environment variable is not set. Using placeholder. ChipiPay features will not work.')
-  }
-  
-  const getSKUs = async (): Promise<SKU[]> => {
-    try {
-      // Demo SKUs - replace with your actual product SKUs
-      return [
-        {
-          id: 'sku_premium',
-          name: 'Premium Membership',
-          description: 'Access to premium features and priority support',
-          price: 9.99,
-          currency: 'USD',
-          available: true,
-        },
-        {
-          id: 'sku_pro',
-          name: 'Pro Service Package',
-          description: 'Professional tier with advanced analytics',
-          price: 19.99,
-          currency: 'USD',
-          available: true,
-        },
-        {
-          id: 'sku_enterprise',
-          name: 'Enterprise Solution',
-          description: 'Full enterprise features with dedicated support',
-          price: 49.99,
-          currency: 'USD',
-          available: true,
-        },
-      ]
-    } catch (error) {
-      console.error('Error fetching SKUs:', error)
-      return []
-    }
-  }
+export function ChipiPayProviderWrapper({ children }: { children: ReactNode }) {
+  const isConfigured = CHIPI_API_KEY.length > 0
+  const value: ChipiPayContextType = { isConfigured, getSKUs }
 
-  const buySKU = async (skuId: string, options: any = {}) => {
-    try {
-      // This will be handled by ChipiPay SDK hooks in components
-      console.log('Purchase initiated:', { skuId, options })
-      
-      return {
-        success: true,
-        transaction_id: `tx_${Date.now()}`,
-        status: 'pending',
-        message: 'Use useChipiWallet and useChipiSession hooks for actual transactions',
-      }
-    } catch (error) {
-      console.error('Error purchasing SKU:', error)
-      throw error
-    }
+  // Without a key the provider throws on render, which previously broke every
+  // page in the app. Mount it only when configured and degrade gracefully
+  // otherwise; ServicePurchase renders an explicit "unavailable" state.
+  if (!isConfigured) {
+    return <ChipiPayContext.Provider value={value}>{children}</ChipiPayContext.Provider>
   }
 
   return (
-    <ChipiProvider apiKey={apiKey}>
-      <ChipiPayContext.Provider value={{ getSKUs, buySKU }}>
-        {children}
-      </ChipiPayContext.Provider>
+    <ChipiProvider config={{ apiPublicKey: CHIPI_API_KEY }}>
+      <ChipiPayContext.Provider value={value}>{children}</ChipiPayContext.Provider>
     </ChipiProvider>
   )
 }

@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useWallet } from '@/contexts/WalletContext'
-import { useChipiPay } from '@/contexts/ChipiPayContext'
-import { useChipiWallet } from '@chipi-stack/nextjs'
+import { useChipiPay, type SKU } from '@/contexts/ChipiPayContext'
+import { useChipiWallet } from '@chipi-stack/nextjs/hooks'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -11,16 +11,34 @@ import { Loader } from '@/components/ui/loader'
 import { useToast } from '@/hooks/use-toast'
 import { Zap, ShoppingCart, CheckCircle2, Wallet } from 'lucide-react'
 
-interface SKU {
-  id: string
-  name: string
-  description: string
-  price: number
-  currency: string
-  available: boolean
+/**
+ * Outer guard. `useChipiWallet` requires the ChipiProvider, which is only
+ * mounted when NEXT_PUBLIC_CHIPI_API_KEY is set. Calling the hook without it
+ * throws, so the hook lives in the inner component that is never rendered
+ * unless ChipiPay is configured.
+ */
+export function ServicePurchase() {
+  const { isConfigured } = useChipiPay()
+
+  if (!isConfigured) {
+    return (
+      <Card className="glassmorphism">
+        <CardContent className="py-12 text-center">
+          <Zap className="mx-auto mb-4 h-10 w-10 text-muted-foreground" aria-hidden="true" />
+          <h3 className="mb-2 text-lg font-semibold">Service purchases unavailable</h3>
+          <p className="mx-auto max-w-md text-sm text-muted-foreground">
+            ChipiPay is not configured for this environment, so digital services cannot be
+            purchased right now. Everything else in EngiPay works normally.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return <ServicePurchaseInner />
 }
 
-export function ServicePurchase() {
+function ServicePurchaseInner() {
   const [skus, setSkus] = useState<SKU[]>([])
   const [loading, setLoading] = useState(true)
   const [buying, setBuying] = useState<string | null>(null)
@@ -28,67 +46,53 @@ export function ServicePurchase() {
   const { getSKUs } = useChipiPay()
   const { toast } = useToast()
 
-  // ChipiPay wallet integration
-  const {
-    wallet: chipiWallet,
-    hasWallet,
-    formattedBalance,
-    createWallet,
-    isLoadingWallet,
-  } = useChipiWallet({
+  const { hasWallet, formattedBalance, createWallet, isLoadingWallet } = useChipiWallet({
     externalUserId: walletAddress || undefined,
-    getBearerToken: async () => {
-      // Get token from localStorage
-      return localStorage.getItem('engipay-token') || ''
-    },
+    getBearerToken: async () =>
+      (typeof window !== 'undefined' && localStorage.getItem('engipay-token')) || '',
   })
 
-  useEffect(() => {
-    fetchSKUs()
-  }, [])
-
-  const fetchSKUs = async () => {
+  const fetchSKUs = useCallback(async () => {
     try {
       setLoading(true)
-      const data = await getSKUs()
-      setSkus(data || [])
+      setSkus((await getSKUs()) ?? [])
     } catch (error) {
       console.error('Error fetching SKUs:', error)
       toast({
-        title: 'Error Loading Services',
-        description: 'Failed to load available services. Please try again.',
+        title: 'Could not load services',
+        description: 'Please refresh the page to try again.',
         variant: 'destructive',
       })
     } finally {
       setLoading(false)
     }
-  }
+  }, [getSKUs, toast])
+
+  useEffect(() => {
+    void fetchSKUs()
+  }, [fetchSKUs])
 
   const handleCreateChipiWallet = async () => {
     if (!isConnected || !walletAddress) {
       toast({
-        title: 'Connect Wallet First',
-        description: 'Please connect your wallet before creating a ChipiPay wallet',
+        title: 'Connect a wallet first',
+        description: 'Connect your wallet before creating a ChipiPay wallet.',
         variant: 'destructive',
       })
       return
     }
 
     try {
-      await createWallet({
-        encryptKey: walletAddress.slice(0, 8), // Use part of wallet address as PIN
-        chain: 'STARKNET',
-      })
-      
+      await createWallet({ encryptKey: walletAddress.slice(0, 8), chain: 'STARKNET' })
       toast({
-        title: 'ChipiPay Wallet Created',
-        description: 'Your gasless wallet is ready for transactions!',
+        title: 'Gasless wallet created',
+        description: 'Your ChipiPay wallet is ready for transactions.',
       })
     } catch (error) {
       console.error('Error creating ChipiPay wallet:', error)
       toast({
-        title: 'Wallet Creation Failed',
-        description: 'Failed to create ChipiPay wallet. Please try again.',
+        title: 'Wallet creation failed',
+        description: 'Could not create the ChipiPay wallet. Please try again.',
         variant: 'destructive',
       })
     }
@@ -97,37 +101,24 @@ export function ServicePurchase() {
   const handlePurchase = async (sku: SKU) => {
     if (!isConnected || !walletAddress) {
       toast({
-        title: 'Wallet Not Connected',
-        description: 'Please connect your wallet to make a purchase',
+        title: 'Wallet not connected',
+        description: 'Connect your wallet to make a purchase.',
         variant: 'destructive',
       })
       return
     }
 
     setBuying(sku.id)
-    try {
-      const result = await buySKU(sku.id, {
-        quantity: 1,
-        recipient_address: walletAddress,
-      })
-
-      toast({
-        title: 'Purchase Successful! 🎉',
-        description: `Your ${sku.name} purchase is being processed. Transaction ID: ${result.transaction_id}`,
-      })
-
-      // Refresh SKUs after purchase
-      setTimeout(() => fetchSKUs(), 2000)
-    } catch (error: any) {
-      console.error('Purchase error:', error)
-      toast({
-        title: 'Purchase Failed',
-        description: error.message || 'Please try again or contact support.',
-        variant: 'destructive',
-      })
-    } finally {
-      setBuying(null)
-    }
+    // Checkout runs through the ChipiPay merchant flow, which needs merchant
+    // credentials configured server-side. Report that plainly rather than
+    // returning a fabricated confirmation.
+    toast({
+      title: 'Purchase unavailable',
+      description:
+        'Checkout is not connected to a ChipiPay merchant account yet, so this purchase cannot be completed.',
+      variant: 'destructive',
+    })
+    setBuying(null)
   }
 
   if (loading) {
@@ -143,9 +134,9 @@ export function ServicePurchase() {
     return (
       <Card className="glassmorphism">
         <CardContent className="py-12 text-center">
-          <Zap className="w-12 h-12 mx-auto mb-4 text-cyan-500 opacity-50" />
-          <h3 className="text-xl font-semibold mb-2">No Services Available</h3>
-          <p className="text-muted-foreground">Check back later for available services</p>
+          <Zap className="mx-auto mb-4 h-10 w-10 text-muted-foreground" aria-hidden="true" />
+          <h3 className="mb-2 text-lg font-semibold">No services available</h3>
+          <p className="text-sm text-muted-foreground">Check back later for available services.</p>
         </CardContent>
       </Card>
     )
@@ -153,45 +144,46 @@ export function ServicePurchase() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-3xl font-bold flex items-center gap-2">
-            <Zap className="w-8 h-8 text-cyan-500" />
-            ChipiPay Services
+          <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <Zap className="h-6 w-6 text-primary" aria-hidden="true" />
+            Services
           </h2>
-          <p className="text-muted-foreground mt-1">Purchase digital services with crypto</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Purchase digital services with crypto
+          </p>
         </div>
-        <Badge variant="outline" className="text-cyan-500 border-cyan-500">
+        <Badge variant="outline" className="border-primary/40 text-primary">
           Powered by ChipiPay
         </Badge>
       </div>
 
-      {/* ChipiPay Wallet Status */}
       {isConnected && (
-        <Card className="glassmorphism border-cyan-500/30">
+        <Card className="glassmorphism">
           <CardContent className="py-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                <Wallet className="w-5 h-5 text-cyan-500" />
+                <Wallet className="h-5 w-5 text-primary" aria-hidden="true" />
                 <div>
-                  <p className="font-semibold">ChipiPay Gasless Wallet</p>
-                  {hasWallet ? (
-                    <p className="text-sm text-muted-foreground">
-                      Balance: {formattedBalance} USDC
-                    </p>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">
-                      Create a gasless wallet for instant transactions
-                    </p>
-                  )}
+                  <p className="font-medium">ChipiPay gasless wallet</p>
+                  <p className="text-sm text-muted-foreground">
+                    {hasWallet
+                      ? `Balance: ${formattedBalance} USDC`
+                      : 'Create a gasless wallet for instant transactions'}
+                  </p>
                 </div>
               </div>
-              {!hasWallet && (
+              {hasWallet ? (
+                <Badge className="border-primary/50 bg-primary/15 text-primary">
+                  <CheckCircle2 className="mr-1 h-3 w-3" aria-hidden="true" />
+                  Active
+                </Badge>
+              ) : (
                 <Button
                   onClick={handleCreateChipiWallet}
                   disabled={isLoadingWallet}
                   variant="outline"
-                  className="border-cyan-500 text-cyan-500 hover:bg-cyan-500/10"
                 >
                   {isLoadingWallet ? (
                     <>
@@ -199,54 +191,44 @@ export function ServicePurchase() {
                       <span className="ml-2">Creating...</span>
                     </>
                   ) : (
-                    'Create Wallet'
+                    'Create wallet'
                   )}
                 </Button>
-              )}
-              {hasWallet && (
-                <Badge variant="default" className="bg-green-500/20 text-green-400 border-green-500/50">
-                  <CheckCircle2 className="w-3 h-3 mr-1" />
-                  Active
-                </Badge>
               )}
             </div>
           </CardContent>
         </Card>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
         {skus.map((sku) => (
-          <Card 
-            key={sku.id} 
-            className={`glassmorphism hover:scale-105 transition-all duration-300 ${
-              !sku.available ? 'opacity-60' : ''
+          <Card
+            key={sku.id}
+            className={`glassmorphism transition-colors hover:border-primary/40 ${
+              sku.available ? '' : 'opacity-60'
             }`}
           >
             <CardHeader>
-              <div className="flex items-start justify-between">
+              <div className="flex items-start justify-between gap-3">
                 <div className="flex-1">
-                  <CardTitle className="text-xl mb-2">{sku.name}</CardTitle>
-                  <CardDescription className="text-sm">{sku.description}</CardDescription>
+                  <CardTitle className="mb-1 text-lg">{sku.name}</CardTitle>
+                  <CardDescription>{sku.description}</CardDescription>
                 </div>
                 {sku.available && (
-                  <Badge variant="default" className="bg-green-500/20 text-green-400 border-green-500/50">
-                    Available
-                  </Badge>
+                  <Badge className="border-primary/50 bg-primary/15 text-primary">Available</Badge>
                 )}
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-bold text-primary">
-                  ${sku.price.toFixed(2)}
-                </span>
+                <span className="text-3xl font-semibold tabular-nums">${sku.price.toFixed(2)}</span>
                 <span className="text-sm text-muted-foreground">{sku.currency}</span>
               </div>
 
               <Button
                 onClick={() => handlePurchase(sku)}
                 disabled={buying === sku.id || !isConnected || !sku.available}
-                className="glow-button bg-cyan-500 hover:bg-cyan-600 text-white w-full"
+                className="w-full"
               >
                 {buying === sku.id ? (
                   <>
@@ -254,41 +236,20 @@ export function ServicePurchase() {
                     <span className="ml-2">Processing...</span>
                   </>
                 ) : !isConnected ? (
-                  'Connect Wallet'
+                  'Connect wallet'
                 ) : !sku.available ? (
                   'Unavailable'
                 ) : (
                   <>
-                    <ShoppingCart className="w-4 h-4 mr-2" />
-                    Purchase Now
+                    <ShoppingCart className="mr-2 h-4 w-4" aria-hidden="true" />
+                    Purchase
                   </>
                 )}
               </Button>
-
-              {!isConnected && (
-                <p className="text-xs text-center text-muted-foreground">
-                  Connect your wallet to purchase
-                </p>
-              )}
             </CardContent>
           </Card>
         ))}
       </div>
-
-      <Card className="glassmorphism border-cyan-500/30">
-        <CardContent className="py-6">
-          <div className="flex items-start gap-4">
-            <CheckCircle2 className="w-6 h-6 text-cyan-500 flex-shrink-0 mt-1" />
-            <div>
-              <h4 className="font-semibold mb-2">Secure & Instant</h4>
-              <p className="text-sm text-muted-foreground">
-                All purchases are processed securely through ChipiPay's blockchain infrastructure. 
-                Your services will be delivered instantly upon transaction confirmation.
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   )
 }
