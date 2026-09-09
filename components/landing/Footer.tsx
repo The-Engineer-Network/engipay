@@ -3,7 +3,7 @@ import Image from "next/image";
 export default function Footer() {
     const currentYear = new Date().getFullYear();
     return (
-        <footer className="pt-20 pb-10 bg-[#1A1A1A] ">
+        <footer className="pt-20 pb-10 bg-card ">
             <div className="container mx-auto px-5">
 
                 {/* Footer Links */}
@@ -13,13 +13,13 @@ export default function Footer() {
                             <Image src="/logo.svg" alt="Logo" width={24} height={24} />
                             EngiPay
                         </div>
-                        <p className="text-[#A0A0A0] leading-relaxed mt-4 max-w-[450px] mx-auto sm:mx-0">
+                        <p className="text-muted-foreground leading-relaxed mt-4 max-w-[450px] mx-auto sm:mx-0">
                             Powering Lifestyle Finance on StarkNet. Building the future of seamless Web3 payments and DeFi.
                         </p>
                     </div>
                     <div className="text-center sm:text-left">
                         <h4 className="font-bold mb-6 text-[white]">Product</h4>
-                        <div className="flex flex-col gap-4 text-[#A0A0A0]">
+                        <div className="flex flex-col gap-4 text-muted-foreground">
                             <a href="#" className="text-sm transition-colors">Features</a>
                             <a href="#" className="text-sm transition-colors">Pricing</a>
                             <a href="#" className="text-sm transition-colors">Business</a>
@@ -28,7 +28,7 @@ export default function Footer() {
                     </div>
                     <div className="text-center sm:text-left">
                         <h4 className="font-bold mb-6 text-white">Company</h4>
-                        <div className="flex flex-col gap-4 text-[#A0A0A0]">
+                        <div className="flex flex-col gap-4 text-muted-foreground">
                             <a href="#" className="text-sm transition-colors">About</a>
                             <a href="#" className="text-sm transition-colors">Blog</a>
                             <a href="#" className="text-sm transition-colors">Careers</a>
@@ -37,7 +37,7 @@ export default function Footer() {
                     </div>
                     <div className="text-center sm:text-left">
                         <h4 className="font-bold mb-6 text-white">Resources</h4>
-                        <div className="flex flex-col gap-4 text-[#A0A0A0]">
+                        <div className="flex flex-col gap-4 text-muted-foreground">
                             <a href="#" className="text-sm transition-colors">Documentation</a>
                             <a href="#" className="text-sm transition-colors">API</a>
                             <a href="#" className="text-sm transition-colors">Support</a>
@@ -46,7 +46,7 @@ export default function Footer() {
                     </div>
                 </div>
 
-                <div className="border-t border-border pt-10 flex flex-col md:flex-row justify-between items-center gap-6 text-[#A0A0A0] text-sm text-center md:text-left">
+                <div className="border-t border-border pt-10 flex flex-col md:flex-row justify-between items-center gap-6 text-muted-foreground text-sm text-center md:text-left">
                     <div>&copy; {currentYear} EngiPay. All rights reserved.</div>
                     <div className="flex gap-5 flex-wrap justify-center font-medium">
                         <span className="cursor-pointer hover:text-primary transition-colors">Twitter</span>

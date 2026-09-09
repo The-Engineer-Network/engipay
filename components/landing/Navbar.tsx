@@ -1,62 +1,89 @@
 "use client";
-import Image from 'next/image';
-import { useState } from 'react';
+import Image from "next/image";
+import { useState } from "react";
 
 interface NavbarProps {
   onGetStarted?: () => void;
 }
 
+const LINKS = [
+  { href: "#features", label: "Features" },
+  { href: "#how-it-works", label: "How it works" },
+  { href: "/faq", label: "FAQ" },
+];
+
 export default function Navbar({ onGetStarted }: NavbarProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <nav className="fixed top-0 left-0 w-full py-5 z-[1000] bg-[rgba(11,14,20,0.8)] backdrop-blur-md border-b border-[#00BF631A]">
-      <div className="container mx-auto px-5 flex justify-between items-center">
-        <div className="flex items-center gap-2.5 font-bold text-xl text-foreground bg-transparent">
-          <Image src="/logo.svg" alt="Logo" width={32} height={32} />
+    <nav className="fixed left-0 top-0 z-[1000] w-full border-b border-border bg-background/80 py-4 backdrop-blur-md">
+      <div className="container flex items-center justify-between">
+        <div className="flex items-center gap-2.5 text-xl font-bold">
+          <Image src="/logo.svg" alt="" width={32} height={32} aria-hidden="true" />
           EngiPay
         </div>
 
-        {/* Desktop Menu */}
-        <div className="hidden lg:flex gap-10 text-[#A0A0A0]">
-          <a href="#features" className="text-muted text-sm transition-colors hover:text-foreground">Features</a>
-          <a href="#how-it-works" className="text-muted text-sm transition-colors hover:text-foreground">How it Works</a>
-          <a href="#roadmap" className="text-muted text-sm transition-colors hover:text-foreground">About</a>
-          <a href="#about" className="text-muted text-sm transition-colors hover:text-foreground">FAQ</a>
+        <div className="hidden gap-10 lg:flex">
+          {LINKS.map((link) => (
+            <a
+              key={link.href}
+              href={link.href}
+              /* was `text-muted`, a background token, so these were unreadable */
+              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {link.label}
+            </a>
+          ))}
         </div>
 
         <button
           onClick={onGetStarted}
-          className="hidden lg:block bg-primary text-black px-6 py-2.5 rounded-[20px] font-bold text-sm border-none cursor-pointer transition-all hover:-translate-y-[1px] hover:shadow-[0_4px_12px_rgba(0,242,138,0.4)]"
+          className="hidden rounded-full bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 lg:block"
         >
-          Get Started
+          Get started
         </button>
 
-        {/* Mobile Menu Toggle */}
         <button
-          className="lg:hidden text-white bg-transparent border-none cursor-pointer"
+          className="text-foreground lg:hidden"
           onClick={() => setIsOpen(!isOpen)}
+          aria-expanded={isOpen}
+          aria-label={isOpen ? "Close menu" : "Open menu"}
         >
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
             {isOpen ? <path d="M18 6L6 18M6 6l12 12" /> : <path d="M3 12h18M3 6h18M3 18h18" />}
           </svg>
         </button>
 
-        {/* Mobile Dropdown */}
         {isOpen && (
-          <div className="absolute top-full left-0 w-full bg-[#0b0e14] border-b border-[#00BF631A] p-5 flex flex-col gap-4 lg:hidden shadow-2xl">
-            <a href="#features" className="text-[#A0A0A0] text-sm hover:text-primary" onClick={() => setIsOpen(false)}>Features</a>
-            <a href="#how-it-works" className="text-[#A0A0A0] text-sm hover:text-primary" onClick={() => setIsOpen(false)}>How it Works</a>
-            <a href="#roadmap" className="text-[#A0A0A0] text-sm hover:text-primary" onClick={() => setIsOpen(false)}>About</a>
-            <a href="#about" className="text-[#A0A0A0] text-sm hover:text-primary" onClick={() => setIsOpen(false)}>FAQ</a>
+          <div className="absolute left-0 top-full flex w-full flex-col gap-4 border-b border-border bg-background p-5 shadow-2xl lg:hidden">
+            {LINKS.map((link) => (
+              <a
+                key={link.href}
+                href={link.href}
+                className="text-sm text-muted-foreground hover:text-foreground"
+                onClick={() => setIsOpen(false)}
+              >
+                {link.label}
+              </a>
+            ))}
             <button
               onClick={() => {
                 setIsOpen(false);
                 onGetStarted?.();
               }}
-              className="bg-primary text-black px-6 py-2.5 rounded-[20px] font-bold text-sm border-none w-full mt-2"
+              className="mt-2 w-full rounded-full bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground"
             >
-              Get Started
+              Get started
             </button>
           </div>
         )}
