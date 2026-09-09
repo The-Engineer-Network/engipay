@@ -23,10 +23,6 @@ const SendPayment = dynamic(
   () => import("@/components/payments/SendPayment").then((m) => ({ default: m.SendPayment })),
   { loading: PanelSkeleton }
 )
-const BtcSwap = dynamic(
-  () => import("@/components/payments/BtcSwap").then((m) => ({ default: m.BtcSwap })),
-  { loading: PanelSkeleton }
-)
 const ServicePurchase = dynamic(
   () => import("@/components/payments/ServicePurchase").then((m) => ({ default: m.ServicePurchase })),
   { loading: PanelSkeleton }
@@ -40,7 +36,7 @@ function parseUsd(value: string): number {
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<TabType>("overview")
-  const [openModal, setOpenModal] = useState<null | "send" | "receive" | "swap" | "merchant">(null)
+  const [openModal, setOpenModal] = useState<null | "send" | "receive" | "merchant">(null)
   const [mounted, setMounted] = useState(false)
   const router = useRouter()
   const { toast } = useToast()
@@ -76,7 +72,6 @@ export default function DashboardPage() {
     const map: Record<string, typeof openModal> = {
       Send: "send",
       Receive: "receive",
-      Swap: "swap",
       "Pay Merchant": "merchant",
     }
     setOpenModal(map[action] ?? null)
@@ -184,15 +179,6 @@ export default function DashboardPage() {
               Copy address
             </Button>
           </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={openModal === "swap"} onOpenChange={(o) => !o && setOpenModal(null)}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Cross-chain swap</DialogTitle>
-          </DialogHeader>
-          <BtcSwap />
         </DialogContent>
       </Dialog>
 

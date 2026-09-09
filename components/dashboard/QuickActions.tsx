@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowUpRight, ArrowDownLeft, ArrowLeftRight, CreditCard } from "lucide-react"
+import { ArrowUpRight, ArrowDownLeft, CreditCard } from "lucide-react"
 
 interface QuickActionsProps {
   onAction?: (action: string) => void
@@ -9,7 +9,6 @@ interface QuickActionsProps {
 const ACTIONS = [
   { icon: ArrowUpRight, label: "Send", description: "Transfer crypto" },
   { icon: ArrowDownLeft, label: "Receive", description: "Share your address" },
-  { icon: ArrowLeftRight, label: "Swap", description: "Across chains" },
   { icon: CreditCard, label: "Pay Merchant", description: "Buy services" },
 ] as const
 
@@ -20,7 +19,7 @@ export function QuickActions({ onAction }: QuickActionsProps) {
         Quick actions
       </h2>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {ACTIONS.map(({ icon: Icon, label, description }) => (
           <button
             key={label}

@@ -14,7 +14,7 @@ const TABS: { id: TabType; label: string; icon: React.ReactNode; href: string }[
   { id: "overview", label: "Overview", icon: <Wallet className="h-4 w-4" />, href: "/dashboard" },
   {
     id: "payments",
-    label: "Pay & Swap",
+    label: "Payments",
     icon: <ArrowLeftRight className="h-4 w-4" />,
     href: "/payments-swaps",
   },
