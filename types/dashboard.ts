@@ -11,7 +11,8 @@ export interface Balance {
 
 export interface Activity {
   id: number
-  type: "payment" | "swap" | "lending" | "staking" | "airdrop"
+  /** The four things money can do in EngiPay. */
+  type: "payment" | "convert" | "deposit" | "withdrawal"
   description: string
   amount: string
   time: string
@@ -20,23 +21,9 @@ export interface Activity {
   txHash?: string
 }
 
-export interface DeFiOpportunity {
-  id: number
-  title: string
-  description: string
-  apy: string
-  protocol: string
-  action: string
-  risk: "low" | "medium" | "high"
-  tvl: string
-  rewards: string
-  duration: string
-}
-
 export interface DashboardData {
   balances: Balance[]
   recentActivity: Activity[]
-  promotions: DeFiOpportunity[]
 }
 
-export type TabType = "overview" | "payments" | "defi"
+export type TabType = "overview" | "payments"

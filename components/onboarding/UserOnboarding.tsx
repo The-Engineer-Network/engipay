@@ -46,17 +46,17 @@ export function UserOnboarding() {
     {
       id: "welcome",
       title: "Welcome to EngiPay",
-      description: "Your gateway to Web3 payments and DeFi. Let's get you started with a quick tour.",
+      description: "Crypto payments and Naira cash-out in one app. Let's get you started with a quick tour.",
       icon: <Zap className="w-8 h-8" />,
       completed: true,
     },
     {
       id: "connect-wallet",
       title: "Connect Your Wallet",
-      description: "Connect your Web3 wallet to start using EngiPay. We support MetaMask, Argent, Braavos, and Xverse.",
+      description: "Connect any Web3 wallet to start using EngiPay — MetaMask, Rainbow, Coinbase Wallet, or any mobile wallet via WalletConnect.",
       icon: <Wallet className="w-8 h-8" />,
       completed: isConnected,
-      action: () => connectWallet("MetaMask"),
+      action: () => connectWallet(),
       actionText: "Connect Wallet"
     },
     {
@@ -69,7 +69,7 @@ export function UserOnboarding() {
     {
       id: "features",
       title: "Explore Features",
-      description: "Send payments, swap tokens across chains, and track your portfolio - all in one app.",
+      description: "Send and receive, scan to pay, send Bitcoin, and convert to Naira - all in one app.",
       icon: <Coins className="w-8 h-8" />,
       completed: false,
     },
@@ -94,7 +94,7 @@ export function UserOnboarding() {
     setShowOnboarding(false)
     toast({
       title: "Welcome to EngiPay!",
-      description: "You're all set to start using Web3 payments and DeFi.",
+      description: "You're all set to start sending, receiving and converting.",
     })
   }
 
@@ -140,7 +140,7 @@ export function UserOnboarding() {
                   index === currentStep
                     ? "bg-primary"
                     : step.completed
-                    ? "bg-green-500"
+                    ? "bg-success"
                     : "bg-muted"
                 }`}
               />
@@ -159,16 +159,16 @@ export function UserOnboarding() {
                     <p className="text-sm">Payments</p>
                   </div>
                   <div className="text-center">
-                    <div className="w-12 h-12 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-2">
-                      <Coins className="w-6 h-6 text-green-400" />
+                    <div className="w-12 h-12 bg-success/15 rounded-full flex items-center justify-center mx-auto mb-2">
+                      <Coins className="w-6 h-6 text-success" />
                     </div>
-                    <p className="text-sm">Swaps</p>
+                    <p className="text-sm">Convert</p>
                   </div>
                   <div className="text-center">
-                    <div className="w-12 h-12 bg-purple-500/20 rounded-full flex items-center justify-center mx-auto mb-2">
-                      <TrendingUp className="w-6 h-6 text-purple-400" />
+                    <div className="w-12 h-12 bg-primary/15 rounded-full flex items-center justify-center mx-auto mb-2">
+                      <TrendingUp className="w-6 h-6 text-primary" />
                     </div>
-                    <p className="text-sm">DeFi</p>
+                    <p className="text-sm">Naira</p>
                   </div>
                 </div>
               </div>
@@ -177,24 +177,26 @@ export function UserOnboarding() {
             {currentStepData.id === "connect-wallet" && !isConnected && (
               <div className="space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  Choose from our supported wallets to get started
+                  Use whichever wallet you already have. Browser wallets are
+                  detected automatically, and mobile wallets connect by
+                  scanning a QR code.
                 </p>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="p-3 border border-border rounded-lg">
                     <p className="font-medium">MetaMask</p>
-                    <p className="text-xs text-muted-foreground">Ethereum & EVM</p>
+                    <p className="text-xs text-muted-foreground">Browser &amp; mobile</p>
                   </div>
                   <div className="p-3 border border-border rounded-lg">
-                    <p className="font-medium">Xverse</p>
-                    <p className="text-xs text-muted-foreground">Bitcoin</p>
+                    <p className="font-medium">Coinbase Wallet</p>
+                    <p className="text-xs text-muted-foreground">Browser &amp; mobile</p>
                   </div>
                   <div className="p-3 border border-border rounded-lg">
-                    <p className="font-medium">Argent</p>
-                    <p className="text-xs text-muted-foreground">StarkNet</p>
+                    <p className="font-medium">Rainbow</p>
+                    <p className="text-xs text-muted-foreground">Mobile</p>
                   </div>
                   <div className="p-3 border border-border rounded-lg">
-                    <p className="font-medium">Braavos</p>
-                    <p className="text-xs text-muted-foreground">StarkNet</p>
+                    <p className="font-medium">Any other wallet</p>
+                    <p className="text-xs text-muted-foreground">via WalletConnect</p>
                   </div>
                 </div>
               </div>
@@ -202,32 +204,32 @@ export function UserOnboarding() {
 
             {currentStepData.id === "connect-wallet" && isConnected && (
               <div className="space-y-4">
-                <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto">
-                  <CheckCircle className="w-8 h-8 text-green-400" />
+                <div className="w-16 h-16 bg-success/15 rounded-full flex items-center justify-center mx-auto">
+                  <CheckCircle className="w-8 h-8 text-success" />
                 </div>
-                <p className="text-green-400 font-medium">Wallet Connected Successfully!</p>
+                <p className="text-success font-medium">Wallet Connected Successfully!</p>
               </div>
             )}
 
             {currentStepData.id === "security" && (
               <div className="space-y-3">
                 <div className="grid grid-cols-1 gap-2 text-left">
-                  <div className="flex items-start gap-2 p-2 bg-green-500/10 rounded-lg">
-                    <CheckCircle className="w-4 h-4 text-green-400 mt-0.5" />
+                  <div className="flex items-start gap-2 p-2 bg-success/10 rounded-lg">
+                    <CheckCircle className="w-4 h-4 text-success mt-0.5" />
                     <div>
                       <p className="font-medium text-sm">Non-Custodial</p>
                       <p className="text-xs text-muted-foreground">You control your private keys</p>
                     </div>
                   </div>
-                  <div className="flex items-start gap-2 p-2 bg-green-500/10 rounded-lg">
-                    <CheckCircle className="w-4 h-4 text-green-400 mt-0.5" />
+                  <div className="flex items-start gap-2 p-2 bg-success/10 rounded-lg">
+                    <CheckCircle className="w-4 h-4 text-success mt-0.5" />
                     <div>
-                      <p className="font-medium text-sm">Zero-Knowledge Security</p>
-                      <p className="text-xs text-muted-foreground">Built on StarkNet's ZK technology</p>
+                      <p className="font-medium text-sm">Self-custodial</p>
+                      <p className="text-xs text-muted-foreground">Your keys never leave your wallet</p>
                     </div>
                   </div>
-                  <div className="flex items-start gap-2 p-2 bg-green-500/10 rounded-lg">
-                    <CheckCircle className="w-4 h-4 text-green-400 mt-0.5" />
+                  <div className="flex items-start gap-2 p-2 bg-success/10 rounded-lg">
+                    <CheckCircle className="w-4 h-4 text-success mt-0.5" />
                     <div>
                       <p className="font-medium text-sm">Audited Smart Contracts</p>
                       <p className="text-xs text-muted-foreground">Professional security reviews</p>
@@ -249,17 +251,17 @@ export function UserOnboarding() {
                   </div>
                   <div className="p-3 border border-border rounded-lg text-left">
                     <div className="flex items-center gap-2 mb-1">
-                      <Coins className="w-4 h-4 text-green-400" />
-                      <h4 className="font-medium text-sm">Cross-Chain Swaps</h4>
+                      <Coins className="w-4 h-4 text-primary" />
+                      <h4 className="font-medium text-sm">Request payments</h4>
                     </div>
-                    <p className="text-xs text-muted-foreground">Swap BTC ↔ ETH ↔ STRK seamlessly</p>
+                    <p className="text-xs text-muted-foreground">Share a QR code and get paid</p>
                   </div>
                   <div className="p-3 border border-border rounded-lg text-left">
                     <div className="flex items-center gap-2 mb-1">
                       <TrendingUp className="w-4 h-4 text-primary" />
-                      <h4 className="font-medium text-sm">Portfolio Tracking</h4>
+                      <h4 className="font-medium text-sm">Naira in and out</h4>
                     </div>
-                    <p className="text-xs text-muted-foreground">See every balance and transaction in one place</p>
+                    <p className="text-xs text-muted-foreground">Buy with Naira and cash out to your bank</p>
                   </div>
                 </div>
               </div>

@@ -64,6 +64,60 @@
     --sidebar-ring: 150 100% 50%;
   }
 
+  /* Light theme. Applied by next-themes as class="light" on <html>.
+     The neon brand green is unreadable on white, so primary deepens here
+     while staying the same hue family. */
+  .light {
+    color-scheme: light;
+
+    --background: 150 30% 98%;
+    --foreground: 150 22% 9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 150 22% 9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 150 22% 9%;
+
+    --primary: 152 84% 30%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 150 16% 94%;
+    --secondary-foreground: 150 22% 12%;
+
+    --muted: 150 14% 95%;
+    --muted-foreground: 150 8% 38%;
+
+    --accent: 150 22% 93%;
+    --accent-foreground: 150 22% 12%;
+
+    --destructive: 0 72% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 152 72% 30%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 92% 38%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 150 14% 88%;
+    --input: 150 14% 86%;
+    --ring: 152 84% 30%;
+
+    --chart-1: 152 84% 32%;
+    --chart-2: 174 68% 34%;
+    --chart-3: 198 82% 42%;
+    --chart-4: 38 92% 42%;
+    --chart-5: 280 55% 48%;
+
+    --sidebar: 150 20% 96%;
+    --sidebar-foreground: 150 22% 12%;
+    --sidebar-primary: 152 84% 30%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 150 18% 92%;
+    --sidebar-accent-foreground: 150 22% 12%;
+    --sidebar-border: 150 14% 87%;
+    --sidebar-ring: 152 84% 30%;
+  }
+
   /* The toggle target; identical for now since the app ships dark-only. */
   .dark {
     color-scheme: dark;
@@ -142,7 +196,7 @@
     overflow: hidden;
     background:
       radial-gradient(60% 50% at 50% 0%, hsl(var(--primary) / 0.14), transparent 70%),
-      linear-gradient(to bottom, hsl(150 30% 7%), hsl(var(--background)) 60%);
+      linear-gradient(to bottom, hsl(var(--card)), hsl(var(--background)) 60%);
   }
 
   /* Decorative orbs / rings used by the hero and marketing sections.
@@ -203,5 +257,253 @@
       transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
     }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Marketing surface: motion, depth and light.
+   Everything here is CSS only - no animation library, no 3D engine - so the
+   landing page stays fast on the cheap Android phones most users are on.
+   All of it is switched off by the reduced-motion rule above.
+   --------------------------------------------------------------------------- */
+
+@layer components {
+  /* Slow drifting colour fields behind a hero. Sits under content, never on it. */
+  .aurora {
+    position: absolute;
+    inset: -20% -10% auto -10%;
+    height: 130%;
+    pointer-events: none;
+    background:
+      radial-gradient(38% 42% at 18% 22%, hsl(var(--primary) / 0.20), transparent 65%),
+      radial-gradient(32% 38% at 82% 12%, hsl(168 85% 45% / 0.16), transparent 68%),
+      radial-gradient(42% 46% at 62% 78%, hsl(var(--primary) / 0.12), transparent 70%);
+    filter: blur(18px);
+    animation: aurora-drift 22s ease-in-out infinite alternate;
+  }
+
+  /* Faint engineering grid, faded out at the edges by a mask. */
+  .grid-fade {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.55) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.55) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(75% 60% at 50% 35%, black, transparent 85%);
+    -webkit-mask-image: radial-gradient(75% 60% at 50% 35%, black, transparent 85%);
+  }
+
+  /* Brand gradient type. Keeps the green identity, adds depth on big headings. */
+  .text-gradient {
+    background: linear-gradient(
+      104deg,
+      hsl(var(--foreground)) 0%,
+      hsl(var(--primary)) 48%,
+      hsl(168 90% 60%) 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: gradient-pan 9s ease-in-out infinite alternate;
+  }
+
+  /* Glass panel with a lit top edge, the detail that makes cards feel physical. */
+  .glass-panel {
+    position: relative;
+    background: linear-gradient(
+      160deg,
+      hsl(var(--card) / 0.92) 0%,
+      hsl(var(--card) / 0.72) 100%
+    );
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+  }
+  .glass-panel::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--primary) / 0.55),
+      transparent
+    );
+  }
+
+  /* Hover depth: a soft lift plus a brand halo. Used on feature cards. */
+  .lift-card {
+    transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 0.35s ease, border-color 0.35s ease;
+  }
+  .lift-card:hover {
+    transform: translateY(-6px);
+    border-color: hsl(var(--primary) / 0.45);
+    box-shadow:
+      0 18px 40px -24px hsl(var(--primary) / 0.55),
+      0 0 0 1px hsl(var(--primary) / 0.12);
+  }
+
+  /* True 3D tilt. The parent sets the perspective, the child rotates. */
+  .scene-3d {
+    perspective: 1200px;
+  }
+  .tilt-3d {
+    transform-style: preserve-3d;
+    transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .scene-3d:hover .tilt-3d {
+    transform: rotateY(-8deg) rotateX(6deg) translateZ(12px);
+  }
+
+  /* A light sweeping across a surface on hover. */
+  .shine {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+  }
+  .shine::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      115deg,
+      transparent 35%,
+      hsl(var(--primary) / 0.14) 48%,
+      transparent 62%
+    );
+    transform: translateX(-120%);
+    transition: transform 0.7s ease;
+  }
+  .shine:hover::after {
+    transform: translateX(120%);
+  }
+
+  /* Pulsing ring used behind step numbers and icons. */
+  .pulse-ring {
+    position: relative;
+  }
+  .pulse-ring::before {
+    content: '';
+    position: absolute;
+    inset: -6px;
+    border-radius: inherit;
+    border: 1px solid hsl(var(--primary) / 0.35);
+    animation: pulse-ring 3s ease-out infinite;
+  }
+
+  /* Endless horizontal ticker. Duplicate the children in markup for the loop. */
+  .marquee {
+    display: flex;
+    width: max-content;
+    animation: marquee 32s linear infinite;
+  }
+  .marquee-mask {
+    mask-image: linear-gradient(90deg, transparent, black 12%, black 88%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, black 12%, black 88%, transparent);
+  }
+  .marquee-mask:hover .marquee {
+    animation-play-state: paused;
+  }
+
+  /* Gentle float for the hero artwork and the cards orbiting it. */
+  .float-slow {
+    animation: float-soft 7s ease-in-out infinite;
+  }
+  .float-slower {
+    animation: float-soft 9s ease-in-out infinite;
+    animation-delay: -3s;
+  }
+}
+
+@layer utilities {
+  /* Scroll reveal. The Reveal component flips data-revealed once visible. */
+  .reveal {
+    opacity: 0;
+    transform: translateY(22px);
+    transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+      transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: opacity, transform;
+  }
+  .reveal[data-revealed='true'] {
+    opacity: 1;
+    transform: none;
+  }
+  .reveal-scale {
+    opacity: 0;
+    transform: scale(0.94);
+    transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+      transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .reveal-scale[data-revealed='true'] {
+    opacity: 1;
+    transform: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal,
+    .reveal-scale {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(3%, 2%, 0) scale(1.06);
+  }
+  100% {
+    transform: translate3d(-1%, 3%, 0) scale(1.02);
+  }
+}
+
+@keyframes gradient-pan {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  70% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes float-soft {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-14px);
   }
 }

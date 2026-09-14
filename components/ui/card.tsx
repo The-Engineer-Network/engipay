@@ -7,7 +7,12 @@ function Card({ className, ...props }: React.ComponentProps<'div'>) {
     <div
       data-slot="card"
       className={cn(
-        'bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm',
+        'text-card-foreground relative flex flex-col gap-6 overflow-hidden rounded-xl border py-6',
+        'bg-gradient-to-b from-card/95 to-card/75 shadow-sm backdrop-blur-sm',
+        // Hairline of brand light along the top edge, the detail that makes a
+        // flat rectangle read as a physical surface.
+        'before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r',
+        'before:from-transparent before:via-primary/40 before:to-transparent',
         className,
       )}
       {...props}

@@ -38,3 +38,9 @@ smart-contracts/accounts.json
 *_keystore.json
 # Large binaries do not belong in git
 starkli.zip
+
+# Code withheld from the product but kept locally (legacy Starknet stack, DeFi panels)
+.withheld/
+
+# verification builds run alongside the dev server
+/.next-verify/

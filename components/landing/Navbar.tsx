@@ -1,35 +1,56 @@
-"use client";
-import Image from "next/image";
-import { useState } from "react";
+"use client"
+
+import Image from "next/image"
+import Link from "next/link"
+import { useEffect, useState } from "react"
+import { Menu, X } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 interface NavbarProps {
-  onGetStarted?: () => void;
+  onGetStarted?: () => void
 }
 
 const LINKS = [
   { href: "#features", label: "Features" },
   { href: "#how-it-works", label: "How it works" },
   { href: "/faq", label: "FAQ" },
-];
+  { href: "/help", label: "Help" },
+]
 
 export default function Navbar({ onGetStarted }: NavbarProps) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(false)
+  const [scrolled, setScrolled] = useState(false)
+
+  // The bar stays transparent over the hero, then gains a surface once you
+  // scroll, so the hero artwork is not cut off by a hard edge.
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 12)
+    onScroll()
+    window.addEventListener("scroll", onScroll, { passive: true })
+    return () => window.removeEventListener("scroll", onScroll)
+  }, [])
 
   return (
-    <nav className="fixed left-0 top-0 z-[1000] w-full border-b border-border bg-background/80 py-4 backdrop-blur-md">
+    <nav
+      className={cn(
+        "fixed left-0 top-0 z-[1000] w-full transition-all duration-300",
+        scrolled
+          ? "border-b border-border bg-background/80 py-3 backdrop-blur-md"
+          : "border-b border-transparent bg-transparent py-5"
+      )}
+    >
       <div className="container flex items-center justify-between">
-        <div className="flex items-center gap-2.5 text-xl font-bold">
+        <Link href="/" className="flex items-center gap-2.5 text-xl font-bold">
           <Image src="/logo.svg" alt="" width={32} height={32} aria-hidden="true" />
           EngiPay
-        </div>
+        </Link>
 
-        <div className="hidden gap-10 lg:flex">
+        <div className="hidden items-center gap-9 lg:flex">
           {LINKS.map((link) => (
             <a
               key={link.href}
               href={link.href}
-              /* was `text-muted`, a background token, so these were unreadable */
-              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+              className="relative text-sm text-muted-foreground transition-colors after:absolute after:-bottom-1.5 after:left-0 after:h-px after:w-0 after:bg-primary after:transition-all after:duration-300 hover:text-foreground hover:after:w-full"
             >
               {link.label}
             </a>
@@ -38,7 +59,7 @@ export default function Navbar({ onGetStarted }: NavbarProps) {
 
         <button
           onClick={onGetStarted}
-          className="hidden rounded-full bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 lg:block"
+          className="glow-button hidden rounded-full bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 lg:block"
         >
           Get started
         </button>
@@ -49,28 +70,20 @@ export default function Navbar({ onGetStarted }: NavbarProps) {
           aria-expanded={isOpen}
           aria-label={isOpen ? "Close menu" : "Open menu"}
         >
-          <svg
-            width="24"
-            height="24"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            {isOpen ? <path d="M18 6L6 18M6 6l12 12" /> : <path d="M3 12h18M3 6h18M3 18h18" />}
-          </svg>
+          {isOpen ? (
+            <X className="h-6 w-6" aria-hidden="true" />
+          ) : (
+            <Menu className="h-6 w-6" aria-hidden="true" />
+          )}
         </button>
 
         {isOpen && (
-          <div className="absolute left-0 top-full flex w-full flex-col gap-4 border-b border-border bg-background p-5 shadow-2xl lg:hidden">
+          <div className="absolute left-0 top-full flex w-full flex-col gap-4 border-b border-border bg-background/95 p-5 shadow-2xl backdrop-blur-md lg:hidden">
             {LINKS.map((link) => (
               <a
                 key={link.href}
                 href={link.href}
-                className="text-sm text-muted-foreground hover:text-foreground"
+                className="text-sm text-muted-foreground transition-colors hover:text-foreground"
                 onClick={() => setIsOpen(false)}
               >
                 {link.label}
@@ -78,8 +91,8 @@ export default function Navbar({ onGetStarted }: NavbarProps) {
             ))}
             <button
               onClick={() => {
-                setIsOpen(false);
-                onGetStarted?.();
+                setIsOpen(false)
+                onGetStarted?.()
               }}
               className="mt-2 w-full rounded-full bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground"
             >
@@ -89,5 +102,5 @@ export default function Navbar({ onGetStarted }: NavbarProps) {
         )}
       </div>
     </nav>
-  );
+  )
 }

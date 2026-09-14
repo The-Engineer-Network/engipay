@@ -13,7 +13,7 @@ export function Loader({ size = "md", className = "" }: LoaderProps) {
   return (
     <div className={`flex items-center justify-center ${className}`}>
       <div
-        className={`animate-spin rounded-full border-4 border-purple-200 border-t-purple-600 ${sizeClasses[size]}`}
+        className={`animate-spin rounded-full border-2 border-primary/25 border-t-primary ${sizeClasses[size]}`}
         style={{
           animation: "spin 1s linear infinite"
         }}
@@ -46,18 +46,18 @@ export function LovelyLoader({ size = "md", className = "" }: LoaderProps) {
       <div className="relative">
         {/* Outer ring */}
         <div
-          className={`animate-spin rounded-full border-4 border-purple-200/30 border-t-purple-500 ${sizeClasses[size]}`}
+          className={`animate-spin rounded-full border-2 border-primary/20 border-t-primary ${sizeClasses[size]}`}
         />
         {/* Inner ring */}
         <div
-          className={`absolute top-1 left-1 animate-spin rounded-full border-2 border-transparent border-t-purple-300 ${innerSizes[size]}`}
+          className={`absolute top-1 left-1 animate-spin rounded-full border-2 border-transparent border-t-primary/50 ${innerSizes[size]}`}
           style={{
             animation: "spin 0.8s linear infinite reverse"
           }}
         />
         {/* Center dot */}
         <div
-          className={`absolute rounded-full bg-purple-400 ${dotSizes[size]}`}
+          className={`absolute rounded-full bg-primary ${dotSizes[size]}`}
         />
       </div>
     </div>
@@ -76,7 +76,7 @@ export function PulseLoader({ size = "md", className = "" }: LoaderProps) {
       {[0, 1, 2].map((i) => (
         <div
           key={i}
-          className={`bg-purple-500 rounded-full animate-pulse ${sizeClasses[size]}`}
+          className={`bg-primary rounded-full animate-pulse ${sizeClasses[size]}`}
           style={{
             animationDelay: `${i * 0.2}s`,
             animationDuration: "1.5s"

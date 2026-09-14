@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import Navbar from '@/components/landing/Navbar';
 import Hero from '@/components/landing/Hero';
+import AssetTicker from '@/components/landing/AssetTicker';
 import Features from '@/components/landing/Features';
 import Workflow from '@/components/landing/Workflow';
 import CTA from '@/components/landing/CTA';
@@ -15,11 +16,12 @@ export default function LandingPage() {
   const closeAuthModal = () => setIsAuthModalOpen(false);
 
   return (
-    <main>
+    <main className="overflow-x-clip">
       <Navbar onGetStarted={openAuthModal} />
       <div className="cosmic-bg">
         <Hero onGetStarted={openAuthModal} />
       </div>
+      <AssetTicker />
       <Features />
       <Workflow />
       <CTA onGetStarted={openAuthModal} />
