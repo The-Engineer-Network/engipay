@@ -36,12 +36,35 @@ export default function ScanPage() {
       return
     }
 
+    // A code for another EVM network must never be paid on Base: the
+    // recipient may not be watching Base at all.
+    if (result.chain === "base" && !result.supportedNetwork) {
+      toast({
+        title: "Different network",
+        description: `This code is for network ${result.chainId}. EngiPay sends on Base only, so it cannot be paid here.`,
+        variant: "destructive",
+      })
+      return
+    }
+
     setParsed(result)
 
     // Base payments can go straight to the send form, prefilled.
     if (result.chain === "base") {
+      // A token request must open Send on that token. Otherwise "25 USDC"
+      // would open as "25 ETH", and the amount would mean the wrong asset.
+      if (result.tokenAddress && tokenDecimals(result.tokenAddress) === undefined) {
+        toast({
+          title: "Token not supported",
+          description: "This code asks for a token EngiPay cannot send yet.",
+          variant: "destructive",
+        })
+        return
+      }
+
       const query = new URLSearchParams({ to: result.address })
       if (result.amount) query.set("amount", result.amount)
+      if (result.tokenAddress) query.set("token", result.tokenAddress)
       router.push(`/send?${query.toString()}`)
     }
   }

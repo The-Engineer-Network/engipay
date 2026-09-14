@@ -25,6 +25,13 @@ export interface ParsedPayment {
   tokenAddress?: string
   /** Free-text note carried by EngiPay codes. */
   reference?: string
+  /** EVM chain the code names, when it names one. */
+  chainId?: number
+  /**
+   * False when the code is for a network EngiPay does not send on. The code is
+   * still returned so the UI can say what it is, rather than "not recognised".
+   */
+  supportedNetwork: boolean
   /** What was actually scanned. */
   raw: string
 }
@@ -73,13 +80,18 @@ function parseEngipayEnvelope(raw: string): ParsedPayment | null {
   }
   if (!data || data.type !== "engipay.request") return null
 
-  const to = typeof data.to === "string" ? data.to : ""
-  if (!to) return null
-
+  const to = typeof data.to === "string" ? data.to.trim() : ""
   const chain: PaymentChain = data.chain === "bitcoin" ? "bitcoin" : "base"
+
+  // Never trust the recipient in a scanned code: it must be a real address
+  // for the chain the code claims.
+  const validRecipient = chain === "bitcoin" ? isBitcoinAddress(to) : isEvmAddress(to)
+  if (!validRecipient) return null
+
   return {
     chain,
     address: to,
+    supportedNetwork: true,
     amount: typeof data.amount === "string" ? data.amount : undefined,
     asset: typeof data.asset === "string" ? data.asset : undefined,
     reference: typeof data.ref === "string" ? data.ref : undefined,
@@ -101,10 +113,13 @@ function parseEip681(raw: string, tokenDecimals: (token: string) => number | und
   const [address, chainId] = addressPart.split("@")
 
   if (!isEvmAddress(address)) return null
-  if (chainId && ![String(BASE_CHAIN_ID), String(BASE_SEPOLIA_CHAIN_ID)].includes(chainId)) {
-    // A code for another EVM chain: still readable, but the caller must decide.
-    // We surface it as Base so the UI can warn rather than silently fail.
-  }
+
+  const parsedChainId = chainId ? Number(chainId) : undefined
+  if (chainId && !Number.isInteger(parsedChainId)) return null
+  const supportedNetwork =
+    parsedChainId === undefined ||
+    parsedChainId === BASE_CHAIN_ID ||
+    parsedChainId === BASE_SEPOLIA_CHAIN_ID
 
   const params = new URLSearchParams(query)
 
@@ -118,6 +133,8 @@ function parseEip681(raw: string, tokenDecimals: (token: string) => number | und
       address: to,
       tokenAddress: address,
       amount: rawAmount ? fromBaseUnits(rawAmount, decimals) : undefined,
+      chainId: parsedChainId,
+      supportedNetwork,
       raw,
     }
   }
@@ -127,6 +144,8 @@ function parseEip681(raw: string, tokenDecimals: (token: string) => number | und
     chain: "base",
     address,
     amount: value ? fromBaseUnits(value, 18) : undefined,
+    chainId: parsedChainId,
+    supportedNetwork,
     raw,
   }
 }
@@ -147,6 +166,7 @@ function parseBip21(raw: string): ParsedPayment | null {
     amount: amount ?? undefined,
     asset: "BTC",
     reference: params.get("message") ?? params.get("label") ?? undefined,
+    supportedNetwork: true,
     raw,
   }
 }
@@ -172,8 +192,10 @@ export function parsePaymentCode(
   const bip21 = parseBip21(raw)
   if (bip21) return bip21
 
-  if (isEvmAddress(raw)) return { chain: "base", address: raw, raw }
-  if (isBitcoinAddress(raw)) return { chain: "bitcoin", address: raw, asset: "BTC", raw }
+  if (isEvmAddress(raw)) return { chain: "base", address: raw, supportedNetwork: true, raw }
+  if (isBitcoinAddress(raw)) {
+    return { chain: "bitcoin", address: raw, asset: "BTC", supportedNetwork: true, raw }
+  }
 
   return null
 }

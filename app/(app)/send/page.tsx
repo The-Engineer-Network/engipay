@@ -11,8 +11,9 @@ function SendForm() {
   const params = useSearchParams()
   const recipient = params.get("to") ?? ""
   const amount = params.get("amount") ?? ""
+  const token = params.get("token") ?? ""
 
-  return <SendPayment initialRecipient={recipient} initialAmount={amount} />
+  return <SendPayment initialRecipient={recipient} initialAmount={amount} initialToken={token} />
 }
 
 export default function SendPage() {

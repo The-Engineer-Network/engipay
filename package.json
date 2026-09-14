@@ -11,7 +11,8 @@
     "sync-db": "cd backend && npm run sync-db",
     "reset-db": "cd backend && npm run reset-db",
     "backend-dev": "cd backend && npm run dev",
-    "backend-install": "cd backend && npm install"
+    "backend-install": "cd backend && npm install",
+    "test": "node --experimental-strip-types --no-warnings --test \"lib/**/*.test.ts\""
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

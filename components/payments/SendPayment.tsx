@@ -22,16 +22,27 @@ interface SendPaymentProps {
   initialRecipient?: string
   /** Prefills the amount, e.g. from a payment request. */
   initialAmount?: string
+  /** ERC-20 contract the request is for. Empty means the native coin. */
+  initialToken?: string
 }
 
-export function SendPayment({ initialRecipient = "", initialAmount = "" }: SendPaymentProps) {
+export function SendPayment({
+  initialRecipient = "",
+  initialAmount = "",
+  initialToken = "",
+}: SendPaymentProps) {
   const { isConnected } = useAccount()
   const { balances } = useWallet()
   const { toast } = useToast()
 
   const [recipient, setRecipient] = useState(initialRecipient)
   const [amount, setAmount] = useState(initialAmount)
-  const [asset, setAsset] = useState<string>(NATIVE)
+  // Start on the asset the request named, so a scanned amount keeps its meaning.
+  const [asset, setAsset] = useState<string>(
+    () =>
+      TRACKED_TOKENS.find((token) => token.address.toLowerCase() === initialToken.toLowerCase())
+        ?.address ?? NATIVE
+  )
 
   const { sendTransactionAsync, isPending: isSendingNative } = useSendTransaction()
   const { writeContractAsync, isPending: isSendingToken } = useWriteContract()

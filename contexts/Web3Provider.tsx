@@ -3,7 +3,8 @@
 import { ReactNode, useState } from "react";
 import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { RainbowKitProvider, darkTheme, type Theme } from "@rainbow-me/rainbowkit";
+import { RainbowKitProvider, darkTheme, lightTheme, type Theme } from "@rainbow-me/rainbowkit";
+import { useTheme } from "next-themes";
 import { wagmiConfig } from "@/lib/wagmi";
 
 import "@rainbow-me/rainbowkit/styles.css";
@@ -68,16 +69,51 @@ const engipayWalletTheme: Theme = {
   },
 };
 
+const lightBase = lightTheme({
+  accentColor: "hsl(152 84% 30%)",
+  accentColorForeground: "#ffffff",
+  borderRadius: "large",
+  overlayBlur: "small",
+  fontStack: "system",
+});
+
+/** The same panel on the light palette, so it matches when users switch. */
+const engipayWalletThemeLight: Theme = {
+  ...lightBase,
+  colors: {
+    ...lightBase.colors,
+    modalBackground: "#ffffff",
+    modalBorder: "hsl(150 14% 88%)",
+    modalText: "hsl(150 22% 9%)",
+    modalTextSecondary: "hsl(150 8% 38%)",
+    menuItemBackground: "hsl(150 16% 95%)",
+    profileForeground: "hsl(150 30% 98%)",
+    profileAction: "hsl(150 16% 94%)",
+    profileActionHover: "hsl(150 16% 90%)",
+    generalBorder: "hsl(150 14% 88%)",
+    actionButtonSecondaryBackground: "hsl(150 16% 94%)",
+    closeButtonBackground: "hsl(150 16% 94%)",
+    selectedOptionBorder: "hsl(152 84% 30% / 0.5)",
+  },
+  radii: engipayWalletTheme.radii,
+  shadows: {
+    ...lightBase.shadows,
+    dialog: "0 28px 70px -30px hsl(152 84% 30% / 0.25), 0 0 0 1px hsl(150 14% 88%)",
+  },
+};
+
 export function Web3Provider({ children }: { children: ReactNode }) {
   // Created in state so the client is stable across re-renders but never
   // shared between requests during SSR.
   const [queryClient] = useState(() => new QueryClient());
+  // Follow the app theme toggle, not the OS setting RainbowKit would use.
+  const { resolvedTheme } = useTheme();
 
   return (
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider
-          theme={engipayWalletTheme}
+          theme={resolvedTheme === "light" ? engipayWalletThemeLight : engipayWalletTheme}
           // "compact" drops RainbowKit's illustrated "What is a Wallet?" panel,
           // which is the cartoon half of the dialog.
           modalSize="compact"
