@@ -44,3 +44,6 @@ starkli.zip
 
 # verification builds run alongside the dev server
 /.next-verify/
+
+# Templates contain no secrets and should be committed
+!**/.env.example

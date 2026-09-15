@@ -1,0 +1,19 @@
+[package]
+name = "engipay-chain"
+description = "Chain service: deposit watching, transaction building and signing. The only service that ever holds keys."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+engipay-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

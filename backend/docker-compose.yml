@@ -1,0 +1,59 @@
+# Local development stack.
+#
+#   docker compose up -d postgres api      start the database and the API
+#   docker compose run --rm toolbox cargo test
+#
+# Ports are bound to 127.0.0.1 only, so nothing is reachable from your network.
+
+name: engipay
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-engipay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in backend/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-engipay}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-engipay} -d ${POSTGRES_DB:-engipay}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      args:
+        BIN: engipay-api
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-engipay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-engipay}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      BIND_ADDR: 0.0.0.0:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Rust tooling in a container: build, test, lint. Nothing is installed on the host.
+  toolbox:
+    build:
+      context: .
+      dockerfile: toolbox.Dockerfile
+    working_dir: /work
+    volumes:
+      - .:/work
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-target:/work/target
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-engipay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-engipay}
+    profiles: ["tools"]
+
+volumes:
+  postgres-data:
+  cargo-registry:
+  cargo-target:

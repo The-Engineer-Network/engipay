@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/ledger", "crates/api", "crates/chain"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "UNLICENSED"
+publish = false
+
+# Every dependency is declared once here and inherited by the crates, so there
+# is one place to review what the backend pulls in. Cargo.lock is committed.
+[workspace.dependencies]
+engipay-core = { path = "crates/core" }
+engipay-ledger = { path = "crates/ledger" }
+
+anyhow = "1"
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate", "macros"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Money code: silent truncation and panics on arithmetic are bugs.
+cast_possible_truncation = "deny"
+arithmetic_side_effects = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

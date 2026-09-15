@@ -141,13 +141,13 @@ a real project each time, the way Bitcoin is.
         |
         | HTTPS
         v
-    API service, NestJS, with Postgres and Redis
+    API service, Rust (Axum), with Postgres
       accounts and auth, KYC, balances and ledger, orders and quotes,
       limits and fraud checks, partner webhooks, notifications, admin
         |                                  |
-        | internal gRPC or REST            | HTTPS
+        | internal HTTP                    | HTTPS
         v                                  v
-    Chain service, Rust                Outside partners
+    Chain service, Rust (separate binary) Outside partners
       key custody, deposit watching,     Naira ramp and payout provider,
       building and signing, fee          DEX aggregator for same-chain swaps,
       estimation, confirmations,         KYC provider
@@ -162,38 +162,56 @@ The chain service stays small on purpose. Everything it exposes:
     get_transaction(chain, tx_hash)        -> status and confirmations
     watch_deposits(chain, address)         -> incoming transfer events
 
-Target repository layout:
+Repository layout. The web app stays at the root for now; the backend is one
+Cargo workspace beside it:
 
     engipay/
-      apps/web/          the Next.js app, moved down one level
-      services/api/      NestJS
-      services/chain/    Rust
-      packages/shared/   TypeScript types shared by web and api
+      app/, components/, lib/   the Next.js web app
+      backend/
+        Cargo.toml              workspace; every dependency declared once
+        crates/core/            assets, exact money, identifiers
+        crates/ledger/          double-entry ledger rules
+        crates/api/             Axum HTTP API (binary: engipay-api)
+        crates/chain/           chain service (binary: engipay-chain)
+        migrations/             Postgres schema, applied at API startup
+        Dockerfile              builds either binary
+        docker-compose.yml      Postgres, the API, and a Rust toolbox
 
 
 6. THE STACK DECISION
 
-Recommendation: NestJS for the API service, Rust for the chain service.
+Decided on 15 September 2026: Rust for both the API and the chain service.
 
-Why the chain service is Rust:
-    It holds the keys and signs the transactions. Rust gives memory safety and
-    exhaustive matching on transaction states, and the libraries are strong -
-    alloy for EVM, bdk and rust-bitcoin for Bitcoin. Bugs here lose customer
-    funds, so the strictness pays for itself.
+What that means in practice:
+    One language, one Cargo workspace, and one set of domain types
+    (engipay-core) shared by the API and the chain service. The money type and
+    the ledger rules exist exactly once, and both services use the same code.
 
-Why the API service is NestJS:
-    Most of that work is integration glue - ramp partners, KYC providers, bank
-    payouts, webhooks, notifications, admin screens. The SDKs for those are
-    JavaScript-first, you already write TypeScript everywhere, and the frontend
-    can share types with the API instead of duplicating them.
+    The API is Axum on Tokio, with SQLx on Postgres. The chain service is a
+    separate binary, because it is the only process that will ever hold
+    signing keys. Compromising the API must not give an attacker the ability
+    to move funds.
 
-If you would rather use Rust for both:
-    That is a reasonable choice with Axum and SQLx. You get one language and one
-    deployment. The cost is slower work on partner integrations and far fewer
-    ready-made SDKs, which is where most of the day-to-day effort will be.
+    Base will use alloy, and Bitcoin will use bdk and rust-bitcoin.
 
-What not to do: the chain service in NestJS. Key handling and money state
-machines in TypeScript is the one combination to avoid.
+The cost we accepted:
+    Ramp partners and KYC providers publish JavaScript SDKs, not Rust ones, so
+    each integration is written against their HTTP API directly. That is more
+    work per partner, but it also means no third-party SDK code runs inside the
+    service that moves money.
+
+How it is built:
+    In Docker, not on a developer machine. Dependency build scripts run inside a
+    throwaway container, never next to wallets or credentials. This follows
+    directly from the September 2026 compromise.
+
+Guardrails from day one:
+    Money is whole smallest units in i128, with no floating point, and amounts
+    with more precision than the asset has are rejected, not rounded.
+    unsafe code is forbidden workspace-wide. Cargo.lock is committed. The
+    database refuses UPDATE and DELETE on ledger rows, and rejects any
+    transaction that does not balance, so even an application bug cannot
+    corrupt the ledger.
 
 
 7. QR CODE FORMAT
@@ -311,9 +329,12 @@ credential on the development machine.
 Everything here needs the backend, so the backend comes first.
 
     1. Foundation
-       NestJS service, Postgres, wallet sign-in, user accounts, the ledger and
+       Rust API (Axum), Postgres, wallet sign-in, user accounts, the ledger and
        the balance model. Nothing is user-visible yet, and everything else
        stands on it.
+       Started 15 September 2026: workspace, exact money type, ledger rules
+       with tests, database schema with append-only and balance checks, API
+       health and assets endpoints, and a chain service skeleton.
 
     2. Chain service and deposits
        Rust service, EVM and Bitcoin wallets, deposit addresses, watching for
@@ -417,8 +438,7 @@ lib/api-config.ts. Nothing in the app imports them any more.
 
 14. OPEN QUESTIONS
 
-    a. Stack: NestJS with Rust as recommended, or Rust for both. This blocks
-       the foundation work.
+    a. Stack: decided on 15 September 2026 - Rust for both. See section 6.
     b. Ramp partner: any existing relationship, or a preference among Yellow
        Card, Onramp.money, Transak, Quidax and Busha.
     c. KYC: run by the ramp partner, or our own with Dojah or Smile ID. You

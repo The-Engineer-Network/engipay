@@ -1,0 +1,4 @@
+# Backend files run inside Linux containers: keep Unix line endings in every
+# checkout, including Windows ones, or shell scripts break with \r errors.
+* text=auto eol=lf
+*.lock text eol=lf -diff
