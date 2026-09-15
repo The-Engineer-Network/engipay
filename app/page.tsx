@@ -1,13 +1,13 @@
 "use client";
 import { useState } from 'react';
-import Navbar from '@/src/app/components/Navbar';
-import Hero from '@/src/app/components/Hero';
-import Features from '@/src/app/components/Features';
-import Workflow from '@/src/app/components/Workflow';
-import Stats from '@/src/app/components/Stats';
-import CTA from '@/src/app/components/CTA';
-import Footer from '@/src/app/components/Footer';
-import AuthModal from '@/src/app/components/LandingAuthModal';
+import Navbar from '@/components/landing/Navbar';
+import Hero from '@/components/landing/Hero';
+import AssetTicker from '@/components/landing/AssetTicker';
+import Features from '@/components/landing/Features';
+import Workflow from '@/components/landing/Workflow';
+import CTA from '@/components/landing/CTA';
+import Footer from '@/components/landing/Footer';
+import AuthModal from '@/components/landing/LandingAuthModal';
 
 export default function LandingPage() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -16,14 +16,14 @@ export default function LandingPage() {
   const closeAuthModal = () => setIsAuthModalOpen(false);
 
   return (
-    <main>
+    <main className="overflow-x-clip">
       <Navbar onGetStarted={openAuthModal} />
-      <div className="bg-[radial-gradient(circle_at_50%_0%,rgba(0,242,138,0.15),transparent_60%)]">
+      <div className="cosmic-bg">
         <Hero onGetStarted={openAuthModal} />
       </div>
+      <AssetTicker />
       <Features />
       <Workflow />
-      <Stats />
       <CTA onGetStarted={openAuthModal} />
       <Footer />
 

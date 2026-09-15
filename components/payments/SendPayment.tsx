@@ -1,247 +1,306 @@
-'use client'
+"use client"
 
-import { useState } from 'react'
-import { useWallet } from '@/contexts/WalletContext'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
-import { Send, ExternalLink, Loader2 } from 'lucide-react'
-import { toast } from '@/hooks/use-toast'
+import { useState } from "react"
+import Link from "next/link"
+import { useAccount, useSendTransaction, useWriteContract, useWaitForTransactionReceipt } from "wagmi"
+import { isAddress, parseEther, parseUnits, type Address } from "viem"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { useToast } from "@/hooks/use-toast"
+import { Loader } from "@/components/ui/loader"
+import { ExternalLink, CheckCircle2, QrCode, ClipboardPaste } from "lucide-react"
+import { TRACKED_TOKENS, ERC20_ABI } from "@/lib/tokens"
+import { activeChain } from "@/lib/wagmi"
+import { useWallet } from "@/contexts/WalletContext"
+import { cn } from "@/lib/utils"
 
-export function SendPayment() {
-  const [recipient, setRecipient] = useState('')
-  const [amount, setAmount] = useState('')
-  const [asset, setAsset] = useState('STRK')
-  const [memo, setMemo] = useState('')
-  const [isSending, setIsSending] = useState(false)
-  const [txHash, setTxHash] = useState('')
-  const [isPrivate, setIsPrivate] = useState(false)
-  const { walletAddress, isConnected, starknetAccount } = useWallet()
+const NATIVE = "native"
 
-  const handleSend = async () => {
-    if (!isConnected || !walletAddress || !starknetAccount) {
-      toast({
-        title: 'Wallet not connected',
-        description: 'Please connect your wallet to send payments',
-        variant: 'destructive',
-      })
-      return
-    }
+interface SendPaymentProps {
+  /** Prefills the recipient, e.g. from a scanned QR code. */
+  initialRecipient?: string
+  /** Prefills the amount, e.g. from a payment request. */
+  initialAmount?: string
+  /** ERC-20 contract the request is for. Empty means the native coin. */
+  initialToken?: string
+}
 
-    if (!recipient || !amount) {
-      toast({
-        title: 'Missing Information',
-        description: 'Please enter recipient address and amount',
-        variant: 'destructive',
-      })
-      return
-    }
+export function SendPayment({
+  initialRecipient = "",
+  initialAmount = "",
+  initialToken = "",
+}: SendPaymentProps) {
+  const { isConnected } = useAccount()
+  const { balances } = useWallet()
+  const { toast } = useToast()
 
-    setIsSending(true)
-    setTxHash('')
+  const [recipient, setRecipient] = useState(initialRecipient)
+  const [amount, setAmount] = useState(initialAmount)
+  // Start on the asset the request named, so a scanned amount keeps its meaning.
+  const [asset, setAsset] = useState<string>(
+    () =>
+      TRACKED_TOKENS.find((token) => token.address.toLowerCase() === initialToken.toLowerCase())
+        ?.address ?? NATIVE
+  )
 
+  const { sendTransactionAsync, isPending: isSendingNative } = useSendTransaction()
+  const { writeContractAsync, isPending: isSendingToken } = useWriteContract()
+  const [txHash, setTxHash] = useState<Address | undefined>()
+
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
+    hash: txHash,
+    query: { enabled: Boolean(txHash) },
+  })
+
+  const isBusy = isSendingNative || isSendingToken || isConfirming
+  const recipientValid = recipient === "" || isAddress(recipient)
+  const amountValid = amount === "" || Number(amount) > 0
+
+  const selectedSymbol =
+    asset === NATIVE
+      ? activeChain.nativeCurrency.symbol
+      : TRACKED_TOKENS.find((token) => token.address === asset)?.symbol ?? ""
+
+  const heldBalance = balances.find((item) => item.symbol === selectedSymbol)?.balance
+
+  const explorerUrl = txHash
+    ? `${activeChain.blockExplorers?.default.url}/tx/${txHash}`
+    : undefined
+
+  const pasteAddress = async () => {
     try {
-      // Step 1: Prepare transaction via backend
-      const endpoint = isPrivate ? '/api/payments/v2/private-send' : '/api/payments/v2/send';
-      const prepareResponse = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
-        },
-        body: JSON.stringify({
-          recipient,
-          asset,
-          amount,
-          memo,
-          is_private: isPrivate,
-        }),
-      })
-
-      const prepareData = await prepareResponse.json()
-
-      if (!prepareResponse.ok) {
-        throw new Error(prepareData.error?.message || 'Failed to prepare payment')
-      }
-
+      const text = await navigator.clipboard.readText()
+      if (text) setRecipient(text.trim())
+    } catch {
       toast({
-        title: 'Please sign transaction',
-        description: 'Confirm the transaction in your wallet',
+        title: "Could not read the clipboard",
+        description: "Paste the address manually instead.",
+        variant: "destructive",
       })
-
-      // Step 2: Sign transaction with wallet
-      const { transaction_hash } = await starknetAccount.execute({
-        contractAddress: prepareData.transaction_data.contract_address,
-        entrypoint: prepareData.transaction_data.entry_point,
-        calldata: [recipient, amount],
-      })
-
-      setTxHash(transaction_hash)
-
-      toast({
-        title: 'Transaction submitted',
-        description: 'Waiting for confirmation...',
-      })
-
-      // Step 3: Submit transaction hash to backend
-      const executeResponse = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/payments/v2/execute`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('engipay-token')}`,
-        },
-        body: JSON.stringify({
-          transaction_id: prepareData.transaction_id,
-          tx_hash: transaction_hash,
-          type: 'send',
-        }),
-      })
-
-      const executeData = await executeResponse.json()
-
-      if (!executeResponse.ok) {
-        throw new Error(executeData.error?.message || 'Failed to execute payment')
-      }
-
-      toast({
-        title: isPrivate ? 'Private Payment Sent! 🔒' : 'Payment Sent! 🎉',
-        description: (
-          <div className="flex flex-col gap-2">
-            <p>{isPrivate ? 'Private transaction with hidden amount' : 'Transaction submitted successfully'}</p>
-            <a
-              href={executeData.explorer_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-primary hover:underline"
-            >
-              View on StarkScan <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
-        ),
-      })
-
-      // Reset form
-      setRecipient('')
-      setAmount('')
-      setMemo('')
-    } catch (error: any) {
-      console.error('Payment error:', error)
-      toast({
-        title: 'Payment Failed',
-        description: error.message || 'Failed to send payment',
-        variant: 'destructive',
-      })
-    } finally {
-      setIsSending(false)
     }
   }
 
-  return (
-    <Card className="glassmorphism">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Send className="w-5 h-5" />
-          Send Payment
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-2">Recipient Address</label>
-          <Input
-            placeholder="0x..."
-            value={recipient}
-            onChange={(e) => setRecipient(e.target.value)}
-            className="glassmorphism"
-          />
-        </div>
+  const handleSend = async () => {
+    if (!isConnected) {
+      toast({
+        title: "Wallet not connected",
+        description: "Connect your wallet to send a payment.",
+        variant: "destructive",
+      })
+      return
+    }
+    if (!isAddress(recipient)) {
+      toast({
+        title: "Invalid address",
+        description: "Enter a valid wallet address.",
+        variant: "destructive",
+      })
+      return
+    }
+    if (!(Number(amount) > 0)) {
+      toast({
+        title: "Invalid amount",
+        description: "Enter an amount greater than zero.",
+        variant: "destructive",
+      })
+      return
+    }
 
-        <div className="grid md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">Amount</label>
-            <Input
-              type="number"
-              placeholder="0.00"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              className="glassmorphism"
-              step="0.000001"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-2">Asset</label>
-            <Select value={asset} onValueChange={setAsset}>
-              <SelectTrigger className="glassmorphism">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ETH">ETH</SelectItem>
-                <SelectItem value="STRK">STRK</SelectItem>
-                <SelectItem value="ENGI">ENGI</SelectItem>
-                <SelectItem value="USDC">USDC</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+    try {
+      let hash: Address
 
-        <div>
-          <label className="block text-sm font-medium mb-2">Memo (optional)</label>
-          <Textarea
-            placeholder="Payment description..."
-            value={memo}
-            onChange={(e) => setMemo(e.target.value)}
-            className="glassmorphism"
-            rows={2}
-          />
-        </div>
+      if (asset === NATIVE) {
+        hash = await sendTransactionAsync({
+          to: recipient as Address,
+          value: parseEther(amount),
+        })
+      } else {
+        const token = TRACKED_TOKENS.find((t) => t.address === asset)
+        if (!token) throw new Error("Unknown token selected.")
+        hash = await writeContractAsync({
+          address: token.address,
+          abi: ERC20_ABI,
+          functionName: "transfer",
+          args: [recipient as Address, parseUnits(amount, token.decimals)],
+        })
+      }
 
-        <div className="flex items-center justify-between p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg">
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="private-payment"
-              checked={isPrivate}
-              onChange={(e) => setIsPrivate(e.target.checked)}
-              className="w-4 h-4 rounded border-gray-300"
-            />
-            <label htmlFor="private-payment" className="text-sm font-medium cursor-pointer">
-              Private Payment (Hide Amount) 🔒
-            </label>
-          </div>
-          <span className="text-xs text-gray-400">Powered by Tongo</span>
-        </div>
+      setTxHash(hash)
+      toast({
+        title: "Transaction submitted",
+        description: "Waiting for it to confirm on-chain.",
+      })
+    } catch (error: any) {
+      // Wallets throw on user rejection; that is not an error worth alarming about.
+      const rejected =
+        error?.name === "UserRejectedRequestError" ||
+        /user rejected|denied/i.test(error?.message ?? "")
+      toast({
+        title: rejected ? "Transaction cancelled" : "Payment failed",
+        description: rejected
+          ? "You rejected the request in your wallet."
+          : error?.shortMessage || error?.message || "Something went wrong.",
+        variant: "destructive",
+      })
+    }
+  }
 
-        <Button
-          onClick={handleSend}
-          disabled={isSending || !recipient || !amount || !isConnected}
-          className="glow-button bg-primary hover:bg-primary/90 w-full"
-        >
-          {isSending ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Sending...
-            </>
-          ) : (
-            'Send Payment'
-          )}
-        </Button>
-
-        {txHash && (
-          <div className="mt-4 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-            <p className="text-sm font-medium text-green-400 mb-1">Transaction Submitted</p>
-            <a
-              href={`https://starkscan.co/tx/${txHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-green-300 hover:underline flex items-center gap-1"
-            >
-              {txHash.substring(0, 10)}...{txHash.substring(txHash.length - 8)}
-              <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
+  if (isConfirmed && txHash) {
+    return (
+      <div className="glass-panel p-8 text-center">
+        <span className="pulse-ring mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-success/15 text-success">
+          <CheckCircle2 className="h-7 w-7" aria-hidden="true" />
+        </span>
+        <p className="text-lg font-semibold">Payment sent</p>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          {amount} {selectedSymbol} arrived on {activeChain.name}.
+        </p>
+        {explorerUrl && (
+          <a
+            href={explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-4 inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+          >
+            View on explorer
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+          </a>
         )}
-      </CardContent>
-    </Card>
+        <Button
+          variant="outline"
+          className="mt-6 w-full rounded-full"
+          onClick={() => {
+            setTxHash(undefined)
+            setRecipient("")
+            setAmount("")
+          }}
+        >
+          Send another
+        </Button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="glass-panel space-y-6 p-6">
+      {/* Asset picker as pills: two taps fewer than a dropdown. */}
+      <div className="space-y-2">
+        <Label>Asset</Label>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { value: NATIVE, symbol: activeChain.nativeCurrency.symbol, icon: "\u{1F537}" },
+            ...TRACKED_TOKENS.map((token) => ({
+              value: token.address as string,
+              symbol: token.symbol,
+              icon: token.icon,
+            })),
+          ].map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => setAsset(option.value)}
+              aria-pressed={asset === option.value}
+              className={cn(
+                "flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors",
+                asset === option.value
+                  ? "border-primary/60 bg-primary/15 text-foreground"
+                  : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+              )}
+            >
+              <span aria-hidden="true">{option.icon}</span>
+              {option.symbol}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Amount, shown large because it is the number people check twice. */}
+      <div className="space-y-2">
+        <div className="flex items-baseline justify-between gap-4">
+          <Label htmlFor="amount">Amount</Label>
+          {heldBalance && (
+            <span className="text-xs text-muted-foreground">
+              You have {heldBalance} {selectedSymbol}
+            </span>
+          )}
+        </div>
+        <div className="relative">
+          <Input
+            id="amount"
+            type="number"
+            inputMode="decimal"
+            min="0"
+            step="any"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder="0.00"
+            aria-invalid={!amountValid}
+            className="h-auto border-0 bg-transparent px-0 py-2 text-4xl font-semibold tabular-nums tracking-tight focus-visible:ring-0"
+          />
+          <span className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-lg font-medium text-muted-foreground">
+            {selectedSymbol}
+          </span>
+        </div>
+        <div className="h-px bg-border" />
+        {!amountValid && (
+          <p className="text-sm text-destructive">Enter an amount greater than zero.</p>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-4">
+          <Label htmlFor="recipient">Send to</Label>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={pasteAddress}
+              className="flex items-center gap-1 text-xs text-primary hover:underline"
+            >
+              <ClipboardPaste className="h-3 w-3" aria-hidden="true" />
+              Paste
+            </button>
+            <Link
+              href="/scan"
+              className="flex items-center gap-1 text-xs text-primary hover:underline"
+            >
+              <QrCode className="h-3 w-3" aria-hidden="true" />
+              Scan
+            </Link>
+          </div>
+        </div>
+        <Input
+          id="recipient"
+          value={recipient}
+          onChange={(e) => setRecipient(e.target.value.trim())}
+          placeholder="0x..."
+          spellCheck={false}
+          aria-invalid={!recipientValid}
+          className="font-mono text-sm"
+        />
+        {!recipientValid && (
+          <p className="text-sm text-destructive">That is not a valid address.</p>
+        )}
+      </div>
+
+      <Button
+        onClick={handleSend}
+        disabled={isBusy || !recipient || !amount || !recipientValid || !amountValid}
+        className="glow-button h-12 w-full rounded-full text-base font-semibold"
+      >
+        {isBusy ? (
+          <>
+            <Loader className="mr-2 h-4 w-4" />
+            {isConfirming ? "Confirming…" : "Check your wallet…"}
+          </>
+        ) : (
+          `Send ${selectedSymbol}`
+        )}
+      </Button>
+
+      <p className="text-center text-xs text-muted-foreground">
+        Sends on {activeChain.name}. On-chain transfers cannot be reversed, so check the address.
+      </p>
+    </div>
   )
 }

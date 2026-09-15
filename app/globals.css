@@ -1,205 +1,237 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-@import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
-
-:root {
-  /* Updated to cosmic Web3 theme with neon green, purple, and black */
-  --background: #000000;
-  --foreground: #f0f0f0;
-  --card: rgba(255, 255, 255, 0.05);
-  --card-foreground: #f0f0f0;
-  --popover: rgba(255, 255, 255, 0.1);
-  --popover-foreground: #f0f0f0;
-  --primary: #00ff7f;
-  --primary-foreground: #000000;
-  --secondary: #800080;
-  --secondary-foreground: #f0f0f0;
-  --muted: rgba(255, 255, 255, 0.3);
-  --muted-foreground: #a0a0a0;
-  --accent: #ffcc00;
-  --accent-foreground: #000000;
-  --destructive: #dc2626;
-  --destructive-foreground: #ffffff;
-  --border: rgba(255, 255, 255, 0.1);
-  --input: rgba(255, 255, 255, 0.1);
-  --ring: #00ff7f;
-  --chart-1: #00ff7f;
-  --chart-2: #800080;
-  --chart-3: #ffcc00;
-  --chart-4: #dc2626;
-  --chart-5: #1a1a1a;
-  --radius: 0.5rem;
-  --sidebar: rgba(0, 0, 0, 0.7);
-  --sidebar-foreground: #f0f0f0;
-  --sidebar-primary: #00ff7f;
-  --sidebar-primary-foreground: #000000;
-  --sidebar-accent: #800080;
-  --sidebar-accent-foreground: #f0f0f0;
-  --sidebar-border: rgba(255, 255, 255, 0.1);
-  --sidebar-ring: #00ff7f;
-}
-
-.dark {
-  --background: #000000;
-  --foreground: #f0f0f0;
-  --card: rgba(255, 255, 255, 0.05);
-  --card-foreground: #f0f0f0;
-  --popover: rgba(255, 255, 255, 0.1);
-  --popover-foreground: #f0f0f0;
-  --primary: #00ff7f;
-  --primary-foreground: #000000;
-  --secondary: #800080;
-  --secondary-foreground: #f0f0f0;
-  --muted: rgba(255, 255, 255, 0.3);
-  --muted-foreground: #a0a0a0;
-  --accent: #ffcc00;
-  --accent-foreground: #000000;
-  --destructive: #dc2626;
-  --destructive-foreground: #ffffff;
-  --border: rgba(255, 255, 255, 0.1);
-  --input: rgba(255, 255, 255, 0.1);
-  --ring: #00ff7f;
-  --chart-1: #00ff7f;
-  --chart-2: #800080;
-  --chart-3: #ffcc00;
-  --chart-4: #dc2626;
-  --chart-5: #1a1a1a;
-  --sidebar: rgba(0, 0, 0, 0.7);
-  --sidebar-foreground: #f0f0f0;
-  --sidebar-primary: #00ff7f;
-  --sidebar-primary-foreground: #000000;
-  --sidebar-accent: #800080;
-  --sidebar-accent-foreground: #f0f0f0;
-  --sidebar-border: rgba(255, 255, 255, 0.1);
-  --sidebar-ring: #00ff7f;
-}
-
-@theme inline {
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-ring: var(--sidebar-ring);
-}
-
+/*
+ * EngiPay design tokens.
+ * Values are HSL *channels* (no hsl() wrapper) so Tailwind can apply
+ * opacity modifiers such as `bg-primary/90` and `border-border/50`.
+ * The app is dark-first: :root is the dark theme.
+ */
 @layer base {
+  :root {
+    /* Surfaces — near-black with a faint green cast so it reads as one family */
+    --background: 150 20% 3%;
+    --foreground: 150 8% 96%;
+
+    --card: 150 12% 6%;
+    --card-foreground: 150 8% 96%;
+
+    --popover: 150 14% 8%;
+    --popover-foreground: 150 8% 96%;
+
+    /* Brand — #00FF7F, the existing EngiPay green */
+    --primary: 150 100% 50%;
+    --primary-foreground: 150 40% 4%;
+
+    --secondary: 150 8% 14%;
+    --secondary-foreground: 150 8% 96%;
+
+    --muted: 150 8% 13%;
+    --muted-foreground: 150 5% 64%;
+
+    --accent: 150 10% 17%;
+    --accent-foreground: 150 8% 96%;
+
+    /* Semantic */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 150 85% 45%;
+    --success-foreground: 150 40% 4%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 38 92% 6%;
+
+    --border: 150 8% 16%;
+    --input: 150 8% 16%;
+    --ring: 150 100% 50%;
+
+    --radius: 0.75rem;
+
+    /* Charts — one coherent ramp, brand green first */
+    --chart-1: 150 100% 50%;
+    --chart-2: 174 72% 47%;
+    --chart-3: 198 88% 58%;
+    --chart-4: 43 96% 56%;
+    --chart-5: 280 65% 62%;
+
+    --sidebar: 150 16% 5%;
+    --sidebar-foreground: 150 8% 92%;
+    --sidebar-primary: 150 100% 50%;
+    --sidebar-primary-foreground: 150 40% 4%;
+    --sidebar-accent: 150 10% 14%;
+    --sidebar-accent-foreground: 150 8% 96%;
+    --sidebar-border: 150 8% 15%;
+    --sidebar-ring: 150 100% 50%;
+  }
+
+  /* Light theme. Applied by next-themes as class="light" on <html>.
+     The neon brand green is unreadable on white, so primary deepens here
+     while staying the same hue family. */
+  .light {
+    color-scheme: light;
+
+    --background: 150 30% 98%;
+    --foreground: 150 22% 9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 150 22% 9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 150 22% 9%;
+
+    --primary: 152 84% 30%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 150 16% 94%;
+    --secondary-foreground: 150 22% 12%;
+
+    --muted: 150 14% 95%;
+    --muted-foreground: 150 8% 38%;
+
+    --accent: 150 22% 93%;
+    --accent-foreground: 150 22% 12%;
+
+    --destructive: 0 72% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 152 72% 30%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 92% 38%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 150 14% 88%;
+    --input: 150 14% 86%;
+    --ring: 152 84% 30%;
+
+    --chart-1: 152 84% 32%;
+    --chart-2: 174 68% 34%;
+    --chart-3: 198 82% 42%;
+    --chart-4: 38 92% 42%;
+    --chart-5: 280 55% 48%;
+
+    --sidebar: 150 20% 96%;
+    --sidebar-foreground: 150 22% 12%;
+    --sidebar-primary: 152 84% 30%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 150 18% 92%;
+    --sidebar-accent-foreground: 150 22% 12%;
+    --sidebar-border: 150 14% 87%;
+    --sidebar-ring: 152 84% 30%;
+  }
+
+  /* The toggle target; identical for now since the app ships dark-only. */
+  .dark {
+    color-scheme: dark;
+  }
+
   * {
-    border-color: rgba(255, 255, 255, 0.1);
+    @apply border-border;
   }
+
   body {
-    background-color: var(--background);
-    color: var(--foreground);
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+
+  /* Consistent, visible focus for keyboard users across the whole app */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.25);
+  }
+
+  /* Quieter scrollbars that match the surface palette */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 9999px;
+    border: 2px solid hsl(var(--background));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
   }
 }
 
-/* Added cosmic background and animations */
-.cosmic-bg {
-  background: linear-gradient(to bottom, #00cc66 0%, #0d3320 25%, #05140a 50%, #000000 100%);
-  position: relative;
-  overflow: hidden;
-}
-
-.cosmic-bg::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-image: radial-gradient(2px 2px at 20px 30px, rgba(255, 255, 255, 0.3), transparent),
-    radial-gradient(2px 2px at 40px 70px, rgba(255, 255, 255, 0.2), transparent),
-    radial-gradient(1px 1px at 90px 40px, rgba(255, 255, 255, 0.4), transparent),
-    radial-gradient(1px 1px at 130px 80px, rgba(255, 255, 255, 0.3), transparent),
-    radial-gradient(2px 2px at 160px 30px, rgba(255, 255, 255, 0.2), transparent);
-  background-repeat: repeat;
-  background-size: 200px 100px;
-  animation: stars 20s linear infinite;
-}
-
-@keyframes stars {
-  from {
-    transform: translateY(0px);
+@layer components {
+  /* Frosted panel used for cards and overlays */
+  .glassmorphism {
+    background: hsl(var(--card) / 0.72);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid hsl(var(--border));
   }
-  to {
-    transform: translateY(-100px);
-  }
-}
 
-.glow-orb {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(1px);
-  animation: float 6s ease-in-out infinite;
+  /* Brand glow — green, matching the primary token (was purple, which clashed) */
+  .glow-button {
+    box-shadow: 0 0 24px -6px hsl(var(--primary) / 0.45);
+    transition: box-shadow 0.25s ease, transform 0.25s ease;
+  }
+  .glow-button:hover {
+    box-shadow: 0 0 36px -6px hsl(var(--primary) / 0.6);
+    transform: translateY(-1px);
+  }
+
+  /* Card + glow helpers. These previously lived in styles/profile-page.css,
+     which also redefined every design token globally; the tokens are gone and
+     only these two genuinely-used classes remain. */
+  .gradient-card {
+    background: linear-gradient(135deg, hsl(var(--card)) 0%, hsl(var(--accent) / 0.55) 100%);
+    border: 1px solid hsl(var(--border));
+  }
+
+  .glow-effect {
+    box-shadow: 0 0 24px -6px hsl(var(--primary) / 0.35);
+  }
+
+  /* Subtle top-down brand wash for hero sections */
+  .cosmic-bg {
+    position: relative;
+    overflow: hidden;
+    background:
+      radial-gradient(60% 50% at 50% 0%, hsl(var(--primary) / 0.14), transparent 70%),
+      linear-gradient(to bottom, hsl(var(--card)), hsl(var(--background)) 60%);
+  }
+
+  /* Decorative orbs / rings used by the hero and marketing sections.
+     Recoloured from purple to the brand green so they match the palette. */
+  .glow-orb {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(1px);
+    animation: float 6s ease-in-out infinite;
+  }
+
+  .orbit-ring {
+    position: absolute;
+    border: 1px solid hsl(var(--primary) / 0.25);
+    border-radius: 9999px;
+    animation: rotate 20s linear infinite;
+  }
+
+  .planet-sphere {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(0.5px);
+    animation: float 8s ease-in-out infinite;
+    box-shadow: 0 0 40px hsl(var(--primary) / 0.28);
+  }
 }
 
 @keyframes float {
   0%,
   100% {
-    transform: translateY(0px) rotate(0deg);
+    transform: translateY(0) scale(1);
   }
   50% {
-    transform: translateY(-20px) rotate(180deg);
+    transform: translateY(-24px) scale(1.04);
   }
-}
-
-.glassmorphism {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.glow-button {
-  box-shadow: 0 0 20px rgba(147, 51, 234, 0.4);
-  transition: all 0.3s ease;
-}
-
-.glow-button:hover {
-  box-shadow: 0 0 30px rgba(147, 51, 234, 0.6);
-  transform: translateY(-2px);
-}
-
-/* Added orbit ring animations for spheres */
-.orbit-ring {
-  position: absolute;
-  border: 1px solid rgba(147, 51, 234, 0.3);
-  border-radius: 50%;
-  animation: rotate 20s linear infinite;
 }
 
 @keyframes rotate {
@@ -211,20 +243,267 @@
   }
 }
 
-.planet-sphere {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(0.5px);
-  animation: float 8s ease-in-out infinite;
-  box-shadow: 0 0 40px rgba(147, 51, 234, 0.3);
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  /* Respect users who prefer reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-@keyframes float {
-  0%,
-  100% {
-    transform: translateY(0px) scale(1);
+/* ---------------------------------------------------------------------------
+   Marketing surface: motion, depth and light.
+   Everything here is CSS only - no animation library, no 3D engine - so the
+   landing page stays fast on the cheap Android phones most users are on.
+   All of it is switched off by the reduced-motion rule above.
+   --------------------------------------------------------------------------- */
+
+@layer components {
+  /* Slow drifting colour fields behind a hero. Sits under content, never on it. */
+  .aurora {
+    position: absolute;
+    inset: -20% -10% auto -10%;
+    height: 130%;
+    pointer-events: none;
+    background:
+      radial-gradient(38% 42% at 18% 22%, hsl(var(--primary) / 0.20), transparent 65%),
+      radial-gradient(32% 38% at 82% 12%, hsl(168 85% 45% / 0.16), transparent 68%),
+      radial-gradient(42% 46% at 62% 78%, hsl(var(--primary) / 0.12), transparent 70%);
+    filter: blur(18px);
+    animation: aurora-drift 22s ease-in-out infinite alternate;
+  }
+
+  /* Faint engineering grid, faded out at the edges by a mask. */
+  .grid-fade {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.55) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.55) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(75% 60% at 50% 35%, black, transparent 85%);
+    -webkit-mask-image: radial-gradient(75% 60% at 50% 35%, black, transparent 85%);
+  }
+
+  /* Brand gradient type. Keeps the green identity, adds depth on big headings. */
+  .text-gradient {
+    background: linear-gradient(
+      104deg,
+      hsl(var(--foreground)) 0%,
+      hsl(var(--primary)) 48%,
+      hsl(168 90% 60%) 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: gradient-pan 9s ease-in-out infinite alternate;
+  }
+
+  /* Glass panel with a lit top edge, the detail that makes cards feel physical. */
+  .glass-panel {
+    position: relative;
+    background: linear-gradient(
+      160deg,
+      hsl(var(--card) / 0.92) 0%,
+      hsl(var(--card) / 0.72) 100%
+    );
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+  }
+  .glass-panel::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--primary) / 0.55),
+      transparent
+    );
+  }
+
+  /* Hover depth: a soft lift plus a brand halo. Used on feature cards. */
+  .lift-card {
+    transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 0.35s ease, border-color 0.35s ease;
+  }
+  .lift-card:hover {
+    transform: translateY(-6px);
+    border-color: hsl(var(--primary) / 0.45);
+    box-shadow:
+      0 18px 40px -24px hsl(var(--primary) / 0.55),
+      0 0 0 1px hsl(var(--primary) / 0.12);
+  }
+
+  /* True 3D tilt. The parent sets the perspective, the child rotates. */
+  .scene-3d {
+    perspective: 1200px;
+  }
+  .tilt-3d {
+    transform-style: preserve-3d;
+    transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .scene-3d:hover .tilt-3d {
+    transform: rotateY(-8deg) rotateX(6deg) translateZ(12px);
+  }
+
+  /* A light sweeping across a surface on hover. */
+  .shine {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+  }
+  .shine::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      115deg,
+      transparent 35%,
+      hsl(var(--primary) / 0.14) 48%,
+      transparent 62%
+    );
+    transform: translateX(-120%);
+    transition: transform 0.7s ease;
+  }
+  .shine:hover::after {
+    transform: translateX(120%);
+  }
+
+  /* Pulsing ring used behind step numbers and icons. */
+  .pulse-ring {
+    position: relative;
+  }
+  .pulse-ring::before {
+    content: '';
+    position: absolute;
+    inset: -6px;
+    border-radius: inherit;
+    border: 1px solid hsl(var(--primary) / 0.35);
+    animation: pulse-ring 3s ease-out infinite;
+  }
+
+  /* Endless horizontal ticker. Duplicate the children in markup for the loop. */
+  .marquee {
+    display: flex;
+    width: max-content;
+    animation: marquee 32s linear infinite;
+  }
+  .marquee-mask {
+    mask-image: linear-gradient(90deg, transparent, black 12%, black 88%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, black 12%, black 88%, transparent);
+  }
+  .marquee-mask:hover .marquee {
+    animation-play-state: paused;
+  }
+
+  /* Gentle float for the hero artwork and the cards orbiting it. */
+  .float-slow {
+    animation: float-soft 7s ease-in-out infinite;
+  }
+  .float-slower {
+    animation: float-soft 9s ease-in-out infinite;
+    animation-delay: -3s;
+  }
+}
+
+@layer utilities {
+  /* Scroll reveal. The Reveal component flips data-revealed once visible. */
+  .reveal {
+    opacity: 0;
+    transform: translateY(22px);
+    transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+      transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: opacity, transform;
+  }
+  .reveal[data-revealed='true'] {
+    opacity: 1;
+    transform: none;
+  }
+  .reveal-scale {
+    opacity: 0;
+    transform: scale(0.94);
+    transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+      transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .reveal-scale[data-revealed='true'] {
+    opacity: 1;
+    transform: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal,
+    .reveal-scale {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(-2%, -1%, 0) scale(1);
   }
   50% {
-    transform: translateY(-30px) scale(1.05);
+    transform: translate3d(3%, 2%, 0) scale(1.06);
+  }
+  100% {
+    transform: translate3d(-1%, 3%, 0) scale(1.02);
+  }
+}
+
+@keyframes gradient-pan {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  70% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes float-soft {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-14px);
   }
 }

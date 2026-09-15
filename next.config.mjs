@@ -1,69 +1,47 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Lets a verification build run beside `next dev` without both writing to
+  // .next, which corrupts the build (PageNotFoundError, ENOENT).
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   eslint: {
     ignoreDuringBuilds: true,
   },
   typescript: {
+    // TODO: remove once the remaining recharts v3 typing errors are resolved.
     ignoreBuildErrors: true,
   },
   images: {
     unoptimized: true,
   },
-  webpack: (config, { isServer }) => {
-    // Fix case sensitivity issues on Windows
+  webpack: (config, { isServer, webpack }) => {
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
         fs: false,
-        path: false,
+        net: false,
+        tls: false,
       };
     }
 
-    // Handle module resolution issues
-    config.resolve.modules = [
-      ...config.resolve.modules,
-      '.'
-    ];
+    // @coinbase/cdp-sdk (pulled in transitively by RainbowKit's Base
+    // connector) declares the @x402/* packages as *optional* peers. They are
+    // not installed and none of our code paths reach them, but webpack still
+    // tries to resolve the import sites, which fails the build.
+    config.plugins.push(
+      new webpack.IgnorePlugin({ resourceRegExp: /^@x402\// })
+    );
 
-    // Force case-insensitive module resolution on Windows
+    // Optional peers of the MetaMask SDK (React Native only) and pino's
+    // pretty-printer. Neither is used in the browser build.
     config.resolve.alias = {
       ...config.resolve.alias,
-      // Force consistent casing for problematic modules
+      '@react-native-async-storage/async-storage': false,
+      'pino-pretty': false,
     };
-
-    // Add case-insensitive plugin for Windows
-    if (process.platform === 'win32') {
-      // Skip webpack modifications that cause issues
-      console.log('Windows detected - skipping webpack DefinePlugin');
-    }
 
     return config;
   },
-  // Disable case sensitive routing
-  trailingSlash: false,
-  // Ensure consistent module resolution
-  transpilePackages: ['@sats-connect/core', '@atomiqlabs/sdk'],
-  async headers() {
-    return [
-      {
-        source: '/(.*)',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'no-cache, no-store, must-revalidate',
-          },
-          {
-            key: 'Pragma',
-            value: 'no-cache',
-          },
-          {
-            key: 'Expires',
-            value: '0',
-          },
-        ],
-      },
-    ]
-  },
-}
+  transpilePackages: ['@rainbow-me/rainbowkit'],
+};
 
-export default nextConfig
+export default nextConfig;

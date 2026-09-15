@@ -1,24 +1,23 @@
 import type { Metadata } from "next";
-import { GeistSans } from "geist/font/sans";
-import { GeistMono } from "geist/font/mono";
 import { Analytics } from "@vercel/analytics/next";
+import { ThemeProvider } from "@/components/theme-provider";
+import { Web3Provider } from "@/contexts/Web3Provider";
 import { WalletProvider } from "@/contexts/WalletContext";
-import { ChipiPayProviderWrapper } from "@/contexts/ChipiPayContext";
 import { Toaster } from "@/components/ui/toaster";
 import { UserOnboarding } from "@/components/onboarding/UserOnboarding";
-import { Suspense } from "react";
+import { ThemeToggle } from "@/components/app/ThemeToggle";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "EngiPay - DeFi Dashboard",
-  description: "Your comprehensive DeFi portfolio management dashboard",
+  title: "EngiPay - Crypto Payments",
+  description:
+    "Send and receive crypto, pay by QR code, and convert between crypto and Naira.",
   generator: "EngiPay",
 };
 
 export const viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
 };
 
 export default function RootLayout({
@@ -28,29 +27,23 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
-        <meta
-          httpEquiv="Cache-Control"
-          content="no-cache, no-store, must-revalidate"
-        />
-        <meta httpEquiv="Pragma" content="no-cache" />
-        <meta httpEquiv="Expires" content="0" />
-      </head>
       <body className="font-sans" suppressHydrationWarning>
-        <Suspense fallback={
-          <div className="min-h-screen bg-black flex items-center justify-center">
-            <div className="text-green-400 text-xl">Loading EngiPay...</div>
-          </div>
-        }>
-          <WalletProvider>
-            <ChipiPayProviderWrapper>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <Web3Provider>
+            <WalletProvider>
               {children}
               <UserOnboarding />
+              <ThemeToggle />
               <Toaster />
               <Analytics />
-            </ChipiPayProviderWrapper>
-          </WalletProvider>
-        </Suspense>
+            </WalletProvider>
+          </Web3Provider>
+        </ThemeProvider>
       </body>
     </html>
   );
