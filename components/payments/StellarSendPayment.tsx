@@ -39,7 +39,7 @@ export function StellarSendPayment({
 }: StellarSendPaymentProps) {
   const { toast } = useToast()
   const { connectWallet } = useWallet()
-  const { isStellarConnected, balances, networkMismatch, sendStellarPayment } = useStellarWallet()
+  const { isStellarConnected, balances, networkMismatch, sendStellarPayment, stellarWalletName } = useStellarWallet()
 
   const [recipient, setRecipient] = useState(initialRecipient)
   const [amount, setAmount] = useState(initialAmount)
@@ -96,11 +96,11 @@ export function StellarSendPayment({
       <div className="glass-panel flex flex-col items-center gap-4 p-8 text-center">
         <p className="font-semibold">Connect a Stellar wallet</p>
         <p className="max-w-sm text-sm text-muted-foreground">
-          Sending XLM or USDC on Stellar is signed in Freighter, the Stellar Development
-          Foundation&apos;s wallet. EngiPay never sees your key.
+          Sending XLM or USDC on Stellar is signed in your own wallet: the Freighter extension,
+          or Freighter mobile and LOBSTR on your phone. EngiPay never sees your key.
         </p>
         <Button className="glow-button rounded-full" onClick={connectWallet}>
-          Connect Freighter
+          Connect a Stellar wallet
         </Button>
       </div>
     )
@@ -208,7 +208,7 @@ export function StellarSendPayment({
         )}
         {asset === "USDC" && balances?.funded && balances.usdc === null && (
           <p className="text-sm text-muted-foreground">
-            Your Stellar account has not added USDC yet, so it holds none. Add USDC in Freighter to receive it.
+            Your Stellar account has not added USDC yet, so it holds none. Add USDC in your Stellar wallet to receive it.
           </p>
         )}
       </div>
@@ -292,7 +292,7 @@ export function StellarSendPayment({
         {isSending ? (
           <>
             <Loader className="mr-2 h-4 w-4" />
-            Check Freighter…
+            Check {stellarWalletName ?? "your wallet"}…
           </>
         ) : (
           `Send ${asset}`

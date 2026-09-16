@@ -84,8 +84,8 @@ module.exports = {
         sm: 'calc(var(--radius) - 4px)',
       },
       fontFamily: {
-        sans: ['var(--font-geist-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-geist-mono)', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        sans: ['var(--font-geist-sans, ui-sans-serif)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-geist-mono, ui-monospace)', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       boxShadow: {
         glow: '0 0 0 1px hsl(var(--primary) / 0.25), 0 0 24px -4px hsl(var(--primary) / 0.35)',

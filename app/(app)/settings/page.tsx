@@ -14,7 +14,7 @@ import { shortenAddress } from "@/lib/payment-uri"
 
 export default function SettingsPage() {
   const { evmAddress: walletAddress, walletName, disconnectWallet, connectWallet } = useWallet()
-  const { stellarAddress, networkMismatch, disconnectStellar } = useStellarWallet()
+  const { stellarAddress, stellarWalletName, networkMismatch, disconnectStellar } = useStellarWallet()
   const { toast } = useToast()
 
   const copyAddress = async (address: string | null = walletAddress) => {
@@ -98,11 +98,11 @@ export default function SettingsPage() {
 
           {stellarAddress ? (
             <Button variant="outline" className="w-full" onClick={disconnectStellar}>
-              Disconnect Freighter
+              Disconnect {stellarWalletName ?? "Stellar wallet"}
             </Button>
           ) : (
             <Button variant="outline" className="w-full" onClick={connectWallet}>
-              Connect Freighter
+              Connect a Stellar wallet
             </Button>
           )}
         </CardContent>

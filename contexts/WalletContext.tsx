@@ -150,7 +150,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     walletAddress: address ?? stellar.stellarAddress,
     evmAddress: address ?? null,
     stellarAddress: stellar.stellarAddress,
-    walletName: connector?.name ?? (stellar.isStellarConnected ? "Freighter" : null),
+    walletName: connector?.name ?? stellar.stellarWalletName,
     isConnecting: isConnecting || isReconnecting,
     balances,
     isLoadingBalances:

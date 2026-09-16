@@ -161,7 +161,7 @@ export default function ReceivePage() {
             ) : (
               <div className="flex h-[280px] w-[280px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
                 {network === "stellar"
-                  ? "Connect Freighter to show your Stellar code"
+                  ? "Connect a Stellar wallet to show your Stellar code"
                   : "Connect an EVM wallet to show your Base code"}
                 <Button size="sm" variant="outline" className="rounded-full" onClick={connectWallet}>
                   Connect wallet
