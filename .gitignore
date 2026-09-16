@@ -47,3 +47,8 @@ starkli.zip
 
 # Templates contain no secrets and should be committed
 !**/.env.example
+
+# Personal editor and agent settings
+.vscode/
+.claude/
+.kiro/

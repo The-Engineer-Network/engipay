@@ -6,10 +6,6 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  typescript: {
-    // TODO: remove once the remaining recharts v3 typing errors are resolved.
-    ignoreBuildErrors: true,
-  },
   images: {
     unoptimized: true,
   },
