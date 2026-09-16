@@ -38,7 +38,7 @@ export function AssetList({ balances, isLoading }: AssetListProps) {
   return (
     <ul className="space-y-2">
       {balances.map((asset) => (
-        <li key={asset.symbol}>
+        <li key={`${asset.symbol}-${asset.name}`}>
           <Card className="transition-colors hover:border-primary/40">
             <CardContent className="flex items-center justify-between gap-4 p-4">
               <div className="flex min-w-0 items-center gap-3">

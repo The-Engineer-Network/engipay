@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast"
 import { AlertCircle, Bitcoin } from "lucide-react"
 import { TRACKED_TOKENS } from "@/lib/tokens"
 import { parsePaymentCode, shortenAddress, type ParsedPayment } from "@/lib/payment-uri"
+import { stellarNetwork } from "@/lib/stellar"
 
 /** Lets the parser turn token amounts into human numbers. */
 function tokenDecimals(contract: string): number | undefined {
@@ -49,6 +50,34 @@ export default function ScanPage() {
 
     setParsed(result)
 
+    if (result.chain === "stellar") {
+      // Only XLM, and USDC from Circle's own issuer, are paid. Anyone can issue
+      // a token named USDC; paying it would send something worth nothing.
+      const isXlm = result.asset === undefined || (result.asset === "XLM" && !result.assetIssuer)
+      const isRealUsdc = result.asset === "USDC" && result.assetIssuer === stellarNetwork.usdcIssuer
+      if (!isXlm && !isRealUsdc) {
+        toast({
+          title: "Asset not supported",
+          description:
+            result.asset === "USDC"
+              ? `This asks for USDC from an issuer that is not Circle's on ${stellarNetwork.label}.`
+              : `EngiPay sends XLM and USDC on Stellar, not ${result.asset}.`,
+          variant: "destructive",
+        })
+        return
+      }
+
+      const query = new URLSearchParams({ network: "stellar", to: result.address })
+      if (result.amount) query.set("amount", result.amount)
+      query.set("asset", isRealUsdc ? "USDC" : "XLM")
+      if (result.memo) {
+        query.set("memo", result.memo.value)
+        query.set("memo_type", result.memo.type)
+      }
+      router.push(`/send?${query.toString()}`)
+      return
+    }
+
     // Base payments can go straight to the send form, prefilled.
     if (result.chain === "base") {
       // A token request must open Send on that token. Otherwise "25 USDC"
@@ -73,7 +102,7 @@ export default function ScanPage() {
     <div className="mx-auto max-w-lg">
       <PageHeader
         title="Scan to pay"
-        description="Scan a payment code from EngiPay or any other wallet."
+        description="Scan a payment code from EngiPay or any other wallet, on Base or Stellar."
       />
 
       <Card>

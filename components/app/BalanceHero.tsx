@@ -98,7 +98,7 @@ export function BalanceHero() {
           <ul className="mt-4 flex flex-wrap gap-2">
             {rest.map((asset) => (
               <li
-                key={asset.symbol}
+                key={`${asset.symbol}-${asset.name}`}
                 className="flex items-center gap-2 rounded-full border border-border bg-background/60 px-3 py-1.5 text-sm"
               >
                 <span aria-hidden="true">{asset.icon}</span>

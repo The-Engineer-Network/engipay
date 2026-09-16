@@ -1,7 +1,6 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { useAccount } from "wagmi"
 import QRCode from "qrcode"
 import { PageHeader } from "@/components/app/PageHeader"
 import { Card, CardContent } from "@/components/ui/card"
@@ -17,39 +16,64 @@ import {
 } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
 import { Copy, Share2 } from "lucide-react"
+import { useWallet } from "@/contexts/WalletContext"
+import { useStellarWallet } from "@/contexts/StellarWalletContext"
 import { TRACKED_TOKENS } from "@/lib/tokens"
 import { activeChain } from "@/lib/wagmi"
-import { buildPaymentUri, shortenAddress } from "@/lib/payment-uri"
+import { stellarNetwork } from "@/lib/stellar"
+import { STELLAR_AMOUNT, buildPaymentUri, shortenAddress } from "@/lib/payment-uri"
+import { cn } from "@/lib/utils"
 
 const NATIVE = "native"
 
+type Network = "base" | "stellar"
+
 export default function ReceivePage() {
-  const { address } = useAccount()
+  const { evmAddress, stellarAddress, connectWallet } = useWallet()
+  const { balances: stellarBalances } = useStellarWallet()
   const { toast } = useToast()
 
+  const [network, setNetwork] = useState<Network>(!evmAddress && stellarAddress ? "stellar" : "base")
   const [amount, setAmount] = useState("")
   const [asset, setAsset] = useState<string>(NATIVE)
   const [qrDataUrl, setQrDataUrl] = useState("")
 
+  const address = network === "base" ? evmAddress : stellarAddress
+
+  // Each network has its own asset list; reset when switching.
+  useEffect(() => setAsset(NATIVE), [network])
+
   const token = useMemo(
-    () => TRACKED_TOKENS.find((t) => t.address === asset),
-    [asset]
+    () => (network === "base" ? TRACKED_TOKENS.find((t) => t.address === asset) : undefined),
+    [asset, network]
   )
 
-  const amountValid = amount === "" || Number(amount) > 0
+  const amountValid =
+    amount === "" ||
+    (Number(amount) > 0 && (network === "base" || STELLAR_AMOUNT.test(amount)))
 
-  /** The code we show: a standard URI, so any wallet can read it. */
+  /** The code we show: a standard URI, so any wallet on that network can read it. */
   const paymentUri = useMemo(() => {
     if (!address) return ""
+    const requested = amountValid && amount ? amount : undefined
+    if (network === "stellar") {
+      return buildPaymentUri({
+        chain: "stellar",
+        address,
+        amount: requested,
+        asset: asset === "USDC" ? "USDC" : "XLM",
+        assetIssuer: asset === "USDC" ? stellarNetwork.usdcIssuer : undefined,
+      })
+    }
     return buildPaymentUri({
       chain: "base",
       address,
-      amount: amountValid && amount ? amount : undefined,
+      amount: requested,
       tokenAddress: token?.address,
       tokenDecimals: token?.decimals,
       chainId: activeChain.id,
     })
-  }, [address, amount, amountValid, token])
+  }, [address, amount, amountValid, asset, network, token])
 
   useEffect(() => {
     if (!paymentUri) {
@@ -90,6 +114,8 @@ export default function ReceivePage() {
     }
   }
 
+  const networkLabel = network === "base" ? activeChain.name : stellarNetwork.label
+
   return (
     <div className="mx-auto max-w-lg">
       <PageHeader
@@ -99,16 +125,47 @@ export default function ReceivePage() {
 
       <Card>
         <CardContent className="space-y-6 p-6">
+          <div className="grid grid-cols-2 gap-1 rounded-full border border-border bg-background/60 p-1" role="tablist">
+            {(
+              [
+                { value: "base", label: activeChain.name },
+                { value: "stellar", label: stellarNetwork.label },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="tab"
+                aria-selected={network === option.value}
+                onClick={() => setNetwork(option.value)}
+                className={cn(
+                  "rounded-full px-4 py-2 text-sm font-medium transition-colors",
+                  network === option.value
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+
           <div className="flex flex-col items-center gap-4">
             {qrDataUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={qrDataUrl}
                 alt="QR code containing your payment details"
                 className="h-[280px] w-[280px] rounded-lg bg-white p-2"
               />
             ) : (
-              <div className="flex h-[280px] w-[280px] items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted-foreground">
-                Connect a wallet to show your code
+              <div className="flex h-[280px] w-[280px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                {network === "stellar"
+                  ? "Connect Freighter to show your Stellar code"
+                  : "Connect an EVM wallet to show your Base code"}
+                <Button size="sm" variant="outline" className="rounded-full" onClick={connectWallet}>
+                  Connect wallet
+                </Button>
               </div>
             )}
 
@@ -132,12 +189,21 @@ export default function ReceivePage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NATIVE}>{activeChain.nativeCurrency.symbol}</SelectItem>
-                  {TRACKED_TOKENS.map((t) => (
-                    <SelectItem key={t.address} value={t.address}>
-                      {t.symbol}
-                    </SelectItem>
-                  ))}
+                  {network === "base" ? (
+                    <>
+                      <SelectItem value={NATIVE}>{activeChain.nativeCurrency.symbol}</SelectItem>
+                      {TRACKED_TOKENS.map((t) => (
+                        <SelectItem key={t.address} value={t.address}>
+                          {t.symbol}
+                        </SelectItem>
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      <SelectItem value={NATIVE}>XLM</SelectItem>
+                      <SelectItem value="USDC">USDC</SelectItem>
+                    </>
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -149,7 +215,7 @@ export default function ReceivePage() {
                 inputMode="decimal"
                 placeholder="0.00"
                 value={amount}
-                onChange={(event) => setAmount(event.target.value)}
+                onChange={(event) => setAmount(event.target.value.trim())}
                 aria-invalid={!amountValid}
               />
               {!amountValid && (
@@ -175,9 +241,21 @@ export default function ReceivePage() {
             </Button>
           </div>
 
+          {network === "stellar" && stellarAddress && stellarBalances && !stellarBalances.funded && (
+            <p className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs">
+              This Stellar account is new. Its first payment must be at least 1 XLM, which opens it
+              on the network.
+            </p>
+          )}
+          {network === "stellar" && asset === "USDC" && stellarBalances?.funded && stellarBalances.usdc === null && (
+            <p className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs">
+              Add USDC in Freighter before sharing this code. Until then, USDC payments to you fail.
+            </p>
+          )}
+
           <p className="text-xs text-muted-foreground">
-            This code follows the standard payment format, so it works in other wallets too, not
-            only EngiPay. It receives on {activeChain.name}.
+            This code follows the standard payment format for {networkLabel}, so other wallets can
+            pay it too, not only EngiPay.
           </p>
         </CardContent>
       </Card>

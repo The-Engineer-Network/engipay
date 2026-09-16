@@ -16,6 +16,8 @@ import {
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useStellarWallet } from "@/contexts/StellarWalletContext"
+import { stellarNetwork } from "@/lib/stellar"
 import { cn } from "@/lib/utils"
 
 /** The parts of RainbowKit's per-wallet metadata this sheet reads. */
@@ -52,6 +54,10 @@ type View =
   | { kind: "qr"; option: WalletOption; uri: string | null }
   | { kind: "get"; option: WalletOption }
   | { kind: "error"; option: WalletOption; message: string }
+  | { kind: "stellar"; status: "connecting" | "missing" | "error"; message?: string }
+
+/** Freighter's brand colour, for its tile. */
+const FREIGHTER_BACKGROUND = "#6d54f4"
 
 /** How many wallets show before "Search wallet" takes over. */
 const PREVIEW_COUNT = 6
@@ -113,6 +119,7 @@ function WalletPicker({
   isMobile: boolean
 }) {
   const { connectors, connectAsync } = useConnect()
+  const { connectStellar, hasFreighter } = useStellarWallet()
   const [view, setView] = useState<View>({ kind: "list" })
   const [searching, setSearching] = useState(false)
   const [query, setQuery] = useState("")
@@ -237,6 +244,22 @@ function WalletPicker({
 
   const back = () => setView({ kind: "list" })
 
+  const chooseFreighter = async () => {
+    setView({ kind: "stellar", status: "connecting" })
+    try {
+      const result = await connectStellar()
+      if (result === "connected") onConnected()
+      else if (result === "not-installed") setView({ kind: "stellar", status: "missing" })
+      else setView({ kind: "list" })
+    } catch {
+      setView({
+        kind: "stellar",
+        status: "error",
+        message: "Freighter could not connect. Unlock it and try again.",
+      })
+    }
+  }
+
   return (
     <div className="flex max-h-[80vh] flex-col">
       {/* Header: help, title, close - the same three things in every view. */}
@@ -268,7 +291,7 @@ function WalletPicker({
         )}
 
         <p className="text-base font-semibold">
-          {view.kind === "list" ? "Connect wallet" : view.option.name}
+          {view.kind === "list" ? "Connect wallet" : view.kind === "stellar" ? "Freighter" : view.option.name}
         </p>
 
         <button
@@ -346,7 +369,84 @@ function WalletPicker({
               <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
             </button>
           )}
+
+          {/* Stellar wallets sign differently from EVM ones, so they get their own row. */}
+          {!searching && (
+            <div className="mt-4 border-t border-border pt-3">
+              <p className="px-3 pb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Stellar
+              </p>
+              <button
+                type="button"
+                onClick={chooseFreighter}
+                className="group flex w-full items-center gap-3.5 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-accent"
+              >
+                <WalletIcon background={FREIGHTER_BACKGROUND} name="Freighter" />
+                <span className="flex-1 truncate">
+                  <span className="block text-[15px] font-medium">Freighter</span>
+                  <span className="block text-xs text-muted-foreground">
+                    XLM and USDC on {stellarNetwork.label}
+                  </span>
+                </span>
+                {hasFreighter && (
+                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">
+                    Detected
+                  </span>
+                )}
+                <ChevronRight
+                  className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5"
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
+          )}
         </div>
+      )}
+
+      {view.kind === "stellar" && view.status === "connecting" && (
+        <StatusPanel
+          background={FREIGHTER_BACKGROUND}
+          name="Freighter"
+          title="Opening Freighter"
+          body="Approve the connection in Freighter to continue."
+          busy
+        />
+      )}
+
+      {view.kind === "stellar" && view.status === "missing" && (
+        <StatusPanel
+          background={FREIGHTER_BACKGROUND}
+          name="Freighter"
+          title="Freighter is not installed"
+          body="Freighter is the Stellar wallet from the Stellar Development Foundation. Install it, then come back and connect."
+        >
+          <a
+            href="https://www.freighter.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            Get Freighter
+          </a>
+        </StatusPanel>
+      )}
+
+      {view.kind === "stellar" && view.status === "error" && (
+        <StatusPanel
+          background={FREIGHTER_BACKGROUND}
+          name="Freighter"
+          title="Could not connect"
+          body={view.message ?? "Try again."}
+        >
+          <button
+            type="button"
+            onClick={back}
+            className="mt-5 rounded-full border border-border px-5 py-2.5 text-sm font-semibold transition-colors hover:bg-accent"
+          >
+            Choose another wallet
+          </button>
+        </StatusPanel>
       )}
 
       {view.kind === "connecting" && (

@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useAccountModal } from "@rainbow-me/rainbowkit"
 import { useBalance } from "wagmi"
 import { formatUnits } from "viem"
@@ -20,11 +21,11 @@ interface ConnectWalletButtonProps {
  * handles copy, explorer links and disconnecting well already.
  */
 export function ConnectWalletButton({ className, showBalance = true }: ConnectWalletButtonProps) {
-  const { isConnected, walletAddress, connectWallet, isConnecting } = useWallet()
+  const { isConnected, walletAddress, evmAddress, stellarAddress, connectWallet, isConnecting } = useWallet()
   const { openAccountModal } = useAccountModal()
   const { data: balance } = useBalance({
-    address: walletAddress as `0x${string}` | undefined,
-    query: { enabled: Boolean(walletAddress) },
+    address: evmAddress as `0x${string}` | undefined,
+    query: { enabled: Boolean(evmAddress) },
   })
 
   if (!isConnected || !walletAddress) {
@@ -41,6 +42,28 @@ export function ConnectWalletButton({ className, showBalance = true }: ConnectWa
         <Wallet className="h-4 w-4" aria-hidden="true" />
         {isConnecting ? "Connecting…" : "Connect wallet"}
       </button>
+    )
+  }
+
+  // Only Freighter connected: RainbowKit's account panel knows nothing about
+  // it, so the account lives in Settings.
+  if (!evmAddress && stellarAddress) {
+    return (
+      <Link
+        href="/settings"
+        className={cn(
+          "inline-flex items-center gap-2.5 rounded-full border border-border bg-card/80 py-1.5 pl-1.5 pr-4 text-sm transition-colors hover:border-primary/50",
+          className
+        )}
+      >
+        <span
+          className="flex h-7 w-7 items-center justify-center rounded-full bg-[#6d54f4] text-xs font-semibold text-white"
+          aria-hidden="true"
+        >
+          S
+        </span>
+        <span className="font-mono font-medium">{shortenAddress(stellarAddress, 5, 4)}</span>
+      </Link>
     )
   }
 

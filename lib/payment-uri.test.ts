@@ -11,6 +11,9 @@ import {
   buildPaymentUri,
   isBitcoinAddress,
   isEvmAddress,
+  isStellarAccount,
+  isStellarAddress,
+  isStellarSecretKey,
   parsePaymentCode,
   shortenAddress,
   toBaseUnits,
@@ -20,6 +23,15 @@ const EVM = "0x1234567890abcdef1234567890abcdef12345678"
 const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 const BTC_BECH32 = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
 const BTC_LEGACY = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+
+// Generated with the Stellar Development Foundation's @stellar/stellar-base from
+// a seed of 32 bytes of 7s, so these also check our strkey code against theirs.
+// The secret key is a public test fixture that has never held funds.
+const STELLAR = "GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57"
+const STELLAR_MUXED = "MDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCYAAAAAAAAAABUR6BK"
+const STELLAR_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X"
+const STELLAR_CONTRACT = "CACQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCQLC2U"
+const USDC_ISSUER_TESTNET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
 
 const usdcDecimals = (contract: string) =>
   contract.toLowerCase() === USDC_BASE.toLowerCase() ? 6 : undefined
@@ -43,6 +55,38 @@ describe("address checks", () => {
   it("rejects things that are not Bitcoin addresses", () => {
     assert.equal(isBitcoinAddress(EVM), false)
     assert.equal(isBitcoinAddress("bitcoin"), false)
+  })
+})
+
+describe("Stellar address checks", () => {
+  it("accepts accounts and muxed accounts", () => {
+    assert.equal(isStellarAddress(STELLAR), true)
+    assert.equal(isStellarAddress(STELLAR_MUXED), true)
+    assert.equal(isStellarAddress(`  ${STELLAR}
+`), true)
+    assert.equal(isStellarAccount(USDC_ISSUER_TESTNET), true)
+  })
+
+  it("only treats G addresses as plain accounts", () => {
+    assert.equal(isStellarAccount(STELLAR_MUXED), false)
+  })
+
+  it("catches a single mistyped character through the checksum", () => {
+    const typo = STELLAR.slice(0, 20) + (STELLAR[20] === "A" ? "B" : "A") + STELLAR.slice(21)
+    assert.equal(isStellarAddress(typo), false)
+  })
+
+  it("refuses lowercase, contracts, secret keys and other chains", () => {
+    assert.equal(isStellarAddress(STELLAR.toLowerCase()), false)
+    assert.equal(isStellarAddress(STELLAR_CONTRACT), false)
+    assert.equal(isStellarAddress(STELLAR_SECRET), false)
+    assert.equal(isStellarAddress(EVM), false)
+    assert.equal(isStellarAddress(BTC_BECH32), false)
+  })
+
+  it("recognises a secret key by name so the app can warn about it", () => {
+    assert.equal(isStellarSecretKey(STELLAR_SECRET), true)
+    assert.equal(isStellarSecretKey(STELLAR), false)
   })
 })
 
@@ -171,6 +215,82 @@ describe("parsePaymentCode", () => {
   })
 })
 
+describe("Stellar payment codes (SEP-7)", () => {
+  it("reads a bare Stellar address", () => {
+    const result = parsePaymentCode(STELLAR_MUXED)
+    assert.equal(result?.chain, "stellar")
+    assert.equal(result?.address, STELLAR_MUXED)
+  })
+
+  it("reads a native XLM request", () => {
+    const result = parsePaymentCode(`web+stellar:pay?destination=${STELLAR}&amount=12.5`)
+    assert.equal(result?.chain, "stellar")
+    assert.equal(result?.asset, "XLM")
+    assert.equal(result?.amount, "12.5")
+    assert.equal(result?.assetIssuer, undefined)
+  })
+
+  it("reads a USDC request with its issuer and memo", () => {
+    const result = parsePaymentCode(
+      `web+stellar:pay?destination=${STELLAR}&amount=10&asset_code=USDC&asset_issuer=${USDC_ISSUER_TESTNET}&memo=12345&memo_type=MEMO_ID&msg=Lunch`
+    )
+    assert.equal(result?.asset, "USDC")
+    assert.equal(result?.assetIssuer, USDC_ISSUER_TESTNET)
+    assert.deepEqual(result?.memo, { type: "id", value: "12345" })
+    assert.equal(result?.reference, "Lunch")
+  })
+
+  it("defaults a memo with no type to text", () => {
+    const result = parsePaymentCode(`web+stellar:pay?destination=${STELLAR}&memo=invoice%2042`)
+    assert.deepEqual(result?.memo, { type: "text", value: "invoice 42" })
+  })
+
+  it("refuses codes that would be paid wrongly if half understood", () => {
+    const bad = [
+      // No or invalid destination.
+      "web+stellar:pay?amount=1",
+      `web+stellar:pay?destination=${STELLAR.toLowerCase()}`,
+      // An asset without an issuer, or an issuer that is not an account.
+      `web+stellar:pay?destination=${STELLAR}&asset_code=USDC`,
+      `web+stellar:pay?destination=${STELLAR}&asset_code=USDC&asset_issuer=${STELLAR_MUXED}`,
+      // More than seven decimals, or not a number.
+      `web+stellar:pay?destination=${STELLAR}&amount=1.00000001`,
+      `web+stellar:pay?destination=${STELLAR}&amount=-1`,
+      // A memo EngiPay cannot attach: a hash, a text memo over 28 bytes, an id over 64 bits.
+      `web+stellar:pay?destination=${STELLAR}&memo=abc&memo_type=MEMO_HASH`,
+      `web+stellar:pay?destination=${STELLAR}&memo=${"x".repeat(29)}`,
+      `web+stellar:pay?destination=${STELLAR}&memo=18446744073709551616&memo_type=MEMO_ID`,
+    ]
+    for (const code of bad) assert.equal(parsePaymentCode(code), null, code)
+  })
+
+  it("does not accept a transaction-signing request as a payment", () => {
+    assert.equal(parsePaymentCode("web+stellar:tx?xdr=AAAA"), null)
+  })
+
+  it("reads a Stellar EngiPay envelope from its embedded URI", () => {
+    const raw = buildEngipayRequest({
+      chain: "stellar",
+      address: STELLAR,
+      amount: "5",
+      asset: "USDC",
+      assetIssuer: USDC_ISSUER_TESTNET,
+      reference: "inv_7",
+    })
+    const result = parsePaymentCode(raw)
+    assert.equal(result?.chain, "stellar")
+    assert.equal(result?.asset, "USDC")
+    assert.equal(result?.assetIssuer, USDC_ISSUER_TESTNET)
+    assert.equal(result?.reference, "inv_7")
+  })
+
+  it("refuses an envelope whose URI pays someone other than its recipient", () => {
+    const other = buildPaymentUri({ chain: "stellar", address: STELLAR_MUXED, amount: "5" })
+    const raw = JSON.stringify({ type: "engipay.request", chain: "stellar", to: STELLAR, uri: other })
+    assert.equal(parsePaymentCode(raw), null)
+  })
+})
+
 describe("building codes", () => {
   it("round-trips a native Base request", () => {
     const uri = buildPaymentUri({ chain: "base", address: EVM, amount: "0.25" })
@@ -197,6 +317,29 @@ describe("building codes", () => {
     const uri = buildPaymentUri({ chain: "bitcoin", address: BTC_BECH32, amount: "0.01" })
     assert.equal(uri, `bitcoin:${BTC_BECH32}?amount=0.01`)
     assert.equal(parsePaymentCode(uri)?.amount, "0.01")
+  })
+
+  it("round-trips a Stellar USDC request with a memo", () => {
+    const uri = buildPaymentUri({
+      chain: "stellar",
+      address: STELLAR,
+      amount: "7.25",
+      asset: "USDC",
+      assetIssuer: USDC_ISSUER_TESTNET,
+      memo: { type: "text", value: "rent" },
+    })
+    const parsed = parsePaymentCode(uri)
+    assert.equal(parsed?.address, STELLAR)
+    assert.equal(parsed?.amount, "7.25")
+    assert.equal(parsed?.asset, "USDC")
+    assert.deepEqual(parsed?.memo, { type: "text", value: "rent" })
+  })
+
+  it("builds a plain XLM request without asset parameters", () => {
+    assert.equal(
+      buildPaymentUri({ chain: "stellar", address: STELLAR, asset: "XLM" }),
+      `web+stellar:pay?destination=${STELLAR}`
+    )
   })
 
   it("builds an open request with no amount", () => {

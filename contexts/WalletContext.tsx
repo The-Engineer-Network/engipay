@@ -9,10 +9,15 @@ import type { Balance } from "@/types/dashboard";
 import { TRACKED_TOKENS } from "@/lib/tokens";
 import { useTokenBalances } from "@/hooks/use-token-balances";
 import { WalletSheet } from "@/components/wallet/WalletSheet";
+import { useStellarWallet } from "@/contexts/StellarWalletContext";
 
 interface WalletContextType {
+  /** True when any wallet is connected: an EVM wallet, Freighter on Stellar, or both. */
   isConnected: boolean;
+  /** The EVM address when one is connected, otherwise the Stellar address. */
   walletAddress: string | null;
+  evmAddress: string | null;
+  stellarAddress: string | null;
   /** Name of the connected wallet, e.g. "MetaMask", "Rainbow", "Coinbase Wallet". */
   walletName: string | null;
   isConnecting: boolean;
@@ -37,9 +42,9 @@ export function useWallet() {
 }
 
 /**
- * Adapter over wagmi so the rest of the app keeps a single `useWallet()` entry
- * point. Wallet discovery, connection and session handling all live in
- * wagmi/RainbowKit — there is deliberately no hardcoded wallet list here.
+ * One `useWallet()` entry point over two wallets: wagmi/RainbowKit for Base,
+ * and Freighter for Stellar. Balances from both appear together, because a
+ * person thinks in what they hold, not in which network holds it.
  */
 export function WalletProvider({ children }: { children: ReactNode }) {
   const { address, isConnected, isConnecting, isReconnecting, connector } = useAccount();
@@ -48,6 +53,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const chainId = useChainId();
+  const stellar = useStellarWallet();
 
   const { data: nativeBalance, isLoading: isLoadingNative } = useBalance({
     address,
@@ -91,15 +97,41 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       });
     }
 
+    if (stellar.balances?.funded) {
+      out.push({
+        symbol: "XLM",
+        name: "Stellar Lumens",
+        balance: Number(stellar.balances.xlm).toFixed(2),
+        value: "$0.00",
+        change: "+0.0%",
+        icon: "\u{2728}",
+        trend: "stable",
+        volume: "On-chain",
+      });
+      if (stellar.balances.usdc !== null) {
+        out.push({
+          symbol: "USDC",
+          name: "USD Coin on Stellar",
+          balance: Number(stellar.balances.usdc).toFixed(2),
+          value: "$0.00",
+          change: "+0.0%",
+          icon: "\u{1F4B5}",
+          trend: "stable",
+          volume: "On-chain",
+        });
+      }
+    }
+
     return out;
-  }, [nativeBalance, tokenBalances]);
+  }, [nativeBalance, tokenBalances, stellar.balances]);
 
   const disconnectWallet = useCallback(() => {
     disconnect();
+    stellar.disconnectStellar();
     localStorage.removeItem("engipay-token");
     localStorage.removeItem("engipay-user");
     toast({ title: "Wallet disconnected" });
-  }, [disconnect]);
+  }, [disconnect, stellar]);
 
   const connectWallet = useCallback(() => setSheetOpen(true), []);
 
@@ -114,18 +146,25 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, [pathname, router]);
 
   const value: WalletContextType = {
-    isConnected,
-    walletAddress: address ?? null,
-    walletName: connector?.name ?? null,
+    isConnected: isConnected || stellar.isStellarConnected,
+    walletAddress: address ?? stellar.stellarAddress,
+    evmAddress: address ?? null,
+    stellarAddress: stellar.stellarAddress,
+    walletName: connector?.name ?? (stellar.isStellarConnected ? "Freighter" : null),
     isConnecting: isConnecting || isReconnecting,
     balances,
-    isLoadingBalances: isLoadingNative || isLoadingTokens,
+    isLoadingBalances:
+      (Boolean(address) && (isLoadingNative || isLoadingTokens)) ||
+      (stellar.isStellarConnected && stellar.isLoadingBalances),
     chainId,
     connectWallet,
     disconnectWallet,
     openWalletModal: connectWallet,
     closeWalletModal: () => setSheetOpen(false),
-    refetchBalances: refetchTokens,
+    refetchBalances: () => {
+      refetchTokens();
+      stellar.refetchStellarBalances();
+    },
   };
 
   return (
