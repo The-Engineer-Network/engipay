@@ -95,4 +95,4 @@ jobs:
           docker compose up -d --wait postgres
 
       - name: Database refuses ledger corruption
-        run: ./scripts/test-db-guarantees.sh
+        run: bash ./scripts/test-db-guarantees.sh
