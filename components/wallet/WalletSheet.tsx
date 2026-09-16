@@ -18,6 +18,7 @@ import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useStellarWallet } from "@/contexts/StellarWalletContext"
 import { stellarNetwork } from "@/lib/stellar"
+import { freighterMobileLink } from "@/lib/stellar-walletconnect"
 import { cn } from "@/lib/utils"
 
 /** The parts of RainbowKit's per-wallet metadata this sheet reads. */
@@ -54,10 +55,17 @@ type View =
   | { kind: "qr"; option: WalletOption; uri: string | null }
   | { kind: "get"; option: WalletOption }
   | { kind: "error"; option: WalletOption; message: string }
-  | { kind: "stellar"; status: "connecting" | "missing" | "error"; message?: string }
+  | {
+      kind: "stellar"
+      wallet: "Freighter" | "Stellar wallet"
+      status: "connecting" | "opening" | "qr" | "missing" | "error"
+      uri?: string
+      message?: string
+    }
 
-/** Freighter's brand colour, for its tile. */
+/** Brand colours for the Stellar wallet tiles. */
 const FREIGHTER_BACKGROUND = "#6d54f4"
+const STELLAR_BACKGROUND = "#0f766e"
 
 /** How many wallets show before "Search wallet" takes over. */
 const PREVIEW_COUNT = 6
@@ -119,7 +127,7 @@ function WalletPicker({
   isMobile: boolean
 }) {
   const { connectors, connectAsync } = useConnect()
-  const { connectStellar, hasFreighter } = useStellarWallet()
+  const { connectStellar, connectStellarWalletConnect, hasFreighter, walletConnectAvailable } = useStellarWallet()
   const [view, setView] = useState<View>({ kind: "list" })
   const [searching, setSearching] = useState(false)
   const [query, setQuery] = useState("")
@@ -244,16 +252,70 @@ function WalletPicker({
 
   const back = () => setView({ kind: "list" })
 
+  /**
+   * Phone wallets and wallets other than the Freighter extension connect over
+   * WalletConnect. On a phone, Freighter's app opens directly; everywhere else
+   * the user scans a code with their wallet app.
+   */
+  const connectOverWalletConnect = async (wallet: "Freighter" | "Stellar wallet") => {
+    if (!walletConnectAvailable) {
+      setView({
+        kind: "stellar",
+        wallet,
+        status: "error",
+        message:
+          "Connecting a phone wallet needs WalletConnect, which is not set up on this site yet. The Freighter browser extension still works on desktop.",
+      })
+      return
+    }
+    setView({ kind: "stellar", wallet, status: "connecting" })
+    try {
+      const { uri, approval } = await connectStellarWalletConnect()
+      if (isMobile && wallet === "Freighter") {
+        setView({ kind: "stellar", wallet, status: "opening", uri })
+        window.location.href = freighterMobileLink(uri)
+      } else {
+        setView({ kind: "stellar", wallet, status: "qr", uri })
+      }
+      await approval
+      onConnected()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (/reject|denied|cancel/i.test(message)) {
+        setView({ kind: "list" })
+      } else {
+        setView({
+          kind: "stellar",
+          wallet,
+          status: "error",
+          message: /expired/i.test(message)
+            ? "The connection request expired. Try again."
+            : "The wallet could not connect. Try again.",
+        })
+      }
+    }
+  }
+
   const chooseFreighter = async () => {
-    setView({ kind: "stellar", status: "connecting" })
+    // Only the desktop extension is visible to the page; the phone app is not.
+    if (!hasFreighter) {
+      if (isMobile) {
+        await connectOverWalletConnect("Freighter")
+      } else {
+        setView({ kind: "stellar", wallet: "Freighter", status: "missing" })
+      }
+      return
+    }
+    setView({ kind: "stellar", wallet: "Freighter", status: "connecting" })
     try {
       const result = await connectStellar()
       if (result === "connected") onConnected()
-      else if (result === "not-installed") setView({ kind: "stellar", status: "missing" })
+      else if (result === "not-installed") setView({ kind: "stellar", wallet: "Freighter", status: "missing" })
       else setView({ kind: "list" })
     } catch {
       setView({
         kind: "stellar",
+        wallet: "Freighter",
         status: "error",
         message: "Freighter could not connect. Unlock it and try again.",
       })
@@ -291,7 +353,7 @@ function WalletPicker({
         )}
 
         <p className="text-base font-semibold">
-          {view.kind === "list" ? "Connect wallet" : view.kind === "stellar" ? "Freighter" : view.option.name}
+          {view.kind === "list" ? "Connect wallet" : view.kind === "stellar" ? view.wallet : view.option.name}
         </p>
 
         <button
@@ -385,7 +447,7 @@ function WalletPicker({
                 <span className="flex-1 truncate">
                   <span className="block text-[15px] font-medium">Freighter</span>
                   <span className="block text-xs text-muted-foreground">
-                    XLM and USDC on {stellarNetwork.label}
+                    {isMobile ? "Opens the Freighter app" : "Browser extension"} · {stellarNetwork.label}
                   </span>
                 </span>
                 {hasFreighter && (
@@ -398,6 +460,23 @@ function WalletPicker({
                   aria-hidden="true"
                 />
               </button>
+              <button
+                type="button"
+                onClick={() => connectOverWalletConnect("Stellar wallet")}
+                className="group flex w-full items-center gap-3.5 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-accent"
+              >
+                <WalletIcon background={STELLAR_BACKGROUND} name="Stellar" />
+                <span className="flex-1 truncate">
+                  <span className="block text-[15px] font-medium">
+                    {isMobile ? "LOBSTR and other Stellar wallets" : "Freighter mobile, LOBSTR and others"}
+                  </span>
+                  <span className="block text-xs text-muted-foreground">Scan a code with WalletConnect</span>
+                </span>
+                <ChevronRight
+                  className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5"
+                  aria-hidden="true"
+                />
+              </button>
             </div>
           )}
         </div>
@@ -405,28 +484,66 @@ function WalletPicker({
 
       {view.kind === "stellar" && view.status === "connecting" && (
         <StatusPanel
-          background={FREIGHTER_BACKGROUND}
-          name="Freighter"
-          title="Opening Freighter"
-          body="Approve the connection in Freighter to continue."
+          background={view.wallet === "Freighter" ? FREIGHTER_BACKGROUND : STELLAR_BACKGROUND}
+          name={view.wallet}
+          title={`Connecting ${view.wallet}`}
+          body="Approve the connection in your wallet to continue."
           busy
         />
+      )}
+
+      {view.kind === "stellar" && view.status === "opening" && (
+        <StatusPanel
+          background={FREIGHTER_BACKGROUND}
+          name="Freighter"
+          title="Approve in the Freighter app"
+          body="Freighter should open. Approve the connection there, then come back to this page."
+          busy
+        >
+          {view.uri && (
+            <a
+              href={freighterMobileLink(view.uri)}
+              className="mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              Open Freighter
+            </a>
+          )}
+          <a
+            href="https://www.freighter.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 text-xs text-muted-foreground underline-offset-2 hover:underline"
+          >
+            Don&apos;t have the app? Get Freighter
+          </a>
+        </StatusPanel>
+      )}
+
+      {view.kind === "stellar" && view.status === "qr" && view.uri && (
+        <StellarQrPanel uri={view.uri} isMobile={isMobile} />
       )}
 
       {view.kind === "stellar" && view.status === "missing" && (
         <StatusPanel
           background={FREIGHTER_BACKGROUND}
           name="Freighter"
-          title="Freighter is not installed"
-          body="Freighter is the Stellar wallet from the Stellar Development Foundation. Install it, then come back and connect."
+          title="Freighter extension not found"
+          body="Install the Freighter browser extension, or connect the Freighter phone app by scanning a code."
         >
+          <button
+            type="button"
+            onClick={() => connectOverWalletConnect("Freighter")}
+            className="mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            Use the Freighter phone app
+          </button>
           <a
             href="https://www.freighter.app/"
             target="_blank"
             rel="noopener noreferrer"
-            className="mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+            className="mt-3 inline-flex items-center gap-1.5 text-xs text-muted-foreground underline-offset-2 hover:underline"
           >
-            <Download className="h-4 w-4" aria-hidden="true" />
+            <Download className="h-3.5 w-3.5" aria-hidden="true" />
             Get Freighter
           </a>
         </StatusPanel>
@@ -434,8 +551,8 @@ function WalletPicker({
 
       {view.kind === "stellar" && view.status === "error" && (
         <StatusPanel
-          background={FREIGHTER_BACKGROUND}
-          name="Freighter"
+          background={view.wallet === "Freighter" ? FREIGHTER_BACKGROUND : STELLAR_BACKGROUND}
+          name={view.wallet}
           title="Could not connect"
           body={view.message ?? "Try again."}
         >
@@ -563,6 +680,57 @@ function StatusPanel({
       <p className="mt-1.5 max-w-xs text-sm leading-relaxed text-muted-foreground">{body}</p>
       {busy && <Loader2 className="mt-5 h-5 w-5 animate-spin text-primary" aria-hidden="true" />}
       {children}
+    </div>
+  )
+}
+
+function StellarQrPanel({ uri, isMobile }: { uri: string; isMobile: boolean }) {
+  const [dataUrl, setDataUrl] = useState("")
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    QRCode.toDataURL(uri, { margin: 1, width: 280 })
+      .then((url) => {
+        if (!cancelled) setDataUrl(url)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [uri])
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(uri)
+      setCopied(true)
+    } catch {
+      // Clipboard blocked; the QR code still works.
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-center px-8 pb-10 pt-4 text-center">
+      <div className="mb-5 flex h-[280px] w-[280px] items-center justify-center rounded-2xl bg-white p-3">
+        {dataUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={dataUrl} alt="WalletConnect code for a Stellar wallet" className="h-full w-full" />
+        ) : (
+          <Loader2 className="h-6 w-6 animate-spin text-neutral-400" aria-hidden="true" />
+        )}
+      </div>
+      <p className="font-semibold">Scan with your Stellar wallet</p>
+      <p className="mt-1.5 max-w-xs text-sm leading-relaxed text-muted-foreground">
+        In Freighter or LOBSTR, open WalletConnect, scan this code, and approve {stellarNetwork.label}.
+        {isMobile ? " On this phone, copy the link and paste it into the wallet instead." : ""}
+      </p>
+      <button
+        type="button"
+        onClick={copy}
+        className="mt-4 rounded-full border border-border px-5 py-2 text-sm font-semibold transition-colors hover:bg-accent"
+      >
+        {copied ? "Link copied" : "Copy connection link"}
+      </button>
     </div>
   )
 }
