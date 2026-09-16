@@ -6,6 +6,7 @@
 pub mod asset;
 pub mod ids;
 pub mod money;
+pub mod stellar;
 
 pub use asset::{Asset, Chain};
 pub use ids::UserId;

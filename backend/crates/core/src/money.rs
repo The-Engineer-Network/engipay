@@ -8,7 +8,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Asset;
+use crate::{Asset, Chain};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MoneyError {
@@ -24,6 +24,13 @@ pub enum MoneyError {
     Overflow,
     #[error("cannot combine {left} with {right}")]
     AssetMismatch { left: Asset, right: Asset },
+    #[error("{asset} is not available on {chain:?}")]
+    NotOnNetwork { asset: Asset, chain: Chain },
+    /// The ledger holds USDC at 7 decimals, but Base USDC has only 6. An amount
+    /// with a 7th-decimal digit cannot be sent on Base, and is refused rather
+    /// than silently trimmed.
+    #[error("{asset} amount has more precision than {chain:?} supports")]
+    NotRepresentable { asset: Asset, chain: Chain },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -141,6 +148,33 @@ impl Money {
         })
     }
 
+    /// Converts to the units a network uses on-chain, e.g. ledger USDC (7
+    /// decimals) to Base USDC (6 decimals). Refuses amounts the network cannot
+    /// represent instead of rounding them.
+    pub fn to_network_units(self, chain: Chain) -> Result<i128, MoneyError> {
+        let factor = network_factor(self.asset, chain)?;
+        let remainder = self.minor.checked_rem(factor).ok_or(MoneyError::Overflow)?;
+        if remainder != 0 {
+            return Err(MoneyError::NotRepresentable {
+                asset: self.asset,
+                chain,
+            });
+        }
+        self.minor.checked_div(factor).ok_or(MoneyError::Overflow)
+    }
+
+    /// Converts on-chain units from a network into ledger money. Always exact,
+    /// because the ledger is never less precise than any network.
+    pub fn from_network_units(
+        asset: Asset,
+        chain: Chain,
+        units: i128,
+    ) -> Result<Money, MoneyError> {
+        let factor = network_factor(asset, chain)?;
+        let minor = units.checked_mul(factor).ok_or(MoneyError::Overflow)?;
+        Ok(Money { asset, minor })
+    }
+
     fn same_asset(self, other: Money) -> Result<(), MoneyError> {
         if self.asset == other.asset {
             Ok(())
@@ -151,6 +185,19 @@ impl Money {
             })
         }
     }
+}
+
+/// How many ledger units make one on-chain unit: 10 for Base USDC, 1 when the
+/// precisions match.
+fn network_factor(asset: Asset, chain: Chain) -> Result<i128, MoneyError> {
+    let network = asset
+        .network_decimals(chain)
+        .ok_or(MoneyError::NotOnNetwork { asset, chain })?;
+    let shift = asset
+        .decimals()
+        .checked_sub(network)
+        .ok_or(MoneyError::Overflow)?;
+    10i128.checked_pow(shift).ok_or(MoneyError::Overflow)
 }
 
 impl fmt::Display for Money {
@@ -183,10 +230,14 @@ mod tests {
 
     #[test]
     fn parses_to_exact_smallest_units() {
-        assert_eq!(usdc("1.5").map(|m| m.minor), Ok(1_500_000));
-        assert_eq!(usdc("25").map(|m| m.minor), Ok(25_000_000));
-        assert_eq!(usdc(".5").map(|m| m.minor), Ok(500_000));
-        assert_eq!(usdc("0.000001").map(|m| m.minor), Ok(1));
+        assert_eq!(usdc("1.5").map(|m| m.minor), Ok(15_000_000));
+        assert_eq!(usdc("25").map(|m| m.minor), Ok(250_000_000));
+        assert_eq!(usdc(".5").map(|m| m.minor), Ok(5_000_000));
+        assert_eq!(usdc("0.0000001").map(|m| m.minor), Ok(1));
+        assert_eq!(
+            Money::parse(Asset::Xlm, "0.0000001").map(|m| m.minor),
+            Ok(1)
+        );
         assert_eq!(
             Money::parse(Asset::Eth, "1").map(|m| m.minor),
             Ok(1_000_000_000_000_000_000)
@@ -207,16 +258,16 @@ mod tests {
 
     #[test]
     fn trailing_zeros_do_not_count_as_precision() {
-        assert_eq!(usdc("1.50000000").map(|m| m.minor), Ok(1_500_000));
+        assert_eq!(usdc("1.500000000").map(|m| m.minor), Ok(15_000_000));
     }
 
     #[test]
     fn rejects_more_precision_than_the_asset_has_instead_of_rounding() {
         assert_eq!(
-            usdc("1.0000001"),
+            usdc("1.00000001"),
             Err(MoneyError::TooPrecise {
                 asset: Asset::Usdc,
-                max_decimals: 6
+                max_decimals: 7
             })
         );
         assert!(Money::parse(Asset::Btc, "0.000000001").is_err());
@@ -260,7 +311,7 @@ mod tests {
     #[test]
     fn displays_human_amounts() {
         assert_eq!(
-            Money::from_minor(Asset::Usdc, 1_500_000).to_string(),
+            Money::from_minor(Asset::Usdc, 15_000_000).to_string(),
             "1.5 USDC"
         );
         assert_eq!(Money::from_minor(Asset::Usdc, 0).to_string(), "0 USDC");
@@ -275,8 +326,56 @@ mod tests {
     }
 
     #[test]
+    fn converts_ledger_usdc_to_each_network() {
+        let amount = usdc("12.5").unwrap_or(Money::zero(Asset::Usdc));
+        assert_eq!(amount.to_network_units(Chain::Base), Ok(12_500_000));
+        assert_eq!(amount.to_network_units(Chain::Stellar), Ok(125_000_000));
+    }
+
+    #[test]
+    fn refuses_to_send_precision_a_network_cannot_hold() {
+        // 0.0000001 USDC is fine on Stellar but does not exist on Base.
+        let dust = Money::from_minor(Asset::Usdc, 1);
+        assert_eq!(dust.to_network_units(Chain::Stellar), Ok(1));
+        assert_eq!(
+            dust.to_network_units(Chain::Base),
+            Err(MoneyError::NotRepresentable {
+                asset: Asset::Usdc,
+                chain: Chain::Base
+            })
+        );
+    }
+
+    #[test]
+    fn deposits_from_any_network_are_recorded_exactly() {
+        assert_eq!(
+            Money::from_network_units(Asset::Usdc, Chain::Base, 1),
+            Ok(Money::from_minor(Asset::Usdc, 10))
+        );
+        assert_eq!(
+            Money::from_network_units(Asset::Usdc, Chain::Stellar, 1),
+            Ok(Money::from_minor(Asset::Usdc, 1))
+        );
+        let back = Money::from_network_units(Asset::Usdc, Chain::Base, 42_000_000)
+            .and_then(|m| m.to_network_units(Chain::Base));
+        assert_eq!(back, Ok(42_000_000));
+    }
+
+    #[test]
+    fn refuses_networks_an_asset_is_not_on() {
+        assert_eq!(
+            Money::from_minor(Asset::Eth, 1).to_network_units(Chain::Stellar),
+            Err(MoneyError::NotOnNetwork {
+                asset: Asset::Eth,
+                chain: Chain::Stellar
+            })
+        );
+        assert!(Money::from_network_units(Asset::Btc, Chain::Base, 1).is_err());
+    }
+
+    #[test]
     fn display_and_parse_round_trip() {
-        for text in ["0.000001", "1", "123.456789", "1000000"] {
+        for text in ["0.0000001", "1", "123.456789", "1000000"] {
             let money = usdc(text).ok();
             let shown = money.map(|m| m.to_string().trim_end_matches(" USDC").to_owned());
             assert_eq!(shown.as_deref(), Some(text));

@@ -4,8 +4,8 @@
 //! why it is a separate binary from the API: the API can be compromised without
 //! the attacker gaining the ability to move funds.
 //!
-//! This first version defines the boundary. Base (via `alloy`) and Bitcoin (via
-//! `bdk`) implementations come next, each behind the same trait so the API and
+//! This first version defines the boundary. Base (via `alloy`), Bitcoin (via
+//! `bdk`) and Stellar (via Horizon/Stellar RPC) implementations come next, each behind the same trait so the API and
 //! the deposit watcher never care which network they are talking to.
 
 use engipay_core::{Asset, Chain, Money};
@@ -42,6 +42,8 @@ pub trait ChainClient: Send + Sync {
         match self.chain() {
             Chain::Base => 12,
             Chain::Bitcoin => 2,
+            // Stellar ledgers are final once closed: there are no reorgs to wait out.
+            Chain::Stellar => 1,
         }
     }
 

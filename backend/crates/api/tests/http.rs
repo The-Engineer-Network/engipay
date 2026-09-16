@@ -42,9 +42,19 @@ async fn lists_exactly_the_supported_assets() {
         .iter()
         .map(|a| a["symbol"].as_str().unwrap())
         .collect();
-    assert_eq!(symbols, ["ETH", "USDC", "BTC"]);
-    assert_eq!(body[1]["decimals"], 6);
-    assert_eq!(body[2]["chain"], "bitcoin");
+    assert_eq!(symbols, ["ETH", "USDC", "BTC", "XLM"]);
+
+    // USDC: one balance at ledger precision, reachable on two networks with
+    // their own on-chain precision.
+    let usdc = &body[1];
+    assert_eq!(usdc["decimals"], 7);
+    assert_eq!(usdc["networks"][0]["chain"], "base");
+    assert_eq!(usdc["networks"][0]["decimals"], 6);
+    assert_eq!(usdc["networks"][1]["chain"], "stellar");
+    assert_eq!(usdc["networks"][1]["decimals"], 7);
+
+    assert_eq!(body[2]["networks"][0]["chain"], "bitcoin");
+    assert_eq!(body[3]["networks"][0]["chain"], "stellar");
 }
 
 #[tokio::test]

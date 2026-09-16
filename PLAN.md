@@ -36,13 +36,15 @@ These four are the product. Nothing else ships.
 
 2.1 Funding the account
     Each user gets a deposit address per chain (one EVM address, one Bitcoin
-    address). They send funds there from their own wallet, or from any exchange.
-    The chain service watches those addresses, waits for the required
-    confirmations, then credits the user's balance in the ledger.
+    address, one Stellar muxed address). They send funds there from their own
+    wallet, or from any exchange. The chain service watches those addresses,
+    waits for the required confirmations, then credits the user's balance in
+    the ledger.
 
     Confirmations before crediting:
       Bitcoin      2 confirmations
       Base / EVM   12 blocks
+      Stellar      1 closed ledger (final; no reorganisations)
 
 2.2 Sending out
     The user picks an asset, an amount and a destination address. The API checks
@@ -127,11 +129,74 @@ engineering workaround.
 
     Bitcoin      native BTC, real Bitcoin network
     Base         USDC, ETH
+    Stellar      USDC, XLM                      (added 16 September 2026)
 
 Base is the EVM chain because fees are low, it settles quickly, and it is what
 the Naira ramp partners quote against. Adding another EVM chain later is mostly
 configuration, since addresses and signing are shared. Adding a non-EVM chain is
 a real project each time, the way Bitcoin is.
+
+Why Stellar was added:
+    Stellar was built for cross-border payments and for local-currency on and
+    off ramps through regulated partners called anchors, which is EngiPay's
+    Naira problem. Its smart contracts (Soroban) are written in Rust, matching
+    the backend. It also makes EngiPay eligible for the Drips Stellar Wave, the
+    open-source funding program this project is aiming for (section 15).
+
+One balance per currency, whichever network it came from:
+    A user holding USDC has a single USDC balance, whether it arrived on Base or
+    on Stellar. The network matters only when money enters or leaves. Treasury
+    moves liquidity between networks behind the scenes.
+
+Precision rule (money correctness):
+    The same asset can have different precision on different networks. USDC is
+    6 decimals on Base and 7 on Stellar. The ledger stores each asset at the
+    finest precision of any network it lives on, so every deposit is recorded
+    exactly:
+
+        ETH   18    Base 18
+        USDC   7    Base 6, Stellar 7
+        BTC    8    Bitcoin 8
+        XLM    7    Stellar 7
+
+    A withdrawal to a coarser network must be exactly representable there. An
+    amount like 0.0000001 USDC cannot be sent on Base, and it is refused rather
+    than silently trimmed. This lives in engipay-core (Money::to_network_units).
+
+Stellar deposit addresses:
+    One custody account, with a distinct muxed address (SEP-23, "M...") per user.
+    Deposits are matched to the user from the address itself, not from a memo
+    the sender might forget. Addresses are parsed with the Stellar Development
+    Foundation's stellar-strkey crate. Pasting a Stellar secret key ("S...")
+    where an address belongs is refused by name, so the user learns that the
+    key is exposed.
+
+Deposit finality:
+    Base 12 blocks, Bitcoin 2 confirmations, Stellar 1 closed ledger (Stellar
+    ledgers are final; there are no reorganisations).
+
+Naira routes found on 16 September 2026. Not yet chosen, and each needs direct
+confirmation with the provider before building:
+
+    cNGN on Base
+        Nigeria's first SEC-regulated Naira stablecoin, issued by WrappedCBDC
+        Limited and launched February 2025. It runs on Base, Ethereum, BNB Chain,
+        Polygon, AssetChain and its native Bantu chain. Most of its transfer
+        volume is on Base. It was not found on Stellar.
+        Sources: techcabal.com (Dec 2025), thecondia.com, cngn.co
+
+    NGNC on Stellar
+        A Naira stablecoin by LINK.IO LTD (UK; Canadian FINTRAC MSB), live on
+        Stellar and also on Polygon, Avalanche, Solana and Base. It offers a
+        retail on-ramp by Naira bank transfer, and a business API for NGN to
+        NGNC and back. Its documentation shows no Stellar SEP-24/SEP-31 anchor
+        endpoints: integration would be through LINK's own REST API.
+        Sources: linkio.world/ngnc, docs.linkio.world
+
+    Trade-off: cNGN is regulated in Nigeria itself and has more activity, but
+    lives on Base. NGNC gives a native Stellar Naira path, from a
+    foreign-licensed issuer with much smaller supply. The ledger design supports
+    either, or both.
 
 
 5. ARCHITECTURE
@@ -449,3 +514,50 @@ lib/api-config.ts. Nothing in the app imports them any more.
        Nigeria. This one gates the launch date, so it is worth answering early.
     f. Repository: move the web app into apps/web now, or keep it flat until
        the API exists.
+    g. Naira route: cNGN on Base, NGNC on Stellar, or both (section 4).
+    h. Open-source license for the public repository (section 15).
+
+
+15. DRIPS WAVE
+
+Goal, set 16 September 2026: list EngiPay in the Drips Wave, the open-source
+funding program at https://docs.drips.network/wave.
+
+What Wave is:
+    A GitHub bounty program, not a code integration. Maintainers install the
+    Drips Wave GitHub App on the organisation, apply public repositories to a
+    Wave Program, and label issues by complexity: Trivial 100 points, Medium
+    150, High 200. Contributors solve them in one-week sprints each month.
+    Rewards are split by share of points and paid in the organiser's token.
+    Contributors must pass KYC; maintainers verify a phone number.
+
+The program EngiPay can join:
+    As of 16 September 2026 the only Wave Program is the Stellar Wave: $75,000
+    per wave, 737 repositories across 443 organisations, monthly, with Wave 9
+    on 23 to 30 September. Maintainers are told to apply only to programs
+    relevant to their ecosystem, which is why Stellar was added (section 4).
+    A rejected repository cannot re-apply. It can only appeal after two weeks,
+    with a one-month cooldown and at most three appeals, so apply once, ready.
+
+The Drips SDK is not used:
+    It is a TypeScript library for funding open-source projects (Drip Lists,
+    donation streams) on Ethereum, OP Mainnet and Filecoin. It adds nothing for
+    EngiPay's users. Optionally, a FUNDING.json at the repository root lets the
+    project receive Drips donations.
+
+Readiness checklist, in order:
+    1. Secrets: scan the full history of every branch before the repository
+       goes public. ChipiPay keys and a deployer key were once committed, and
+       public history is permanent.
+    2. A genuine Stellar component: USDC and XLM on Stellar in the backend
+       (started 16 September 2026: types, precision rules, address handling),
+       then Stellar deposits and sends in the chain service, then Stellar wallets
+       in the app.
+    3. An open-source license. The backend currently says UNLICENSED.
+    4. Contributor basics: README, CONTRIBUTING, setup that works with one
+       command, and CI running the tests on every pull request.
+    5. Protection from outside contributions: branch protection on main,
+       required reviews, and CI that never exposes secrets to forked pull
+       requests. This matters doubly after the September 2026 compromise.
+    6. Well-scoped issues with clear acceptance criteria, labelled for Wave.
+    7. Apply the repository to the Stellar Wave.
