@@ -194,3 +194,7 @@ export async function submitStellarTransaction(signedXdr: string): Promise<strin
 export function stellarTransactionUrl(hash: string): string {
   return `${stellarNetwork.explorerUrl}/tx/${hash}`
 }
+
+export function stellarAccountUrl(account: string): string {
+  return `${stellarNetwork.explorerUrl}/account/${account}`
+}
