@@ -43,7 +43,12 @@ interface WalletOption {
   name: string
   iconBackground: string
   iconUrl: RkDetails["iconUrl"] | undefined
+  /** Connects without a separate install step (installed, or needs no app). */
   installed: boolean
+  /** Actually found on this device. Only these are labelled "Detected". */
+  detected: boolean
+  /** Coinbase Smart Wallet works in a Coinbase popup, with no app. */
+  noAppNeeded: boolean
   connector: RkConnector
   rk?: RkDetails
   rank: number
@@ -144,12 +149,21 @@ function WalletPicker({
 
       const name = rk?.name ?? raw.name
       const installed = Boolean(rk?.installed) || (raw.type === "injected" && Boolean(raw.icon))
+      // RainbowKit marks Coinbase as installed everywhere, because its smart
+      // wallet works in a popup without the app. That is not "detected".
+      const isCoinbase = raw.type === "coinbaseWallet"
+      const injectedCoinbase =
+        typeof window !== "undefined" &&
+        Boolean((window as { ethereum?: { isCoinbaseWallet?: boolean } }).ethereum?.isCoinbaseWallet)
+      const detected = isCoinbase ? injectedCoinbase : installed
       const option: WalletOption = {
         key: raw.uid,
         name,
         iconBackground: rk?.iconBackground ?? "transparent",
         iconUrl: raw.icon ?? rk?.iconUrl,
         installed,
+        detected,
+        noAppNeeded: isCoinbase && !injectedCoinbase,
         connector: raw,
         rk,
         rank: rk ? rk.groupIndex * 100 + rk.index : 10_000,
@@ -163,7 +177,7 @@ function WalletPicker({
     }
 
     return [...byName.values()].sort((a, b) => {
-      if (a.installed !== b.installed) return a.installed ? -1 : 1
+      if (a.detected !== b.detected) return a.detected ? -1 : 1
       return a.rank - b.rank
     })
   }, [connectors])
@@ -395,11 +409,15 @@ function WalletPicker({
                 >
                   <WalletIcon src={icons[option.key]} background={option.iconBackground} name={option.name} />
                   <span className="flex-1 truncate text-[15px] font-medium">{option.name}</span>
-                  {option.installed && (
+                  {option.detected ? (
                     <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">
                       Detected
                     </span>
-                  )}
+                  ) : option.noAppNeeded ? (
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                      No app needed
+                    </span>
+                  ) : null}
                   <ChevronRight
                     className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5"
                     aria-hidden="true"
