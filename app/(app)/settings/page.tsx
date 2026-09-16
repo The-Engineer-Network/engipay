@@ -8,7 +8,7 @@ import { useToast } from "@/hooks/use-toast"
 import { Copy } from "lucide-react"
 import { useWallet } from "@/contexts/WalletContext"
 import { useStellarWallet } from "@/contexts/StellarWalletContext"
-import { stellarNetwork } from "@/lib/stellar"
+import { stellarAccountUrl, stellarNetwork } from "@/lib/stellar"
 import { activeChain } from "@/lib/wagmi"
 import { shortenAddress } from "@/lib/payment-uri"
 
@@ -93,6 +93,17 @@ export default function SettingsPage() {
             <span className="text-sm text-muted-foreground">Network</span>
             <span className="text-sm font-medium">{stellarNetwork.label}</span>
           </div>
+
+          {stellarAddress && (
+            <a
+              href={stellarAccountUrl(stellarAddress)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex text-sm text-primary hover:underline"
+            >
+              View on Stellar Expert
+            </a>
+          )}
 
           {networkMismatch && <p className="text-sm text-warning">{networkMismatch}</p>}
 
