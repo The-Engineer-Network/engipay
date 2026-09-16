@@ -6,7 +6,7 @@ members = ["crates/core", "crates/ledger", "crates/api", "crates/chain"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-license = "UNLICENSED"
+license = "Apache-2.0"
 publish = false
 
 # Every dependency is declared once here and inherited by the crates, so there
@@ -19,6 +19,8 @@ anyhow = "1"
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Maintained by the Stellar Development Foundation.
+stellar-strkey = "0.0"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate", "macros"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
