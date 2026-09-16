@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest an improvement that fits EngiPay's scope.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        EngiPay does four things: Naira on and off ramps, scan to pay and receive, wallet to wallet transfers, and funding EngiPay to send or convert. Lending, staking and yield are out of scope. See PLAN.md.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: Who has it, and what they cannot do today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: How we would know it is done
+      placeholder: A short list of checks a reviewer can run.

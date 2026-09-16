@@ -405,6 +405,11 @@ Everything here needs the backend, so the backend comes first.
        Rust service, EVM and Bitcoin wallets, deposit addresses, watching for
        incoming funds, crediting the ledger. At this point a user can fund an
        EngiPay account from an outside wallet.
+       Stellar started 16 September 2026: Horizon client, deposit watching into
+       muxed addresses (successful payments of XLM, or USDC from Circle's
+       issuer only), payment building and signing with the SDF's stellar-xdr,
+       a testnet-only local signer, and a stellar-send command. Crediting the
+       Postgres ledger waits for the ledger store.
 
     3. Sending out
        Withdrawals to external addresses on both chains, plus internal EngiPay
@@ -460,8 +465,9 @@ route below exists and builds.
 
     /                    landing page
     /dashboard           home: the six actions, balances, recent activity
-    /send                send ETH or USDC on Base to any address
-    /receive             your QR code, with an optional amount and asset
+    /send                send ETH or USDC on Base, or XLM or USDC on Stellar
+    /receive             your QR code on Base or Stellar, with an optional
+                         amount and asset
     /scan                camera scanner that reads a payment code
     /convert             token to token
     /buy                 Naira in
@@ -484,6 +490,10 @@ Working for real today, with no backend:
     Payment codes, read and written, in lib/payment-uri.ts: EIP-681, BIP-21,
     the EngiPay envelope, and bare addresses
     The receive screen renders a standard code, so other wallets can pay it
+    Stellar through Freighter (16 September 2026): connect, balances with the
+    account reserve worked out, and sends of XLM and USDC with memos, muxed
+    destinations and new-account creation. Payment codes read and write SEP-7.
+    Checked end to end with real testnet payments.
 
 Designed but waiting on the backend. Each of these screens is complete, with
 the action disabled and a line saying which service is missing, rather than a
@@ -515,7 +525,7 @@ lib/api-config.ts. Nothing in the app imports them any more.
     f. Repository: move the web app into apps/web now, or keep it flat until
        the API exists.
     g. Naira route: cNGN on Base, NGNC on Stellar, or both (section 4).
-    h. Open-source license for the public repository (section 15).
+    h. License: decided on 16 September 2026 - Apache-2.0.
 
 
 15. DRIPS WAVE
@@ -545,19 +555,19 @@ The Drips SDK is not used:
     EngiPay's users. Optionally, a FUNDING.json at the repository root lets the
     project receive Drips donations.
 
-Readiness checklist, in order:
-    1. Secrets: scan the full history of every branch before the repository
-       goes public. ChipiPay keys and a deployer key were once committed, and
-       public history is permanent.
-    2. A genuine Stellar component: USDC and XLM on Stellar in the backend
-       (started 16 September 2026: types, precision rules, address handling),
-       then Stellar deposits and sends in the chain service, then Stellar wallets
-       in the app.
-    3. An open-source license. The backend currently says UNLICENSED.
-    4. Contributor basics: README, CONTRIBUTING, setup that works with one
-       command, and CI running the tests on every pull request.
-    5. Protection from outside contributions: branch protection on main,
-       required reviews, and CI that never exposes secrets to forked pull
-       requests. This matters doubly after the September 2026 compromise.
+Readiness checklist, in order, with status on 16 September 2026:
+    1. Secrets. Done: history of all 12 branches rewritten to remove the
+       malware, the attacker's commits and the one live key, and verified by
+       scanning every file version. The repository is now public.
+    2. A genuine Stellar component. Done for a first version: Stellar in the
+       backend core and chain service, and Freighter, SEP-7 codes and Stellar
+       sends in the app. Next: crediting deposits into the Postgres ledger.
+    3. An open-source license. Done: Apache-2.0.
+    4. Contributor basics. Done: README, CONTRIBUTING, SECURITY, code of
+       conduct, issue and pull request templates, and CI running type checks,
+       tests, builds, clippy and the Postgres ledger guarantees.
+    5. Protection from outside contributions. CI uses a read-only token and no
+       secrets. Still to confirm in GitHub settings: branch protection on main
+       with required reviews and required CI.
     6. Well-scoped issues with clear acceptance criteria, labelled for Wave.
     7. Apply the repository to the Stellar Wave.
