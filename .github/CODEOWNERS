@@ -1,0 +1,5 @@
+# Every change needs a review from a maintainer.
+# Add more owners per path as the team grows, e.g.:
+#   /backend/  @adenueltech @another-maintainer
+
+*  @adenueltech
