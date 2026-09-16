@@ -4,9 +4,12 @@
 //! why it is a separate binary from the API: the API can be compromised without
 //! the attacker gaining the ability to move funds.
 //!
-//! This first version defines the boundary. Base (via `alloy`), Bitcoin (via
-//! `bdk`) and Stellar (via Horizon/Stellar RPC) implementations come next, each behind the same trait so the API and
-//! the deposit watcher never care which network they are talking to.
+//! Each network sits behind the same [`ChainClient`] trait, so the API and the
+//! deposit watcher never care which network they are talking to. Stellar is
+//! implemented ([`stellar`]); Base (via `alloy`) and Bitcoin (via `bdk`) come
+//! next.
+
+pub mod stellar;
 
 use engipay_core::{Asset, Chain, Money};
 
@@ -18,6 +21,12 @@ pub enum ChainError {
     UnsupportedAsset(Asset),
     #[error("the node or RPC endpoint is unavailable: {0}")]
     Unavailable(String),
+    /// The network refused a transaction, e.g. insufficient funds or a bad
+    /// sequence number. Not retried blindly: the reason decides what happens.
+    #[error("the network rejected the transaction: {0}")]
+    Rejected(String),
+    #[error("configuration: {0}")]
+    Config(String),
     #[error("not implemented yet")]
     NotImplemented,
 }
