@@ -481,7 +481,10 @@ version = "0.1.0"
 dependencies = [
  "engipay-core",
  "serde",
+ "sqlx",
  "thiserror",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
