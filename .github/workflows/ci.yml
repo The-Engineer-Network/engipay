@@ -96,3 +96,8 @@ jobs:
 
       - name: Database refuses ledger corruption
         run: bash ./scripts/test-db-guarantees.sh
+
+      - name: Postgres ledger hold integration tests
+        run: cargo test -p engipay-ledger --features postgres --test postgres_holds -- --ignored
+        env:
+          DATABASE_URL: postgres://engipay:ci-only-not-a-secret@localhost:5432/engipay
