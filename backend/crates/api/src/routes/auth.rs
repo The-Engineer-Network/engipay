@@ -2,6 +2,8 @@ mod evm;
 mod user;
 mod stellar;
 
+pub use user::AuthUser;
+
 use axum::Router;
 use crate::AppState;
 

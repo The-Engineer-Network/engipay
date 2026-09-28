@@ -16,6 +16,8 @@ pub enum ApiError {
     NotFound,
     #[error("the database is not available")]
     DatabaseUnavailable,
+    #[error("{0}")]
+    LimitExceeded(String),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -29,6 +31,7 @@ impl ApiError {
             ApiError::DatabaseUnavailable => {
                 (StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
             }
+            ApiError::LimitExceeded(_) => (StatusCode::FORBIDDEN, "limit_exceeded"),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }
