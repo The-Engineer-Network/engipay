@@ -7,6 +7,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 mod routes;
+pub mod services;
 
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
