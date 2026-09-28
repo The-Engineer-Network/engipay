@@ -153,7 +153,7 @@ Found a vulnerability? Please report it privately. See [SECURITY.md](SECURITY.md
 
 ## Contributing
 
-Contributions are welcome, from typo fixes to Stellar features. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then pick an issue labelled `good first issue`.
+Contributions are welcome, from typo fixes to Stellar and Base features. All pull requests should target the **`drips`** branch. See [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for full guidelines.
 
 ## License
 

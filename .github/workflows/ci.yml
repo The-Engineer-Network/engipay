@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, drips]
 
 # Read-only token, no secrets. Pull requests from forks run exactly this, so
 # there is nothing here for a malicious pull request to steal.
