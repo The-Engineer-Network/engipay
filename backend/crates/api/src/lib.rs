@@ -3,6 +3,7 @@
 //! Routes live here rather than in `main.rs` so tests can drive the real router
 //! without opening a socket.
 
+pub mod auth;
 pub mod config;
 pub mod error;
 mod routes;

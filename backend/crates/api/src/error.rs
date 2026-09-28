@@ -10,6 +10,8 @@ use serde_json::json;
 pub enum ApiError {
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Unauthorized(String),
     #[error("not found")]
     NotFound,
     #[error("the database is not available")]
@@ -22,6 +24,7 @@ impl ApiError {
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
+            ApiError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             ApiError::DatabaseUnavailable => {
                 (StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
