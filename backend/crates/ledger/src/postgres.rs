@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
-use crate::{LedgerError, Receipt};
+use crate::{HoldState, LedgerError, Receipt};
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -179,6 +179,54 @@ impl PostgresLedgerStore {
         let neg = negate(money.minor)?;
         insert_posting_user(&mut tx, tx_id, from, money.asset, "available", neg).await?;
         insert_posting_user(&mut tx, tx_id, to, money.asset, "available", money.minor).await?;
+
+        tx.commit().await.map_err(db_err)?;
+        Ok(Receipt {
+            transaction_id: tx_id,
+            replayed: false,
+        })
+    }
+
+    /// Releases a hold, returning held money to the user's available balance.
+    ///
+    /// If the hold is not in the `open` state, returns [`LedgerError::HoldClosed`].
+    pub async fn release_hold(&self, hold_reference: &str) -> Result<Receipt, LedgerError> {
+        require_non_empty(hold_reference)?;
+
+        with_serializable_retry(|| self.release_hold_inner(hold_reference)).await
+    }
+
+    async fn release_hold_inner(&self, hold_reference: &str) -> Result<Receipt, LedgerError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        set_serializable(&mut tx).await?;
+
+        let reference = format!("{hold_reference}:release");
+        let fingerprint = "release";
+
+        if let Some(receipt) = check_idempotency(&mut tx, &reference, fingerprint).await? {
+            return Ok(receipt);
+        }
+
+        let hold = get_hold(&mut tx, hold_reference).await?;
+        if hold.state != "open" {
+            return Err(LedgerError::HoldClosed {
+                reference: hold_reference.to_owned(),
+                state: match hold.state.as_str() {
+                    "released" => HoldState::Released,
+                    "settled" => HoldState::Settled,
+                    _ => HoldState::Open,
+                },
+            });
+        }
+
+        let tx_id = Uuid::new_v4();
+        insert_transaction(&mut tx, tx_id, "release_hold", &reference, fingerprint).await?;
+
+        let neg = negate(hold.amount)?;
+        insert_posting_user(&mut tx, tx_id, hold.user, hold.asset, "held", neg).await?;
+        insert_posting_user(&mut tx, tx_id, hold.user, hold.asset, "available", hold.amount).await?;
+
+        update_hold_state(&mut tx, hold_reference, "released").await?;
 
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
@@ -387,6 +435,68 @@ async fn insert_hold(
     Ok(())
 }
 
+struct Hold {
+    user: UserId,
+    asset: Asset,
+    amount: i128,
+    state: String,
+}
+
+async fn get_hold(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    reference: &str,
+) -> Result<Hold, LedgerError> {
+    let row = sqlx::query(
+        "SELECT user_id, asset, amount, state FROM ledger_holds WHERE reference = $1",
+    )
+    .bind(reference)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_err)?;
+
+    match row {
+        None => Err(LedgerError::HoldNotFound {
+            reference: reference.to_owned(),
+        }),
+        Some(row) => {
+            let user_uuid: uuid::Uuid = row.get("user_id");
+            let asset_str: String = row.get("asset");
+            let amount_str: String = row.get("amount");
+            let state: String = row.get("state");
+
+            let asset = match asset_str.as_str() {
+                "USDC" => Asset::Usdc,
+                "ETH" => Asset::Eth,
+                "BTC" => Asset::Btc,
+                "XLM" => Asset::Xlm,
+                _ => return Err(LedgerError::Database {
+                    code: None,
+                    message: format!("unknown asset: {}", asset_str),
+                }),
+            };
+
+            let amount = amount_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            let user = UserId::from_uuid(user_uuid);
+
+            Ok(Hold { user, asset, amount, state })
+        }
+    }
+}
+
+async fn update_hold_state(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    reference: &str,
+    state: &str,
+) -> Result<(), LedgerError> {
+    sqlx::query("UPDATE ledger_holds SET state = $1, closed_at = now() WHERE reference = $2")
+        .bind(state)
+        .bind(reference)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
 // ── Request fingerprints ───────────────────────────────────────────────
 //
 // Stable, deterministic strings stored in `ledger_transactions.request`
@@ -407,10 +517,28 @@ fn transfer_fingerprint(from: UserId, to: UserId, money: Money) -> String {
 // ── Error conversion ───────────────────────────────────────────────────
 
 fn db_err(e: sqlx::Error) -> LedgerError {
-    let code = match &e {
-        sqlx::Error::Database(db_err) => db_err.code().map(|c| c.to_string()),
-        _ => None,
+    let (code, mapped_error) = match &e {
+        sqlx::Error::Database(db_err) => {
+            let code = db_err.code().map(|c| c.to_string());
+            let mapped = match code.as_deref() {
+                Some("23514") => {
+                    return LedgerError::InvariantViolated("database constraint violated")
+                }
+                Some("23505") => {
+                    return LedgerError::IdempotencyConflict {
+                        reference: "conflict".to_owned(),
+                    }
+                }
+                Some("23503") => {
+                    return LedgerError::InvariantViolated("foreign key constraint violation")
+                }
+                _ => None,
+            };
+            (code, mapped)
+        }
+        _ => (None, None),
     };
+
     LedgerError::Database {
         code,
         message: e.to_string(),
@@ -719,6 +847,117 @@ mod tests {
 
         let result = store.transfer(alice, alice, usdc(10), "self").await;
         assert_eq!(result, Err(LedgerError::SameAccount));
+    }
+
+    // ── Release hold tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn release_hold_returns_money_to_available() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        store.deposit(alice, usdc(100), "seed-release").await.unwrap();
+        store.create_hold(alice, usdc(60), "hold-release").await.unwrap();
+
+        let receipt = store.release_hold("hold-release").await.unwrap();
+        assert!(!receipt.replayed);
+
+        let available = get_user_balance_from_pool(&pool, alice, Asset::Usdc, "available").await;
+        let held = get_user_balance_from_pool(&pool, alice, Asset::Usdc, "held").await;
+
+        assert_eq!(available, 100);
+        assert_eq!(held, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn release_hold_replay_returns_same_receipt() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        store.deposit(alice, usdc(100), "seed-release-replay").await.unwrap();
+        store.create_hold(alice, usdc(60), "hold-release-replay").await.unwrap();
+
+        let first = store.release_hold("hold-release-replay").await.unwrap();
+        let second = store.release_hold("hold-release-replay").await.unwrap();
+
+        assert!(!first.replayed);
+        assert!(second.replayed);
+        assert_eq!(first.transaction_id, second.transaction_id);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn release_hold_on_non_open_hold_fails() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        store.deposit(alice, usdc(100), "seed-release-closed").await.unwrap();
+        store.create_hold(alice, usdc(60), "hold-closed").await.unwrap();
+        store.release_hold("hold-closed").await.unwrap();
+
+        // Try to release again
+        let result = store.release_hold("hold-closed").await;
+
+        assert!(matches!(result, Err(LedgerError::HoldClosed { .. })));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn release_hold_non_existent_hold_fails() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+
+        let result = store.release_hold("nonexistent").await;
+
+        assert!(matches!(result, Err(LedgerError::HoldNotFound { .. })));
+    }
+
+    // ── Idempotency conflict tests ─────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn deposit_idempotency_detects_fingerprint_mismatch() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        store.deposit(alice, usdc(50), "fp-conflict").await.unwrap();
+        let result = store.deposit(alice, usdc(99), "fp-conflict").await;
+
+        assert!(matches!(
+            result,
+            Err(LedgerError::IdempotencyConflict { .. })
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn transfer_idempotency_detects_fingerprint_mismatch() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let (alice, bob, charlie) = (UserId::new(), UserId::new(), UserId::new());
+        ensure_user(&pool, alice).await;
+        ensure_user(&pool, bob).await;
+        ensure_user(&pool, charlie).await;
+
+        store.deposit(alice, usdc(100), "seed-xfer-fp").await.unwrap();
+        store.transfer(alice, bob, usdc(30), "xfer-fp").await.unwrap();
+
+        let result = store.transfer(alice, charlie, usdc(30), "xfer-fp").await;
+
+        assert!(matches!(
+            result,
+            Err(LedgerError::IdempotencyConflict { .. })
+        ));
     }
 
     // Helper to read balance from the pool directly (outside the store).

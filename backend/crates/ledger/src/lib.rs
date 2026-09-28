@@ -154,20 +154,18 @@ pub enum LedgerError {
     InvalidFee,
     #[error("arithmetic overflow")]
     Overflow,
-    #[error("database error: {0}")]
-    Database(String),
-    /// A balance would go negative or a transaction would not balance. Only a
-    /// bug in this module can produce it, and it refuses to apply rather than
-    /// write a corrupt ledger.
-    #[error("ledger invariant violated: {0}")]
-    InvariantViolated(&'static str),
     /// A database operation failed. `code` is the PostgreSQL SQLSTATE when
-    /// available, used internally for retry decisions.
+    /// available, used internally for retry decisions and error mapping.
     #[error("database error: {message}")]
     Database {
         code: Option<String>,
         message: String,
     },
+    /// A balance would go negative or a transaction would not balance. Only a
+    /// bug in this module can produce it, and it refuses to apply rather than
+    /// write a corrupt ledger.
+    #[error("ledger invariant violated: {0}")]
+    InvariantViolated(&'static str),
 }
 
 /// The canonical form of a request, compared when a reference is reused.
