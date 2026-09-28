@@ -7,3 +7,4 @@ pub mod jwt;
 pub mod stellar;
 
 pub use jwt::{AuthError, Claims};
+pub use stellar::validate_challenge;
