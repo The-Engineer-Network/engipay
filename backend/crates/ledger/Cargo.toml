@@ -12,6 +12,8 @@ engipay-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
