@@ -10,7 +10,14 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
-    router(AppState { database: None }, &Config::for_tests())
+    let config = Config::for_tests();
+    router(
+        AppState {
+            database: None,
+            config: config.clone(),
+        },
+        &config,
+    )
 }
 
 async fn get_json(path: &str) -> (StatusCode, Value) {
@@ -97,4 +104,64 @@ async fn only_the_configured_web_origin_is_allowed() {
             .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn stellar_challenge_endpoint_returns_valid_transaction() {
+    use stellar_strkey::ed25519;
+
+    let account = ed25519::PublicKey([7; 32]).to_string();
+
+    let (status, body) = get_json(&format!("/v1/auth/stellar/challenge?account={}", account)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(body["transaction"].is_string());
+    assert_eq!(body["network_passphrase"], "Test SDF Network ; September 2015");
+
+    // Verify the transaction XDR is valid
+    let xdr = body["transaction"].as_str().unwrap();
+    let result: Result<stellar_xdr::TransactionEnvelope, _> = stellar_xdr::ReadXdr::from_xdr(xdr);
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn stellar_challenge_rejects_invalid_account() {
+    let (status, body) = get_json("/v1/auth/stellar/challenge?account=invalid").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]["code"].is_string());
+}
+
+#[tokio::test]
+async fn stellar_challenge_rejects_secret_key() {
+    use stellar_strkey::ed25519;
+
+    let secret = ed25519::PrivateKey([3; 32]);
+    let secret_str = secret.as_unredacted().to_string();
+
+    let (status, _body) = get_json(&format!("/v1/auth/stellar/challenge?account={}", secret_str))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn evm_auth_requires_database() {
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/verify-evm")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"message":"test","signature":"0x00","address":"0x0000000000000000000000000000000000000000"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["code"], "database_unavailable");
 }
