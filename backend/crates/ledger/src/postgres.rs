@@ -960,6 +960,31 @@ mod tests {
         ));
     }
 
+    // ── Connection pool tests ─────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn connection_pool_initializes_successfully() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool);
+        // If we got here, the pool initialized successfully.
+        // The store is created and ready for use.
+        assert!(true);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn connection_pool_health_ping_succeeds() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        // Perform a simple health check by pinging the database
+        let result = sqlx::query("SELECT 1 AS health_check")
+            .fetch_optional(&pool)
+            .await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
     // Helper to read balance from the pool directly (outside the store).
     async fn get_user_balance_from_pool(
         pool: &PgPool,
