@@ -7,7 +7,6 @@
 //! [`MAX_RETRIES`] times before surfacing the error.
 
 use std::future::Future;
-use std::str::FromStr;
 use std::time::Duration;
 
 use sqlx::{PgPool, Postgres, Row};
@@ -15,7 +14,7 @@ use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
-use crate::{HoldState, LedgerError, Receipt};
+use crate::{LedgerError, Receipt};
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -124,113 +123,6 @@ impl PostgresLedgerStore {
 
         insert_hold(&mut tx, reference, user, money).await?;
 
-        tx.commit().await.map_err(db_err)?;
-        Ok(Receipt {
-            transaction_id: tx_id,
-            replayed: false,
-        })
-    }
-
-    /// Returns an open hold to the user's available balance. Repeating the
-    /// operation with the same hold reference returns the original receipt.
-    pub async fn release_hold(&self, hold_reference: &str) -> Result<Receipt, LedgerError> {
-        require_non_empty(hold_reference)?;
-        let reference = format!("{hold_reference}:release");
-        with_serializable_retry(|| self.release_hold_inner(hold_reference, &reference)).await
-    }
-
-    async fn release_hold_inner(
-        &self,
-        hold_reference: &str,
-        reference: &str,
-    ) -> Result<Receipt, LedgerError> {
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        set_serializable(&mut tx).await?;
-        let fingerprint = format!("release|{hold_reference}");
-        if let Some(receipt) = check_idempotency(&mut tx, reference, &fingerprint).await? {
-            return Ok(receipt);
-        }
-        let hold = get_open_hold(&mut tx, hold_reference).await?;
-        let tx_id = Uuid::new_v4();
-        insert_transaction(&mut tx, tx_id, "release_hold", reference, &fingerprint).await?;
-        insert_posting_user(
-            &mut tx,
-            tx_id,
-            hold.user,
-            hold.asset,
-            "held",
-            negate(hold.amount)?,
-        )
-        .await?;
-        insert_posting_user(
-            &mut tx,
-            tx_id,
-            hold.user,
-            hold.asset,
-            "available",
-            hold.amount,
-        )
-        .await?;
-        close_hold(&mut tx, hold_reference, "released").await?;
-        tx.commit().await.map_err(db_err)?;
-        Ok(Receipt {
-            transaction_id: tx_id,
-            replayed: false,
-        })
-    }
-
-    /// Settles an open hold, sending the principal to the external outflow
-    /// account and retaining an optional fee in the fees account.
-    pub async fn settle_hold(
-        &self,
-        hold_reference: &str,
-        fee: Option<Money>,
-    ) -> Result<Receipt, LedgerError> {
-        require_non_empty(hold_reference)?;
-        let reference = format!("{hold_reference}:settle");
-        with_serializable_retry(|| self.settle_hold_inner(hold_reference, &reference, fee)).await
-    }
-
-    async fn settle_hold_inner(
-        &self,
-        hold_reference: &str,
-        reference: &str,
-        fee: Option<Money>,
-    ) -> Result<Receipt, LedgerError> {
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        set_serializable(&mut tx).await?;
-        let fingerprint = settle_fingerprint(hold_reference, fee);
-        if let Some(receipt) = check_idempotency(&mut tx, reference, &fingerprint).await? {
-            return Ok(receipt);
-        }
-        let hold = get_open_hold(&mut tx, hold_reference).await?;
-        let fee_minor = match fee {
-            None => 0,
-            Some(fee) if fee.asset == hold.asset && fee.minor >= 0 && fee.minor < hold.amount => {
-                fee.minor
-            }
-            Some(_) => return Err(LedgerError::InvalidFee),
-        };
-        let outflow = hold
-            .amount
-            .checked_sub(fee_minor)
-            .ok_or(LedgerError::Overflow)?;
-        let tx_id = Uuid::new_v4();
-        insert_transaction(&mut tx, tx_id, "settle_hold", reference, &fingerprint).await?;
-        insert_posting_user(
-            &mut tx,
-            tx_id,
-            hold.user,
-            hold.asset,
-            "held",
-            negate(hold.amount)?,
-        )
-        .await?;
-        insert_posting_system(&mut tx, tx_id, "external_outflow", hold.asset, outflow).await?;
-        if fee_minor > 0 {
-            insert_posting_system(&mut tx, tx_id, "fees", hold.asset, fee_minor).await?;
-        }
-        close_hold(&mut tx, hold_reference, "settled").await?;
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
             transaction_id: tx_id,
@@ -495,63 +387,6 @@ async fn insert_hold(
     Ok(())
 }
 
-struct StoredHold {
-    user: UserId,
-    asset: Asset,
-    amount: i128,
-}
-
-async fn get_open_hold(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
-    reference: &str,
-) -> Result<StoredHold, LedgerError> {
-    let row = sqlx::query("SELECT user_id, asset, amount::text AS amount, state FROM ledger_holds WHERE reference = $1 FOR UPDATE")
-        .bind(reference)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(db_err)?
-        .ok_or_else(|| LedgerError::HoldNotFound { reference: reference.to_owned() })?;
-    let state: String = row.get("state");
-    if state != "open" {
-        let state = match state.as_str() {
-            "released" => HoldState::Released,
-            "settled" => HoldState::Settled,
-            _ => return Err(LedgerError::InvariantViolated("unknown hold state")),
-        };
-        return Err(LedgerError::HoldClosed {
-            reference: reference.to_owned(),
-            state,
-        });
-    }
-    let user_id: Uuid = row.get("user_id");
-    let asset_text: String = row.get("asset");
-    let amount_text: String = row.get("amount");
-    let asset = Asset::from_str(&asset_text)
-        .map_err(|_| LedgerError::InvariantViolated("unknown hold asset"))?;
-    let amount = amount_text
-        .parse::<i128>()
-        .map_err(|_| LedgerError::Overflow)?;
-    Ok(StoredHold {
-        user: UserId::from_uuid(user_id),
-        asset,
-        amount,
-    })
-}
-
-async fn close_hold(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
-    reference: &str,
-    state: &str,
-) -> Result<(), LedgerError> {
-    sqlx::query("UPDATE ledger_holds SET state = $2, closed_at = now() WHERE reference = $1 AND state = 'open'")
-        .bind(reference)
-        .bind(state)
-        .execute(&mut **tx)
-        .await
-        .map_err(db_err)?;
-    Ok(())
-}
-
 // ── Request fingerprints ───────────────────────────────────────────────
 //
 // Stable, deterministic strings stored in `ledger_transactions.request`
@@ -567,13 +402,6 @@ fn hold_fingerprint(user: UserId, money: Money) -> String {
 
 fn transfer_fingerprint(from: UserId, to: UserId, money: Money) -> String {
     format!("transfer|{}|{}|{}|{}", from, to, money.asset, money.minor)
-}
-
-fn settle_fingerprint(reference: &str, fee: Option<Money>) -> String {
-    match fee {
-        Some(fee) => format!("settle|{reference}|{}|{}", fee.asset, fee.minor),
-        None => format!("settle|{reference}|none"),
-    }
 }
 
 // ── Error conversion ───────────────────────────────────────────────────
@@ -713,7 +541,10 @@ mod tests {
     async fn test_pool() -> Option<PgPool> {
         let url = std::env::var("DATABASE_URL").ok()?;
         let pool = PgPool::connect(&url).await.ok()?;
-        sqlx::migrate!("../../migrations").run(&pool).await.ok()?;
+        sqlx::migrate!("../../migrations")
+            .run(&pool)
+            .await
+            .ok()?;
         Some(pool)
     }
 
@@ -773,10 +604,7 @@ mod tests {
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
 
-        store
-            .deposit(alice, usdc(50), "dep-conflict")
-            .await
-            .unwrap();
+        store.deposit(alice, usdc(50), "dep-conflict").await.unwrap();
         let result = store.deposit(alice, usdc(99), "dep-conflict").await;
 
         assert!(matches!(
@@ -822,7 +650,10 @@ mod tests {
             .unwrap();
         let result = store.create_hold(alice, usdc(101), "hold-insuf").await;
 
-        assert!(matches!(result, Err(LedgerError::InsufficientFunds { .. })));
+        assert!(matches!(
+            result,
+            Err(LedgerError::InsufficientFunds { .. })
+        ));
     }
 
     // ── Transfer tests ─────────────────────────────────────────────────
@@ -836,7 +667,10 @@ mod tests {
         ensure_user(&pool, alice).await;
         ensure_user(&pool, bob).await;
 
-        store.deposit(alice, usdc(100), "seed-xfer").await.unwrap();
+        store
+            .deposit(alice, usdc(100), "seed-xfer")
+            .await
+            .unwrap();
         let receipt = store
             .transfer(alice, bob, usdc(30), "xfer-1")
             .await
@@ -865,7 +699,10 @@ mod tests {
             .unwrap();
         let result = store.transfer(alice, bob, usdc(101), "xfer-insuf").await;
 
-        assert!(matches!(result, Err(LedgerError::InsufficientFunds { .. })));
+        assert!(matches!(
+            result,
+            Err(LedgerError::InsufficientFunds { .. })
+        ));
         // Nothing moved.
         let alice_bal = get_user_balance_from_pool(&pool, alice, Asset::Usdc, "available").await;
         let bob_bal = get_user_balance_from_pool(&pool, bob, Asset::Usdc, "available").await;
