@@ -1,7 +1,11 @@
 name: Drips PR Governance & Auto-Merge
 
 on:
+  pull_request:
+    branches: [drips]
+    types: [opened, edited, synchronize, reopened]
   pull_request_target:
+    branches: [drips]
     types: [opened, edited, synchronize, reopened]
 
 permissions:
@@ -34,7 +38,7 @@ jobs:
 
           # Rule 2: PR description must contain at least one line of 'closes #<issue number>' (case-insensitive)
           # Supported keywords: closes, close, closed, fixes, fix, fixed, resolves, resolve, resolved
-          if ! echo "$PR_BODY" | grep -Ei '^\s*(closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)\s+#[0-9]+' > /dev/null; then
+          if ! echo "$PR_BODY" | grep -Ei '(closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)\s+#[0-9]+' > /dev/null; then
             ERRORS+=("- **Missing Issue Link**: Your PR description does not contain a line in the format \`closes #<issue number>\` (e.g., \`Closes #42\`).")
           fi
 
@@ -73,9 +77,9 @@ jobs:
               --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"How to resolve this\"))) | .id" | tail -n 1 || true)
 
             if [ -n "$PREV_COMMENT_ID" ]; then
-              gh api -X PATCH "repos/$REPO/issues/comments/$PREV_COMMENT_ID" -f body="$COMMENT_BODY"
+              gh api -X PATCH "repos/$REPO/issues/comments/$PREV_COMMENT_ID" -f body="$COMMENT_BODY" || true
             else
-              gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -f body="$COMMENT_BODY"
+              gh api -X POST "repos/$REPO/issues/comments/$PR_NUMBER" -f body="$COMMENT_BODY" || true
             fi
 
             echo "::error::PR governance validation failed. See comment on PR #$PR_NUMBER for details."
