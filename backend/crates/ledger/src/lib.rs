@@ -22,6 +22,8 @@ use engipay_core::{Asset, Money, UserId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod postgres;
+
 /// A user's money is split in two. `Available` can be spent. `Held` is
 /// committed to something in flight (a withdrawal, a conversion, an off-ramp)
 /// and cannot be spent twice while it is pending.
@@ -152,6 +154,8 @@ pub enum LedgerError {
     InvalidFee,
     #[error("arithmetic overflow")]
     Overflow,
+    #[error("database error: {0}")]
+    Database(String),
     /// A balance would go negative or a transaction would not balance. Only a
     /// bug in this module can produce it, and it refuses to apply rather than
     /// write a corrupt ledger.
