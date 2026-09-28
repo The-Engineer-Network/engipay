@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 engipay-core.workspace = true
-engipay-ledger.workspace = true
+engipay-ledger = { workspace = true, features = ["postgres"] }
 anyhow.workspace = true
 axum.workspace = true
 serde.workspace = true
@@ -20,6 +20,8 @@ tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
+jsonwebtoken.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

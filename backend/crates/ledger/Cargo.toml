@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+postgres = ["dep:sqlx", "dep:tokio", "dep:tracing"]
+
 [dependencies]
 engipay-core.workspace = true
 serde.workspace = true
@@ -21,6 +25,10 @@ engipay-core.workspace = true
 tokio.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
+
+sqlx = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [lints]
 workspace = true

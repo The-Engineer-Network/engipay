@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, drips]
 
 # Read-only token, no secrets. Pull requests from forks run exactly this, so
 # there is nothing here for a malicious pull request to steal.
@@ -94,5 +94,13 @@ jobs:
           echo "POSTGRES_PASSWORD=ci-only-not-a-secret" > .env
           docker compose up -d --wait postgres
 
+      - name: Verify migrations are idempotent
+        run: bash ./scripts/verify-migrations.sh
+
       - name: Database refuses ledger corruption
         run: bash ./scripts/test-db-guarantees.sh
+
+      - name: PostgreSQL ledger operations
+        run: cargo test -p engipay-ledger postgres_queries_settlement_and_sender_locking
+        env:
+          DATABASE_URL: postgres://engipay:ci-only-not-a-secret@localhost:5432/engipay

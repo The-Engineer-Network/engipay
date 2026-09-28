@@ -13,9 +13,8 @@
 //! The Postgres-backed store implements the same operations with the same
 //! checks inside a database transaction.
 
-pub mod reconciliation;
-
-pub use reconciliation::InvariantError;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 
 use std::collections::HashMap;
 
@@ -153,6 +152,13 @@ pub enum LedgerError {
     InvalidFee,
     #[error("arithmetic overflow")]
     Overflow,
+    /// A database operation failed. `code` is the PostgreSQL SQLSTATE when
+    /// available, used internally for retry decisions and error mapping.
+    #[error("database error: {message}")]
+    Database {
+        code: Option<String>,
+        message: String,
+    },
     /// A balance would go negative or a transaction would not balance. Only a
     /// bug in this module can produce it, and it refuses to apply rather than
     /// write a corrupt ledger.
@@ -523,7 +529,7 @@ fn negate(value: i128) -> Result<i128, LedgerError> {
     value.checked_neg().ok_or(LedgerError::Overflow)
 }
 
-fn require_positive(money: Money) -> Result<(), LedgerError> {
+pub(crate) fn require_positive(money: Money) -> Result<(), LedgerError> {
     if money.is_positive() {
         Ok(())
     } else {
