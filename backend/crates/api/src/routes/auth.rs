@@ -1,4 +1,5 @@
 mod evm;
+mod user;
 mod stellar;
 
 use axum::Router;
