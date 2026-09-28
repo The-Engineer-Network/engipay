@@ -29,7 +29,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState { database };
+    let state = AppState {
+        database,
+        config: config.clone(),
+    };
     let app = router(state, &config);
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)

@@ -7,6 +7,7 @@ pub struct Config {
     pub db_max_connections: u32,
     pub allowed_origins: Vec<String>,
     pub json_logs: bool,
+    pub stellar_server_secret: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +43,7 @@ impl Config {
                 .collect(),
             json_logs: env::var("LOG_FORMAT")
                 .is_ok_and(|format| format.eq_ignore_ascii_case("json")),
+            stellar_server_secret: env::var("STELLAR_SERVER_SECRET").ok(),
         })
     }
 
@@ -53,6 +55,7 @@ impl Config {
             db_max_connections: 1,
             allowed_origins: vec!["http://localhost:3000".to_owned()],
             json_logs: false,
+            stellar_server_secret: None,
         }
     }
 }

@@ -20,6 +20,7 @@ pub struct AppState {
     /// `None` only in local development without Postgres. Endpoints that need
     /// the database return 503 rather than pretending to work.
     pub database: Option<PgPool>,
+    pub config: Config,
 }
 
 pub fn router(state: AppState, config: &Config) -> Router {
