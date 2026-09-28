@@ -13,6 +13,10 @@
 //! The Postgres-backed store implements the same operations with the same
 //! checks inside a database transaction.
 
+pub mod reconciliation;
+
+pub use reconciliation::InvariantError;
+
 use std::collections::HashMap;
 
 use engipay_core::{Asset, Money, UserId};
@@ -154,6 +158,11 @@ pub enum LedgerError {
     /// write a corrupt ledger.
     #[error("ledger invariant violated: {0}")]
     InvariantViolated(&'static str),
+    /// A Postgres query inside a reconciliation function failed.
+    /// Wrapped here so callers have a single error type for all ledger operations.
+    /// The message is stored as a string so `LedgerError` stays `Clone + Eq`.
+    #[error("database error: {0}")]
+    DatabaseError(String),
 }
 
 /// The canonical form of a request, compared when a reference is reused.
@@ -821,5 +830,185 @@ mod tests {
                 "money created or destroyed at step {step}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Global ledger balance verification
+    //
+    // These tests assert the same invariant enforced by
+    // `reconciliation::verify_global_ledger_integrity`: the sum of *all*
+    // postings for every asset across the entire ledger must be exactly zero.
+    //
+    // Because every transaction is double-entry (each credit has an equal and
+    // opposite debit for the same asset), the global sum is the sum of
+    // per-transaction sums, and every per-transaction sum is zero, so the
+    // global sum must also be zero.  Any deviation means money was minted or
+    // destroyed — a ledger bug.
+    // -----------------------------------------------------------------------
+
+    /// Re-implements the aggregate the DB query computes:
+    ///   SELECT SUM(amount) FROM ledger_postings WHERE asset = $1
+    fn global_posting_sum(ledger: &Ledger, asset: Asset) -> i128 {
+        ledger
+            .transactions()
+            .iter()
+            .flat_map(|tx| tx.postings.iter())
+            .filter(|p| p.account.asset == asset)
+            .map(|p| p.amount)
+            .sum()
+    }
+
+    /// Asserts the global zero-sum for every supported asset, mirroring what
+    /// `verify_global_ledger_integrity` checks in Postgres.
+    fn assert_global_integrity(ledger: &Ledger) {
+        for asset in Asset::ALL {
+            assert_eq!(
+                global_posting_sum(ledger, asset),
+                0,
+                "global posting sum for {asset} is non-zero — \
+                 verify_global_ledger_integrity would report an imbalance"
+            );
+        }
+    }
+
+    #[test]
+    fn global_posting_sum_is_zero_after_deposit() {
+        let alice = UserId::new();
+        let mut ledger = Ledger::new();
+        ledger.deposit(alice, usdc(1_000_000), "dep-global-1").unwrap();
+        // +1_000_000 user credit is exactly offset by −1_000_000 ExternalInflow debit.
+        assert_global_integrity(&ledger);
+    }
+
+    #[test]
+    fn global_posting_sum_is_zero_after_transfer() {
+        let (alice, bob) = (UserId::new(), UserId::new());
+        let mut ledger = funded(alice, 500);
+        ledger.transfer(alice, bob, usdc(200), "tx-global-1").unwrap();
+        // −200 for alice, +200 for bob: net zero.
+        assert_global_integrity(&ledger);
+        ledger.verify().unwrap();
+    }
+
+    #[test]
+    fn global_posting_sum_is_zero_after_hold_release_settle_cycle() {
+        let alice = UserId::new();
+        let mut ledger = funded(alice, 300);
+
+        ledger.hold(alice, usdc(100), "hold-global-1").unwrap();
+        assert_global_integrity(&ledger); // hold is bucket-internal, still zero
+
+        ledger.release("hold-global-1").unwrap();
+        assert_global_integrity(&ledger); // release undoes the hold, still zero
+
+        ledger.hold(alice, usdc(50), "hold-global-2").unwrap();
+        ledger.settle("hold-global-2", Some(usdc(3))).unwrap();
+        // held −50 | ExternalOutflow +47 | Fees +3  →  net 0
+        assert_global_integrity(&ledger);
+
+        ledger.verify().unwrap();
+    }
+
+    #[test]
+    fn global_posting_sum_is_zero_for_every_asset_independently() {
+        let alice = UserId::new();
+        let mut ledger = Ledger::new();
+        ledger.deposit(alice, usdc(999), "dep-usdc-g").unwrap();
+        ledger
+            .deposit(alice, Money::from_minor(Asset::Btc, 8_000_000), "dep-btc-g")
+            .unwrap();
+
+        assert_eq!(global_posting_sum(&ledger, Asset::Usdc), 0);
+        assert_eq!(global_posting_sum(&ledger, Asset::Btc), 0);
+        assert_eq!(global_posting_sum(&ledger, Asset::Eth), 0);
+        assert_eq!(global_posting_sum(&ledger, Asset::Xlm), 0);
+        assert_global_integrity(&ledger);
+    }
+
+    // -----------------------------------------------------------------------
+    // User liability vs. system balance scenario test
+    //
+    // Mirrors the test in reconciliation::tests but lives here so it runs
+    // alongside the existing ledger tests and uses the helpers already in
+    // scope.  It confirms that the per-user balance sum equals the negation
+    // of all system accounts after a realistic sequence of deposits,
+    // transfers, and withdrawals (holds → settle / release).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn user_liabilities_match_system_balances_after_deposits_and_withdrawals() {
+        use reconciliation::{system_negation_from_ledger, user_liabilities_from_ledger};
+
+        let (alice, bob, carol) = (UserId::new(), UserId::new(), UserId::new());
+        let mut ledger = Ledger::new();
+
+        // Three deposits.
+        ledger.deposit(alice, usdc(1_000), "d-a").unwrap();
+        ledger.deposit(bob, usdc(800), "d-b").unwrap();
+        ledger.deposit(carol, usdc(500), "d-c").unwrap();
+        assert_eq!(
+            user_liabilities_from_ledger(&ledger),
+            system_negation_from_ledger(&ledger),
+            "after deposits: liabilities must equal negation of system balances"
+        ); // liabilities = 2_300
+
+        // Peer transfer: does not change the aggregate.
+        ledger.transfer(alice, carol, usdc(200), "t-ac").unwrap();
+        assert_eq!(
+            user_liabilities_from_ledger(&ledger),
+            system_negation_from_ledger(&ledger),
+            "after transfer: liabilities must equal negation of system balances"
+        ); // liabilities still = 2_300
+
+        // Alice withdraws 400 (fee 20).
+        ledger.hold(alice, usdc(400), "wd-a1").unwrap();
+        assert_eq!(
+            user_liabilities_from_ledger(&ledger),
+            system_negation_from_ledger(&ledger),
+            "after hold: liabilities must equal negation of system balances"
+        ); // hold moves buckets, no change to aggregate
+        ledger.settle("wd-a1", Some(usdc(20))).unwrap();
+        assert_eq!(
+            user_liabilities_from_ledger(&ledger),
+            system_negation_from_ledger(&ledger),
+            "after settle: liabilities must equal negation of system balances"
+        ); // liabilities = 2_300 − 400 = 1_900
+
+        // Bob attempts a withdrawal but cancels.
+        ledger.hold(bob, usdc(300), "wd-b1").unwrap();
+        ledger.release("wd-b1").unwrap();
+        assert_eq!(
+            user_liabilities_from_ledger(&ledger),
+            system_negation_from_ledger(&ledger),
+            "after release: liabilities must equal negation of system balances"
+        ); // released: liabilities still = 1_900
+
+        // Carol withdraws all remaining (no fee).
+        let carol_bal = ledger.balance(carol, Asset::Usdc);
+        let carol_total = carol_bal.available + carol_bal.held;
+        ledger.hold(carol, usdc(carol_total), "wd-c1").unwrap();
+        ledger.settle("wd-c1", None).unwrap();
+        assert_eq!(
+            user_liabilities_from_ledger(&ledger),
+            system_negation_from_ledger(&ledger),
+            "after carol settle: liabilities must equal negation of system balances"
+        ); // liabilities = 1_900 − carol_total
+
+        // Final: sum of every individual user balance == the aggregate liability.
+        let liabilities = user_liabilities_from_ledger(&ledger);
+        let individual_sum = [alice, bob, carol]
+            .iter()
+            .map(|u| {
+                let b = ledger.balance(*u, Asset::Usdc);
+                b.available + b.held
+            })
+            .sum::<i128>();
+        assert_eq!(
+            liabilities.get(&Asset::Usdc).copied().unwrap_or(0),
+            individual_sum,
+            "aggregate liability must equal sum of individual balances"
+        );
+
+        ledger.verify().unwrap();
     }
 }

@@ -10,7 +10,16 @@ publish.workspace = true
 [dependencies]
 engipay-core.workspace = true
 serde.workspace = true
+sqlx.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+# Integration tests spin up a real Postgres instance via #[sqlx::test].
+engipay-core.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
 uuid.workspace = true
 
 [lints]
