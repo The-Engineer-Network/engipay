@@ -13,6 +13,9 @@
 //! The Postgres-backed store implements the same operations with the same
 //! checks inside a database transaction.
 
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
 use std::collections::HashMap;
 
 use engipay_core::{Asset, Money, UserId};
@@ -154,6 +157,13 @@ pub enum LedgerError {
     /// write a corrupt ledger.
     #[error("ledger invariant violated: {0}")]
     InvariantViolated(&'static str),
+    /// A database operation failed. `code` is the PostgreSQL SQLSTATE when
+    /// available, used internally for retry decisions.
+    #[error("database error: {message}")]
+    Database {
+        code: Option<String>,
+        message: String,
+    },
 }
 
 /// The canonical form of a request, compared when a reference is reused.
@@ -514,7 +524,7 @@ fn negate(value: i128) -> Result<i128, LedgerError> {
     value.checked_neg().ok_or(LedgerError::Overflow)
 }
 
-fn require_positive(money: Money) -> Result<(), LedgerError> {
+pub(crate) fn require_positive(money: Money) -> Result<(), LedgerError> {
     if money.is_positive() {
         Ok(())
     } else {
