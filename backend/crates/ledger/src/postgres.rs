@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
-use crate::{HoldState, LedgerError, Receipt};
+use crate::{Balance, HoldState, LedgerError, Receipt};
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -30,6 +30,58 @@ pub struct PostgresLedgerStore {
 impl PostgresLedgerStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Live custodial balances for `user`, across every asset EngiPay
+    /// supports (`Asset::ALL`), read directly from the ledger postings —
+    /// the same source of truth every other method here writes to.
+    ///
+    /// A read-only query, so it runs against the plain pool rather than a
+    /// `SERIALIZABLE` transaction (unlike the mutating methods above, which
+    /// need one so concurrent writers cannot violate ledger invariants).
+    /// Always returns one entry per asset, `0` for an asset the user has
+    /// never touched, rather than omitting it.
+    pub async fn get_user_balances(&self, user: UserId) -> Result<Vec<Balance>, LedgerError> {
+        let rows = sqlx::query(
+            "SELECT asset, bucket, COALESCE(SUM(amount), 0)::text AS total \
+             FROM ledger_postings \
+             WHERE owner_kind = 'user' AND user_id = $1 \
+             GROUP BY asset, bucket",
+        )
+        .bind(user.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        let mut available: std::collections::HashMap<Asset, i128> = std::collections::HashMap::new();
+        let mut held: std::collections::HashMap<Asset, i128> = std::collections::HashMap::new();
+        for row in rows {
+            let symbol: String = row.get("asset");
+            let bucket: String = row.get("bucket");
+            let total: String = row.get("total");
+            let Ok(asset) = symbol.parse::<Asset>() else {
+                continue; // A row for an asset this build no longer recognizes; skip rather than fail the whole read.
+            };
+            let amount = total.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            match bucket.as_str() {
+                "available" => {
+                    available.insert(asset, amount);
+                }
+                "held" => {
+                    held.insert(asset, amount);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Asset::ALL
+            .into_iter()
+            .map(|asset| Balance {
+                asset,
+                available: *available.get(&asset).unwrap_or(&0),
+                held: *held.get(&asset).unwrap_or(&0),
+            })
+            .collect())
     }
 
     /// Credits a user with money that arrived from outside EngiPay.
@@ -705,6 +757,32 @@ mod tests {
         assert_eq!(available, 100);
     }
 
+    // ── get_user_balances tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn get_user_balances_reports_every_asset_zero_filled() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        store.deposit(alice, usdc(250), "balances-dep-1").await.unwrap();
+        store.create_hold(alice, usdc(60), "balances-hold-1").await.unwrap();
+
+        let balances = store.get_user_balances(alice).await.unwrap();
+        assert_eq!(balances.len(), Asset::ALL.len());
+
+        let usdc_balance = balances.iter().find(|b| b.asset == Asset::Usdc).unwrap();
+        assert_eq!(usdc_balance.available, 190);
+        assert_eq!(usdc_balance.held, 60);
+
+        // An asset the user never touched still shows up, at zero.
+        let eth_balance = balances.iter().find(|b| b.asset == Asset::Eth).unwrap();
+        assert_eq!(eth_balance.available, 0);
+        assert_eq!(eth_balance.held, 0);
+    }
+
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn deposit_replay_returns_same_receipt() {
@@ -958,6 +1036,31 @@ mod tests {
             result,
             Err(LedgerError::IdempotencyConflict { .. })
         ));
+    }
+
+    // ── Connection pool tests ─────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn connection_pool_initializes_successfully() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool);
+        // If we got here, the pool initialized successfully.
+        // The store is created and ready for use.
+        assert!(true);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn connection_pool_health_ping_succeeds() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        // Perform a simple health check by pinging the database
+        let result = sqlx::query("SELECT 1 AS health_check")
+            .fetch_optional(&pool)
+            .await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
     }
 
     // Helper to read balance from the pool directly (outside the store).

@@ -1,6 +1,8 @@
 pub mod assets;
 pub mod auth;
+pub mod balances;
 pub mod health;
+pub mod me;
 
 use axum::Router;
 
@@ -11,4 +13,5 @@ pub fn v1() -> Router<AppState> {
     Router::new()
         .merge(assets::routes())
         .merge(auth::routes())
+        .merge(balances::routes())
 }

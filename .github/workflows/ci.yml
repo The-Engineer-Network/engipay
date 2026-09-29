@@ -94,6 +94,9 @@ jobs:
           echo "POSTGRES_PASSWORD=ci-only-not-a-secret" > .env
           docker compose up -d --wait postgres
 
+      - name: Verify migrations are idempotent
+        run: bash ./scripts/verify-migrations.sh
+
       - name: Database refuses ledger corruption
         run: bash ./scripts/test-db-guarantees.sh
 
