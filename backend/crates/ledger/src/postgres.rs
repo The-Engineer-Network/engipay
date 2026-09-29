@@ -721,10 +721,7 @@ mod tests {
     async fn test_pool() -> Option<PgPool> {
         let url = std::env::var("DATABASE_URL").ok()?;
         let pool = PgPool::connect(&url).await.ok()?;
-        sqlx::migrate!("../../migrations")
-            .run(&pool)
-            .await
-            .ok()?;
+        sqlx::migrate!("../../migrations").run(&pool).await.ok()?;
         Some(pool)
     }
 
@@ -810,7 +807,10 @@ mod tests {
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
 
-        store.deposit(alice, usdc(50), "dep-conflict").await.unwrap();
+        store
+            .deposit(alice, usdc(50), "dep-conflict")
+            .await
+            .unwrap();
         let result = store.deposit(alice, usdc(99), "dep-conflict").await;
 
         assert!(matches!(
@@ -856,10 +856,7 @@ mod tests {
             .unwrap();
         let result = store.create_hold(alice, usdc(101), "hold-insuf").await;
 
-        assert!(matches!(
-            result,
-            Err(LedgerError::InsufficientFunds { .. })
-        ));
+        assert!(matches!(result, Err(LedgerError::InsufficientFunds { .. })));
     }
 
     // ── Transfer tests ─────────────────────────────────────────────────
@@ -873,10 +870,7 @@ mod tests {
         ensure_user(&pool, alice).await;
         ensure_user(&pool, bob).await;
 
-        store
-            .deposit(alice, usdc(100), "seed-xfer")
-            .await
-            .unwrap();
+        store.deposit(alice, usdc(100), "seed-xfer").await.unwrap();
         let receipt = store
             .transfer(alice, bob, usdc(30), "xfer-1")
             .await
@@ -905,10 +899,7 @@ mod tests {
             .unwrap();
         let result = store.transfer(alice, bob, usdc(101), "xfer-insuf").await;
 
-        assert!(matches!(
-            result,
-            Err(LedgerError::InsufficientFunds { .. })
-        ));
+        assert!(matches!(result, Err(LedgerError::InsufficientFunds { .. })));
         // Nothing moved.
         let alice_bal = get_user_balance_from_pool(&pool, alice, Asset::Usdc, "available").await;
         let bob_bal = get_user_balance_from_pool(&pool, bob, Asset::Usdc, "available").await;
