@@ -130,7 +130,7 @@ impl StellarClient {
         );
 
         tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        self.get_with_retry(path, attempt + 1).await
+        Box::pin(self.get_with_retry(path, attempt + 1)).await
     }
 
     /// The account's current sequence number.
@@ -228,7 +228,7 @@ impl StellarClient {
         );
 
         tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        self.submit_payment_with_retry(encoded, attempt + 1).await
+        Box::pin(self.submit_payment_with_retry(encoded, attempt + 1)).await
     }
 }
 
@@ -275,7 +275,6 @@ impl ChainClient for StellarClient {
                             error!(
                                 transaction = %record.transaction_hash,
                                 operation = %record.paging_token,
-                                from = ?record.from,
                                 to = ?record.to,
                                 to_muxed = ?record.to_muxed,
                                 asset_code = ?record.asset_code,
