@@ -132,6 +132,19 @@ Watch Stellar testnet deposits into a custody account:
 docker compose run --rm -e STELLAR_CUSTODY_ACCOUNT=G... toolbox cargo run -p engipay-chain
 ```
 
+Check Base RPC connectivity (Base Sepolia by default):
+
+```bash
+docker compose run --rm -e BASE_NETWORK=testnet toolbox cargo run -p engipay-chain -- base-health
+```
+
+The command queries `eth_chainId` and `eth_blockNumber`, refuses a different
+chain, and prints the chain ID and block height. Production must explicitly set
+`BASE_NETWORK=mainnet`. Pass `-e BASE_RPC_URL=https://your-rpc-endpoint` to use a
+dedicated provider; blank or absent URLs use the selected network's public RPC.
+The health check times out after 20 seconds and exits unsuccessfully on errors.
+This adds RPC connectivity; Base deposit watching is not implemented yet.
+
 ## Testing
 
 | What | Command |

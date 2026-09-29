@@ -1,6 +1,7 @@
 //! engipay-chain
 //!
 //!   engipay-chain                                   watch for deposits
+//!   engipay-chain base-health                       check configured Base RPC
 //!   engipay-chain stellar-send <to> <amount> <asset>  testnet payment
 //!
 //! Configuration comes from the environment; see backend/.env.example.
@@ -10,6 +11,7 @@ use std::env;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use engipay_chain::evm::{AlloyProvider, BaseNetwork};
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
 use engipay_chain::stellar::{StellarClient, StellarConfig, StellarNetwork};
 use engipay_chain::{ChainClient, is_creditable};
@@ -32,9 +34,31 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => watch().await,
+        Some("base-health") if args.len() == 1 => base_health().await,
         Some("stellar-send") => stellar_send(&args[1..]).await,
         Some(other) => bail!("unknown command {other:?}; see the top of crates/chain/src/main.rs"),
     }
+}
+
+async fn base_health() -> anyhow::Result<()> {
+    let network = match env::var("BASE_NETWORK") {
+        Ok(value) => BaseNetwork::parse(&value)?,
+        Err(env::VarError::NotPresent) => BaseNetwork::Sepolia,
+        Err(_) => bail!("BASE_NETWORK must be valid Unicode"),
+    };
+    let rpc_url = match env::var("BASE_RPC_URL") {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(_) => bail!("BASE_RPC_URL must be valid Unicode"),
+    };
+    let health = AlloyProvider::new(network, rpc_url.as_deref())?
+        .health_check()
+        .await?;
+    println!(
+        "chain_id={} block_number={}",
+        health.chain_id, health.block_number
+    );
+    Ok(())
 }
 
 fn stellar_client() -> anyhow::Result<Option<StellarClient>> {

@@ -6,9 +6,10 @@
 //!
 //! Each network sits behind the same [`ChainClient`] trait, so the API and the
 //! deposit watcher never care which network they are talking to. Stellar is
-//! implemented ([`stellar`]); Base (via `alloy`) and Bitcoin (via `bdk`) come
-//! next.
+//! implemented ([`stellar`]); Base RPC connectivity is provided by [`evm`].
+//! Base deposit watching and Bitcoin (via `bdk`) come next.
 
+pub mod evm;
 pub mod stellar;
 
 use engipay_core::{Asset, Chain, Money};
