@@ -51,6 +51,8 @@ pub struct PaymentRecord {
     #[serde(default)]
     pub to_muxed: Option<String>,
     #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
     pub asset_type: Option<String>,
     #[serde(default)]
     pub asset_code: Option<String>,
@@ -380,8 +382,14 @@ mod tests {
         assert_eq!(parse_stroops("100000.0000000"), Some(1_000_000_000_000));
         assert_eq!(parse_stroops("1000000.0000000"), Some(10_000_000_000_000));
         assert_eq!(parse_stroops("10000000.0000000"), Some(100_000_000_000_000));
-        assert_eq!(parse_stroops("100000000.0000000"), Some(1_000_000_000_000_000));
-        assert_eq!(parse_stroops("1000000000.0000000"), Some(10_000_000_000_000_000));
+        assert_eq!(
+            parse_stroops("100000000.0000000"),
+            Some(1_000_000_000_000_000)
+        );
+        assert_eq!(
+            parse_stroops("1000000000.0000000"),
+            Some(10_000_000_000_000_000)
+        );
     }
 
     #[test]
@@ -396,8 +404,9 @@ mod tests {
         assert_eq!(parse_stroops("1.0000000"), Some(10_000_000));
         assert_eq!(parse_stroops("0.1234567"), Some(1_234_567));
         assert_eq!(parse_stroops("0.9999999"), Some(9_999_999));
-        assert_eq!(parse_stroops("123.4567890"), None);
+        assert_eq!(parse_stroops("123.4567890"), Some(1_234_567_890));
         assert_eq!(parse_stroops("123.456789"), None);
+        assert_eq!(parse_stroops("123.45678901"), None);
     }
 
     #[test]

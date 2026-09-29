@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use engipay_core::Chain;
 use engipay_core::stellar::{StellarAddress, parse_address};
-use tracing::{warn, error};
+use tracing::{error, warn};
 
 use self::horizon::{Account, Page, PaymentRecord, Root, SubmitProblem, Submitted};
 pub use self::network::StellarNetwork;
@@ -77,60 +77,70 @@ impl StellarClient {
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ChainError> {
-        self.get_with_retry(path, 0).await
+        self.get_with_retry(path).await
     }
 
+    #[allow(clippy::arithmetic_side_effects)]
     async fn get_with_retry<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
-        attempt: u32,
     ) -> Result<T, ChainError> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 500;
         const MAX_DELAY_MS: u64 = 30_000;
 
-        let url = format!("{}{path}", self.config.horizon_url);
-        let response = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|error| ChainError::Unavailable(error.to_string()))?;
-        let status = response.status();
+        let mut attempt = 0;
+        loop {
+            let url = format!("{}{path}", self.config.horizon_url);
+            let response = self
+                .http
+                .get(&url)
+                .send()
+                .await
+                .map_err(|error| ChainError::Unavailable(error.to_string()))?;
+            let status = response.status();
 
-        if status.is_success() {
-            return response.json().await.map_err(|error| {
-                ChainError::Unavailable(format!("unexpected Horizon response: {error}"))
-            });
+            if status.is_success() {
+                return response.json().await.map_err(|error| {
+                    ChainError::Unavailable(format!("unexpected Horizon response: {error}"))
+                });
+            }
+
+            let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
+            if !is_retryable || attempt >= MAX_RETRIES {
+                return Err(ChainError::Unavailable(format!(
+                    "Horizon returned {status} for {path}"
+                )));
+            }
+
+            let delay_ms = std::cmp::min(
+                INITIAL_DELAY_MS.saturating_mul(1u64.checked_shl(attempt).unwrap_or(u64::MAX)),
+                MAX_DELAY_MS,
+            );
+            let jitter_ms = delay_ms / 10;
+            let jitter_offset = if jitter_ms > 0 {
+                ((attempt as u64).wrapping_mul(73856093))
+                    .wrapping_mul(19349663)
+                    .wrapping_mul(83492791)
+                    % (jitter_ms + 1)
+            } else {
+                0
+            };
+            let jittered_delay = delay_ms
+                .saturating_sub(jitter_ms / 2)
+                .saturating_add(jitter_offset);
+
+            warn!(
+                status = status.as_u16(),
+                attempt = attempt + 1,
+                max_retries = MAX_RETRIES,
+                delay_ms = jittered_delay,
+                "Horizon returned transient error, retrying"
+            );
+
+            tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
+            attempt += 1;
         }
-
-        let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
-        if !is_retryable || attempt >= MAX_RETRIES {
-            return Err(ChainError::Unavailable(format!(
-                "Horizon returned {status} for {path}"
-            )));
-        }
-
-        let delay_ms = std::cmp::min(
-            (INITIAL_DELAY_MS as f64 * 2_f64.powi(attempt as i32)) as u64,
-            MAX_DELAY_MS,
-        );
-        let jitter_ms = (delay_ms as f64 * 0.1) as u64;
-        let jitter_offset = ((attempt as u64).wrapping_mul(73856093))
-            .wrapping_mul(19349663)
-            .wrapping_mul(83492791) % (jitter_ms + 1);
-        let jittered_delay = delay_ms - jitter_ms / 2 + jitter_offset;
-
-        warn!(
-            status = status.as_u16(),
-            attempt = attempt + 1,
-            max_retries = MAX_RETRIES,
-            delay_ms = jittered_delay,
-            "Horizon returned transient error, retrying"
-        );
-
-        tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        self.get_with_retry(path, attempt + 1).await
     }
 
     /// The account's current sequence number.
@@ -170,65 +180,76 @@ impl StellarClient {
         let encoded = payment::envelope_base64(&envelope)
             .map_err(|error| ChainError::Rejected(error.to_string()))?;
 
-        self.submit_payment_with_retry(&encoded, 0).await
+        self.submit_payment_with_retry(&encoded).await
     }
 
-    async fn submit_payment_with_retry(&self, encoded: &str, attempt: u32) -> Result<String, ChainError> {
+    #[allow(clippy::arithmetic_side_effects)]
+    async fn submit_payment_with_retry(&self, encoded: &str) -> Result<String, ChainError> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 500;
         const MAX_DELAY_MS: u64 = 30_000;
 
-        let response = self
-            .http
-            .post(format!("{}/transactions", self.config.horizon_url))
-            .form(&[("tx", encoded)])
-            .send()
-            .await
-            .map_err(|error| ChainError::Unavailable(error.to_string()))?;
-
-        let status = response.status();
-        if status.is_success() {
-            let submitted: Submitted = response
-                .json()
+        let mut attempt = 0;
+        loop {
+            let response = self
+                .http
+                .post(format!("{}/transactions", self.config.horizon_url))
+                .form(&[("tx", encoded)])
+                .send()
                 .await
                 .map_err(|error| ChainError::Unavailable(error.to_string()))?;
-            tracing::info!(hash = %submitted.hash, ledger = submitted.ledger, "stellar payment landed");
-            return Ok(submitted.hash);
-        }
 
-        let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
-        if !is_retryable || attempt >= MAX_RETRIES {
-            let problem: Option<SubmitProblem> = response.json().await.ok();
-            let detail = problem.map_or_else(
-                || status.to_string(),
-                |problem| match problem.extras.and_then(|extras| extras.result_codes) {
-                    Some(codes) => format!("{}: {codes}", problem.title),
-                    None => problem.title,
-                },
+            let status = response.status();
+            if status.is_success() {
+                let submitted: Submitted = response
+                    .json()
+                    .await
+                    .map_err(|error| ChainError::Unavailable(error.to_string()))?;
+                tracing::info!(hash = %submitted.hash, ledger = submitted.ledger, "stellar payment landed");
+                return Ok(submitted.hash);
+            }
+
+            let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
+            if !is_retryable || attempt >= MAX_RETRIES {
+                let problem: Option<SubmitProblem> = response.json().await.ok();
+                let detail = problem.map_or_else(
+                    || status.to_string(),
+                    |problem| match problem.extras.and_then(|extras| extras.result_codes) {
+                        Some(codes) => format!("{}: {codes}", problem.title),
+                        None => problem.title,
+                    },
+                );
+                return Err(ChainError::Rejected(detail));
+            }
+
+            let delay_ms = std::cmp::min(
+                INITIAL_DELAY_MS.saturating_mul(1u64.checked_shl(attempt).unwrap_or(u64::MAX)),
+                MAX_DELAY_MS,
             );
-            return Err(ChainError::Rejected(detail));
+            let jitter_ms = delay_ms / 10;
+            let jitter_offset = if jitter_ms > 0 {
+                ((attempt as u64).wrapping_mul(73856093))
+                    .wrapping_mul(19349663)
+                    .wrapping_mul(83492791)
+                    % (jitter_ms + 1)
+            } else {
+                0
+            };
+            let jittered_delay = delay_ms
+                .saturating_sub(jitter_ms / 2)
+                .saturating_add(jitter_offset);
+
+            warn!(
+                status = status.as_u16(),
+                attempt = attempt + 1,
+                max_retries = MAX_RETRIES,
+                delay_ms = jittered_delay,
+                "Horizon returned transient error on payment submission, retrying"
+            );
+
+            tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
+            attempt += 1;
         }
-
-        let delay_ms = std::cmp::min(
-            (INITIAL_DELAY_MS as f64 * 2_f64.powi(attempt as i32)) as u64,
-            MAX_DELAY_MS,
-        );
-        let jitter_ms = (delay_ms as f64 * 0.1) as u64;
-        let jitter_offset = ((attempt as u64).wrapping_mul(73856093))
-            .wrapping_mul(19349663)
-            .wrapping_mul(83492791) % (jitter_ms + 1);
-        let jittered_delay = delay_ms - jitter_ms / 2 + jitter_offset;
-
-        warn!(
-            status = status.as_u16(),
-            attempt = attempt + 1,
-            max_retries = MAX_RETRIES,
-            delay_ms = jittered_delay,
-            "Horizon returned transient error on payment submission, retrying"
-        );
-
-        tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        self.submit_payment_with_retry(encoded, attempt + 1).await
     }
 }
 
