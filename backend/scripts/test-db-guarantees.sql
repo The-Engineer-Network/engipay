@@ -82,6 +82,93 @@ COMMIT;
 UPDATE ledger_holds SET state = 'settled', closed_at = now() WHERE reference = 'wd-1';
 UPDATE ledger_holds SET state = 'open', closed_at = NULL WHERE reference = 'wd-1';
 
+\echo === CASE 11: XLM deposit commits and balances correctly (EXPECT OK)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000011', 'deposit', 'xlm-dep-1', 'deposit');
+INSERT INTO ledger_postings (transaction_id, owner_kind, system_account, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000011', 'system', 'external_inflow', 'XLM', 'available', -500);
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000011', 'user', :'user1', 'XLM', 'available', 500);
+COMMIT;
+SELECT 'CASE11_RESULT balance=' || amount FROM account_balances
+    WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'available';
+
+\echo === CASE 12: XLM transfer between users balances (EXPECT OK)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000012', 'transfer', 'xlm-pay-1', 'transfer');
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000012', 'user', :'user1', 'XLM', 'available', -200),
+           ('aaaaaaaa-0000-0000-0000-000000000012', 'user', :'user2', 'XLM', 'available', 200);
+COMMIT;
+SELECT 'CASE12_RESULT user1=' || (SELECT amount FROM account_balances WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'available')
+       || ' user2=' || (SELECT amount FROM account_balances WHERE user_id = :'user2' AND asset = 'XLM' AND bucket = 'available');
+
+\echo === CASE 13: XLM hold moves money to held bucket (EXPECT OK)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000013', 'hold', 'xlm-wd-1', 'hold');
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000013', 'user', :'user1', 'XLM', 'available', -150),
+           ('aaaaaaaa-0000-0000-0000-000000000013', 'user', :'user1', 'XLM', 'held', 150);
+INSERT INTO ledger_holds (reference, user_id, asset, amount) VALUES ('xlm-wd-1', :'user1', 'XLM', 150);
+COMMIT;
+SELECT 'CASE13_RESULT available=' || (SELECT amount FROM account_balances WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'available')
+       || ' held=' || (SELECT amount FROM account_balances WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'held');
+
+\echo === CASE 14: XLM hold settlement moves money out and records fee (EXPECT OK)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000014', 'settle_hold', 'xlm-wd-1:settle', 'settle');
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000014', 'user', :'user1', 'XLM', 'held', -150);
+INSERT INTO ledger_postings (transaction_id, owner_kind, system_account, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000014', 'system', 'external_outflow', 'XLM', 'available', 135);
+INSERT INTO ledger_postings (transaction_id, owner_kind, system_account, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000014', 'system', 'fees', 'XLM', 'available', 15);
+UPDATE ledger_holds SET state = 'settled', closed_at = now() WHERE reference = 'xlm-wd-1';
+COMMIT;
+SELECT 'CASE14_RESULT user1_held=' || coalesce((SELECT amount FROM account_balances WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'held'), 0)
+       || ' outflow=' || (SELECT amount FROM account_balances WHERE owner_kind = 'system' AND system_account = 'external_outflow' AND asset = 'XLM')
+       || ' fees=' || (SELECT amount FROM account_balances WHERE owner_kind = 'system' AND system_account = 'fees' AND asset = 'XLM');
+
+\echo === CASE 15: XLM unbalanced transaction refused (EXPECT ERROR does not balance for XLM)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000015', 'deposit', 'xlm-dep-bad', 'deposit');
+INSERT INTO ledger_postings (transaction_id, owner_kind, system_account, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000015', 'system', 'external_inflow', 'XLM', 'available', -300);
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000015', 'user', :'user2', 'XLM', 'available', 200);
+COMMIT;
+
+\echo === CASE 16: user profile creation with tag (EXPECT OK)
+BEGIN;
+INSERT INTO user_profiles (user_id, tag, email, phone, kyc_tier)
+    VALUES (:'user1', 'alice', 'alice@example.com', '+1234567890', 1);
+COMMIT;
+SELECT 'CASE16_RESULT tag=' || tag || ' email=' || email || ' kyc=' || kyc_tier
+    FROM user_profiles WHERE user_id = :'user1';
+
+\echo === CASE 17: case-insensitive tag uniqueness is enforced (EXPECT ERROR duplicate key)
+BEGIN;
+INSERT INTO user_profiles (user_id, tag, email, kyc_tier)
+    VALUES ('99999999-9999-9999-9999-999999999999', 'ALICE', 'alice2@example.com', 1);
+COMMIT;
+
+\echo === CASE 18: profile tag cannot be empty or whitespace (EXPECT ERROR check constraint)
+BEGIN;
+INSERT INTO user_profiles (user_id, tag, kyc_tier)
+    VALUES ('88888888-8888-8888-8888-888888888888', '   ', 1);
+COMMIT;
+
+\echo === CASE 19: cascading delete removes profile when user deleted (EXPECT OK)
+BEGIN;
+DELETE FROM users WHERE id = :'user1';
+SELECT 'CASE19_RESULT profiles_remaining=' || count(*) FROM user_profiles;
+COMMIT;
+
 \echo === FINAL: history intact after every refused attempt
 SELECT 'FINAL_RESULT available=' || coalesce(sum(amount) FILTER (WHERE bucket = 'available'), 0)
        || ' held=' || coalesce(sum(amount) FILTER (WHERE bucket = 'held'), 0)

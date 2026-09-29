@@ -546,9 +546,19 @@ mod tests {
         Money::from_minor(Asset::Usdc, units)
     }
 
+    fn xlm(units: i128) -> Money {
+        Money::from_minor(Asset::Xlm, units)
+    }
+
     fn funded(user: UserId, units: i128) -> Ledger {
         let mut ledger = Ledger::new();
         ledger.deposit(user, usdc(units), "seed").unwrap();
+        ledger
+    }
+
+    fn funded_xlm(user: UserId, units: i128) -> Ledger {
+        let mut ledger = Ledger::new();
+        ledger.deposit(user, xlm(units), "seed").unwrap();
         ledger
     }
 
@@ -765,9 +775,6 @@ mod tests {
         );
     }
 
-    /// Hundreds of mixed operations, many deliberately invalid. After every
-    /// step the ledger must still derive correctly from history, no user may be
-    /// negative, and total money per asset must be conserved.
     #[test]
     fn money_is_conserved_through_a_long_random_sequence() {
         let users: Vec<UserId> = (0..5).map(|_| UserId::new()).collect();
@@ -821,5 +828,162 @@ mod tests {
                 "money created or destroyed at step {step}"
             );
         }
+    }
+
+    #[test]
+    fn xlm_deposit_credits_available_balance() {
+        let alice = UserId::new();
+        let ledger = funded_xlm(alice, 500);
+        assert_eq!(
+            ledger.balance(alice, Asset::Xlm),
+            Balance {
+                asset: Asset::Xlm,
+                available: 500,
+                held: 0
+            }
+        );
+        assert_eq!(
+            ledger.system_balance(SystemAccount::ExternalInflow, Asset::Xlm),
+            -500
+        );
+        ledger.verify().unwrap();
+    }
+
+    #[test]
+    fn xlm_transfer_moves_money_between_users() {
+        let (alice, bob) = (UserId::new(), UserId::new());
+        let mut ledger = funded_xlm(alice, 1000);
+        ledger.transfer(alice, bob, xlm(300), "pay-xlm-1").unwrap();
+        assert_eq!(ledger.balance(alice, Asset::Xlm).available, 700);
+        assert_eq!(ledger.balance(bob, Asset::Xlm).available, 300);
+        ledger.verify().unwrap();
+    }
+
+    #[test]
+    fn xlm_hold_and_settle() {
+        let alice = UserId::new();
+        let mut ledger = funded_xlm(alice, 1000);
+        ledger.hold(alice, xlm(600), "wd-xlm-1").unwrap();
+        assert_eq!(
+            ledger.balance(alice, Asset::Xlm),
+            Balance {
+                asset: Asset::Xlm,
+                available: 400,
+                held: 600
+            }
+        );
+        ledger.settle("wd-xlm-1", Some(xlm(50))).unwrap();
+        assert_eq!(
+            ledger.balance(alice, Asset::Xlm),
+            Balance {
+                asset: Asset::Xlm,
+                available: 400,
+                held: 0
+            }
+        );
+        assert_eq!(
+            ledger.system_balance(SystemAccount::ExternalOutflow, Asset::Xlm),
+            550
+        );
+        assert_eq!(ledger.system_balance(SystemAccount::Fees, Asset::Xlm), 50);
+        ledger.verify().unwrap();
+    }
+
+    #[test]
+    fn xlm_postings_balance_to_zero() {
+        let (alice, bob) = (UserId::new(), UserId::new());
+        let mut ledger = Ledger::new();
+        
+        // Deposit XLM for both users
+        ledger.deposit(alice, xlm(100), "deposit-alice").unwrap();
+        ledger.deposit(bob, xlm(50), "deposit-bob").unwrap();
+        
+        // Transfer between them
+        ledger.transfer(alice, bob, xlm(30), "transfer-1").unwrap();
+        
+        // Hold and release
+        ledger.hold(alice, xlm(20), "hold-1").unwrap();
+        ledger.release("hold-1").unwrap();
+        
+        // Hold and settle with fee
+        ledger.hold(bob, xlm(25), "hold-2").unwrap();
+        ledger.settle("hold-2", Some(xlm(5))).unwrap();
+        
+        // Verify all transactions balance to zero for XLM
+        for tx in ledger.transactions() {
+            let mut total: i128 = 0;
+            for posting in &tx.postings {
+                if posting.account.asset == Asset::Xlm {
+                    total = total.checked_add(posting.amount).unwrap();
+                }
+            }
+            assert_eq!(total, 0, "XLM posting in transaction {:?} does not balance", tx.id);
+        }
+        
+        ledger.verify().unwrap();
+    }
+
+    #[test]
+    fn xlm_balances_follow_double_entry_invariant() {
+        let alice = UserId::new();
+        let mut ledger = Ledger::new();
+        
+        // Deposit 1000 XLM
+        ledger.deposit(alice, xlm(1000), "deposit-xlm-1").unwrap();
+        
+        // External inflow should be -1000 (money came from outside)
+        // User balance should be +1000
+        assert_eq!(
+            ledger.system_balance(SystemAccount::ExternalInflow, Asset::Xlm),
+            -1000
+        );
+        assert_eq!(ledger.balance(alice, Asset::Xlm).available, 1000);
+        
+        // Hold 600 XLM
+        ledger.hold(alice, xlm(600), "hold-xlm-1").unwrap();
+        
+        // Available should decrease, held should increase
+        assert_eq!(ledger.balance(alice, Asset::Xlm).available, 400);
+        assert_eq!(ledger.balance(alice, Asset::Xlm).held, 600);
+        
+        // Settle with 50 XLM fee
+        ledger.settle("hold-xlm-1", Some(xlm(50))).unwrap();
+        
+        // Money leaves the system, fee stays
+        assert_eq!(
+            ledger.system_balance(SystemAccount::ExternalOutflow, Asset::Xlm),
+            550
+        );
+        assert_eq!(
+            ledger.system_balance(SystemAccount::Fees, Asset::Xlm),
+            50
+        );
+        
+        // User should still have 400 available
+        assert_eq!(ledger.balance(alice, Asset::Xlm).available, 400);
+        assert_eq!(ledger.balance(alice, Asset::Xlm).held, 0);
+        
+        // Verify total conservation: inflow + outflow + fees + user balance = 0
+        let total = ledger.system_balance(SystemAccount::ExternalInflow, Asset::Xlm)
+            + ledger.system_balance(SystemAccount::ExternalOutflow, Asset::Xlm)
+            + ledger.system_balance(SystemAccount::Fees, Asset::Xlm)
+            + ledger.balance(alice, Asset::Xlm).available
+            + ledger.balance(alice, Asset::Xlm).held;
+        assert_eq!(total, 0, "XLM does not balance across all accounts");
+        
+        ledger.verify().unwrap();
+    }
+
+    #[test]
+    fn xlm_replaying_a_deposit_does_not_credit_twice() {
+        let alice = UserId::new();
+        let mut ledger = Ledger::new();
+        let first = ledger.deposit(alice, xlm(200), "stellar:0xabc:0").unwrap();
+        let second = ledger.deposit(alice, xlm(200), "stellar:0xabc:0").unwrap();
+        assert!(!first.replayed);
+        assert!(second.replayed);
+        assert_eq!(first.transaction_id, second.transaction_id);
+        assert_eq!(ledger.balance(alice, Asset::Xlm).available, 200);
+        assert_eq!(ledger.transactions().len(), 1);
     }
 }
