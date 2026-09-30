@@ -6,10 +6,16 @@
 
 pub mod confirmations;
 pub mod cursor;
+pub mod broadcast;
 pub mod utxo;
 
 pub use confirmations::{is_bitcoin_confirmed, MIN_BITCOIN_CONFIRMATIONS};
 pub use cursor::{BitcoinCursor, BitcoinCursorError, BITCOIN_CHAIN_ID};
 pub use utxo::{
     ConfirmedTransaction, DetectedUtxo, ScriptPubKey, TxOutput, Txid, UtxoWatchError, UtxoWatcher,
+};
+
+pub use broadcast::{
+    broadcast_raw_bitcoin_tx, get_transaction_status, validate_raw_tx_hex,
+    BitcoinBroadcastError, BitcoinTxStatus,
 };
