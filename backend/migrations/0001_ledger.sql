@@ -54,6 +54,21 @@ CREATE TABLE ledger_holds (
     CHECK ((state = 'open') = (closed_at IS NULL))
 );
 
+-- Merchant/peer payment requests (invoices). Amounts are whole smallest units
+-- as NUMERIC(78, 0), matching the ledger, so no floating point is ever used.
+CREATE TABLE payment_requests (
+    id          UUID PRIMARY KEY,
+    user_id     UUID NOT NULL REFERENCES users (id),
+    asset       TEXT NOT NULL CHECK (asset IN ('ETH', 'USDC', 'BTC')),
+    amount      NUMERIC(78, 0) NOT NULL CHECK (amount > 0),
+    note        TEXT,
+    uri         TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX payment_requests_by_user ON payment_requests (user_id, created_at DESC);
+
 -- Balances are derived from postings, never stored separately, so they cannot
 -- drift from the history.
 CREATE VIEW account_balances AS
