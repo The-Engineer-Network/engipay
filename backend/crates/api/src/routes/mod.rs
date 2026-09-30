@@ -1,4 +1,6 @@
 pub mod assets;
+pub mod auth;
+pub mod balances;
 pub mod deposits;
 pub mod health;
 pub mod me;
