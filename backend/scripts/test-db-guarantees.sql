@@ -82,6 +82,22 @@ COMMIT;
 UPDATE ledger_holds SET state = 'settled', closed_at = now() WHERE reference = 'wd-1';
 UPDATE ledger_holds SET state = 'open', closed_at = NULL WHERE reference = 'wd-1';
 
+\echo === CASE 11: system account in held bucket is rejected (EXPECT ERROR check constraint)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000011', 'deposit', 'sys-held-1', 'deposit');
+INSERT INTO ledger_postings (transaction_id, owner_kind, system_account, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000011', 'system', 'external_inflow', 'USDC', 'held', -50);
+COMMIT;
+
+\echo === CASE 12: system account in available bucket with user_id is rejected (EXPECT ERROR check constraint)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000012', 'deposit', 'sys-user-1', 'deposit');
+INSERT INTO ledger_postings (transaction_id, owner_kind, system_account, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000012', 'system', 'external_inflow', :'user1', 'USDC', 'available', -50);
+COMMIT;
+
 \echo === FINAL: history intact after every refused attempt
 SELECT 'FINAL_RESULT available=' || coalesce(sum(amount) FILTER (WHERE bucket = 'available'), 0)
        || ' held=' || coalesce(sum(amount) FILTER (WHERE bucket = 'held'), 0)
