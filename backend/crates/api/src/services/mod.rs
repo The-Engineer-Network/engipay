@@ -4,3 +4,4 @@
 
 pub mod limits;
 pub mod stellar_muxed;
+pub mod payment_requests;
