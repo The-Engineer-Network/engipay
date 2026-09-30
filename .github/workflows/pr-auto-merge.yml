@@ -1,0 +1,97 @@
+name: Drips PR Governance & Auto-Merge
+
+on:
+  pull_request:
+    branches: [drips]
+    types: [opened, edited, synchronize, reopened]
+  pull_request_target:
+    branches: [drips]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  validate-and-auto-merge:
+    name: Validate PR & Auto-Merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR Target Branch and Description
+        id: validate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          ERRORS=()
+
+          # Rule 1: PR must target the 'drips' branch
+          if [ "$BASE_REF" != "drips" ]; then
+            ERRORS+=("- **Target Branch Mismatch**: Your PR currently targets the \`$BASE_REF\` branch instead of \`drips\`.")
+          fi
+
+          # Rule 2: PR description must contain at least one line of 'closes #<issue number>' (case-insensitive)
+          # Supported keywords: closes, close, closed, fixes, fix, fixed, resolves, resolve, resolved
+          if ! echo "$PR_BODY" | grep -Ei '(closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)\s+#[0-9]+' > /dev/null; then
+            ERRORS+=("- **Missing Issue Link**: Your PR description does not contain a line in the format \`closes #<issue number>\` (e.g., \`Closes #42\`).")
+          fi
+
+          if [ ${#ERRORS[@]} -gt 0 ]; then
+            echo "validation_passed=false" >> $GITHUB_OUTPUT
+
+            # Build detailed feedback message for contributor
+            COMMENT_BODY=$(cat <<EOF
+          👋 Hi @$PR_AUTHOR! Thank you for contributing to EngiPay.
+
+          Before this Pull Request can be reviewed and auto-merged into **\`drips\`**, the following requirements must be addressed:
+
+          $(printf '%s\n' "${ERRORS[@]}")
+
+          ---
+
+          ### 🛠️ How to resolve this:
+
+          1. **Fixing the Target Branch**:
+             - Click **Edit** near the top of this PR next to the title.
+             - In the **base** dropdown, change the target branch to **\`drips\`**.
+
+          2. **Linking an Issue**:
+             - Edit your PR description to include a line linking the issue you are working on:
+             \`\`\`markdown
+             Closes #<issue number>
+             \`\`\`
+             *(Replace \`<issue number>\` with the actual issue ID, for example \`Closes #15\`)*.
+
+          Once updated, this check will re-run automatically. Thank you!
+          EOF
+          )
+
+            # Check if bot has already commented to avoid spamming
+            PREV_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"How to resolve this\"))) | .id" | tail -n 1 || true)
+
+            if [ -n "$PREV_COMMENT_ID" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$PREV_COMMENT_ID" -f body="$COMMENT_BODY" || true
+            else
+              gh api -X POST "repos/$REPO/issues/comments/$PR_NUMBER" -f body="$COMMENT_BODY" || true
+            fi
+
+            echo "::error::PR governance validation failed. See comment on PR #$PR_NUMBER for details."
+            exit 1
+          else
+            echo "validation_passed=true" >> $GITHUB_OUTPUT
+            echo "All governance checks passed successfully."
+
+            # Enable GitHub auto-merge (squash)
+            if gh pr merge "$PR_NUMBER" --repo "$REPO" --auto --squash 2>&1; then
+              echo "Auto-merge enabled for PR #$PR_NUMBER."
+            else
+              echo "Note: Auto-merge could not be set automatically (check repo auto-merge settings). Continuing."
+            fi
+          fi

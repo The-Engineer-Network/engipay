@@ -3,17 +3,19 @@
 //! Talks to Horizon over HTTPS. Horizon only reads the chain and relays signed
 //! transactions; it never sees a key.
 
+pub mod cursor;
 pub mod horizon;
 pub mod network;
 pub mod payment;
 
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use engipay_core::Chain;
 use engipay_core::stellar::{StellarAddress, parse_address};
-use tracing::warn;
+use tracing::{error, warn};
 
-use self::horizon::{Account, Page, PaymentRecord, Root, SubmitProblem, Submitted};
+use self::horizon::{Account, Page, PaymentRecord, Root, SubmitProblem, Submitted, TransactionCache};
 pub use self::network::StellarNetwork;
 use self::payment::{PaymentRequest, StellarSigner};
 use crate::{ChainClient, ChainError, ObservedDeposit};
@@ -60,6 +62,10 @@ impl StellarConfig {
 pub struct StellarClient {
     config: StellarConfig,
     http: reqwest::Client,
+    /// Short-lived cache for `GET /transactions/{hash}` responses.
+    /// Wrapped in a `Mutex` so `deposits_since` (which takes `&self` via the
+    /// trait) can populate the cache without needing `&mut self`.
+    transaction_cache: Mutex<TransactionCache>,
 }
 
 impl StellarClient {
@@ -69,7 +75,11 @@ impl StellarClient {
             .user_agent(concat!("engipay-chain/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| ChainError::Unavailable(error.to_string()))?;
-        Ok(Self { config, http })
+        Ok(Self {
+            config,
+            http,
+            transaction_cache: Mutex::new(TransactionCache::new()),
+        })
     }
 
     pub fn config(&self) -> &StellarConfig {
@@ -77,6 +87,18 @@ impl StellarClient {
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ChainError> {
+        self.get_with_retry(path, 0).await
+    }
+
+    async fn get_with_retry<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        attempt: u32,
+    ) -> Result<T, ChainError> {
+        const MAX_RETRIES: u32 = 5;
+        const INITIAL_DELAY_MS: u64 = 500;
+        const MAX_DELAY_MS: u64 = 30_000;
+
         let url = format!("{}{path}", self.config.horizon_url);
         let response = self
             .http
@@ -85,14 +107,34 @@ impl StellarClient {
             .await
             .map_err(|error| ChainError::Unavailable(error.to_string()))?;
         let status = response.status();
-        if !status.is_success() {
+
+        if status.is_success() {
+            return response.json().await.map_err(|error| {
+                ChainError::Unavailable(format!("unexpected Horizon response: {error}"))
+            });
+        }
+
+        let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
+        if !is_retryable || attempt >= MAX_RETRIES {
             return Err(ChainError::Unavailable(format!(
                 "Horizon returned {status} for {path}"
             )));
         }
-        response.json().await.map_err(|error| {
-            ChainError::Unavailable(format!("unexpected Horizon response: {error}"))
-        })
+
+        let jittered_delay = backoff_delay_ms(attempt, INITIAL_DELAY_MS, MAX_DELAY_MS);
+
+        warn!(
+            status = status.as_u16(),
+            attempt = attempt.saturating_add(1),
+            max_retries = MAX_RETRIES,
+            delay_ms = jittered_delay,
+            "Horizon returned transient error, retrying"
+        );
+
+        tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
+        // Boxed: an async fn that calls itself needs indirection to have a
+        // finite size.
+        Box::pin(self.get_with_retry(path, attempt.saturating_add(1))).await
     }
 
     /// The account's current sequence number.
@@ -102,6 +144,46 @@ impl StellarClient {
             .sequence
             .parse()
             .map_err(|_| ChainError::Unavailable("Horizon returned a bad sequence".to_owned()))
+    }
+
+    /// Fetches the details for a single transaction, using the in-process
+    /// cache to avoid redundant round-trips.
+    ///
+    /// Multi-operation transactions produce one `PaymentRecord` per operation,
+    /// all sharing the same `transaction_hash`. Without caching each operation
+    /// would trigger a separate `GET /transactions/{hash}`. With the 60-second
+    /// TTL cache only the first call goes to Horizon; subsequent lookups within
+    /// the same polling window are served from memory.
+    pub async fn fetch_transaction(
+        &self,
+        tx_hash: &str,
+    ) -> Result<horizon::JoinedTransaction, ChainError> {
+        // Fast path: check the cache under the lock, then release it before
+        // any await so we never hold a lock across an async boundary.
+        {
+            let cache = self
+                .transaction_cache
+                .lock()
+                .expect("transaction cache lock poisoned");
+            if let Some(cached) = cache.get(tx_hash) {
+                return Ok(cached.clone());
+            }
+        }
+
+        // Cache miss: fetch from Horizon.
+        let fetched: horizon::JoinedTransaction =
+            self.get(&format!("/transactions/{tx_hash}")).await?;
+
+        // Populate the cache before returning.
+        {
+            let mut cache = self
+                .transaction_cache
+                .lock()
+                .expect("transaction cache lock poisoned");
+            cache.insert(tx_hash.to_owned(), fetched.clone());
+        }
+
+        Ok(fetched)
     }
 
     /// Builds, signs and submits a payment from the signer's account. Returns
@@ -132,6 +214,18 @@ impl StellarClient {
         let encoded = payment::envelope_base64(&envelope)
             .map_err(|error| ChainError::Rejected(error.to_string()))?;
 
+        self.submit_payment_with_retry(&encoded, 0).await
+    }
+
+    async fn submit_payment_with_retry(
+        &self,
+        encoded: &str,
+        attempt: u32,
+    ) -> Result<String, ChainError> {
+        const MAX_RETRIES: u32 = 5;
+        const INITIAL_DELAY_MS: u64 = 500;
+        const MAX_DELAY_MS: u64 = 30_000;
+
         let response = self
             .http
             .post(format!("{}/transactions", self.config.horizon_url))
@@ -140,7 +234,8 @@ impl StellarClient {
             .await
             .map_err(|error| ChainError::Unavailable(error.to_string()))?;
 
-        if response.status().is_success() {
+        let status = response.status();
+        if status.is_success() {
             let submitted: Submitted = response
                 .json()
                 .await
@@ -149,16 +244,31 @@ impl StellarClient {
             return Ok(submitted.hash);
         }
 
-        let status = response.status();
-        let problem: Option<SubmitProblem> = response.json().await.ok();
-        let detail = problem.map_or_else(
-            || status.to_string(),
-            |problem| match problem.extras.and_then(|extras| extras.result_codes) {
-                Some(codes) => format!("{}: {codes}", problem.title),
-                None => problem.title,
-            },
+        let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
+        if !is_retryable || attempt >= MAX_RETRIES {
+            let problem: Option<SubmitProblem> = response.json().await.ok();
+            let detail = problem.map_or_else(
+                || status.to_string(),
+                |problem| match problem.extras.and_then(|extras| extras.result_codes) {
+                    Some(codes) => format!("{}: {codes}", problem.title),
+                    None => problem.title,
+                },
+            );
+            return Err(ChainError::Rejected(detail));
+        }
+
+        let jittered_delay = backoff_delay_ms(attempt, INITIAL_DELAY_MS, MAX_DELAY_MS);
+
+        warn!(
+            status = status.as_u16(),
+            attempt = attempt.saturating_add(1),
+            max_retries = MAX_RETRIES,
+            delay_ms = jittered_delay,
+            "Horizon returned transient error on payment submission, retrying"
         );
-        Err(ChainError::Rejected(detail))
+
+        tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
+        Box::pin(self.submit_payment_with_retry(encoded, attempt.saturating_add(1))).await
     }
 }
 
@@ -191,21 +301,65 @@ impl ChainClient for StellarClient {
             let full_page = records.len() == PAGE_LIMIT;
 
             for record in &records {
+                // Prefer the inlined transaction from `join=transactions`. If it
+                // is absent (e.g. the endpoint returned a stripped record), fall
+                // back to an explicit `GET /transactions/{hash}` which benefits
+                // from the 60-second cache — critical for multi-operation
+                // transactions where every operation shares the same hash.
+                let mut record_with_tx = record.clone();
+                if record_with_tx.transaction.is_none() {
+                    match self.fetch_transaction(&record.transaction_hash).await {
+                        Ok(tx) => record_with_tx.transaction = Some(tx),
+                        Err(error) => {
+                            warn!(
+                                transaction = %record.transaction_hash,
+                                operation = %record.paging_token,
+                                ?error,
+                                "could not fetch transaction details"
+                            );
+                        }
+                    }
+                }
+
                 match horizon::deposit_from_record(
-                    record,
+                    &record_with_tx,
                     &self.config.custody_account,
                     self.config.network,
                     latest,
                 ) {
                     Ok(deposit) => deposits.push(deposit),
                     Err(horizon::Skipped::NotIncoming) => {}
-                    Err(reason) => warn!(
-                        transaction = %record.transaction_hash,
-                        operation = %record.paging_token,
-                        ?reason,
-                        "stellar payment into custody was not credited"
-                    ),
+                    Err(reason) => {
+                        let is_security_sensitive = reason.is_security_sensitive();
+                        if is_security_sensitive {
+                            error!(
+                                transaction = %record.transaction_hash,
+                                operation = %record.paging_token,
+                                from = ?record.from,
+                                to = ?record.to,
+                                to_muxed = ?record.to_muxed,
+                                asset_code = ?record.asset_code,
+                                asset_issuer = ?record.asset_issuer,
+                                amount = ?record.amount,
+                                ?reason,
+                                "SECURITY: unauthorized asset transferred to custody; quarantined for review"
+                            );
+                        } else {
+                            warn!(
+                                transaction = %record.transaction_hash,
+                                operation = %record.paging_token,
+                                ?reason,
+                                "stellar payment into custody was not credited"
+                            );
+                        }
+                    }
                 }
+            }
+
+            // Evict stale cache entries once per page so memory stays bounded
+            // across long polling loops.
+            if let Ok(mut cache) = self.transaction_cache.lock() {
+                cache.evict_expired();
             }
 
             match records.last() {
@@ -214,6 +368,49 @@ impl ChainClient for StellarClient {
             }
         }
         Ok(deposits)
+    }
+}
+
+/// Exponential backoff with a little jitter, in milliseconds.
+///
+/// Integer arithmetic only: the workspace denies operations that can overflow
+/// or truncate silently, and a retry delay is not worth a panic.
+fn backoff_delay_ms(attempt: u32, initial_ms: u64, max_ms: u64) -> u64 {
+    let delay = initial_ms
+        .checked_mul(1u64.checked_shl(attempt.min(16)).unwrap_or(u64::MAX))
+        .unwrap_or(max_ms)
+        .min(max_ms);
+    // Spread retries out by up to a tenth of the delay, so several callers
+    // waiting on the same outage do not return at the same instant.
+    let spread = delay.checked_div(10).unwrap_or(0);
+    let offset = u64::from(attempt)
+        .wrapping_mul(2_654_435_761)
+        .checked_rem(spread.saturating_add(1))
+        .unwrap_or(0);
+    // Clamped again: the jitter must never push a delay past the ceiling.
+    delay
+        .saturating_sub(spread.checked_div(2).unwrap_or(0))
+        .saturating_add(offset)
+        .min(max_ms)
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::backoff_delay_ms;
+
+    #[test]
+    fn grows_with_each_attempt_and_stops_at_the_ceiling() {
+        let first = backoff_delay_ms(0, 500, 30_000);
+        let second = backoff_delay_ms(1, 500, 30_000);
+        assert!(first < second, "{first} < {second}");
+        for attempt in 0..40 {
+            assert!(backoff_delay_ms(attempt, 500, 30_000) <= 30_000);
+        }
+    }
+
+    #[test]
+    fn never_overflows_on_absurd_attempts() {
+        assert!(backoff_delay_ms(u32::MAX, u64::MAX, 30_000) <= 30_000);
     }
 }
 
@@ -356,4 +553,136 @@ mod tests {
             matches!(&error, ChainError::Rejected(detail) if detail.contains("op_underfunded"))
         );
     }
-}
+
+    /// A transaction with multiple payment operations should credit all of
+    /// them and must only hit `GET /transactions/{hash}` once (for the records
+    /// whose `join=transactions` inline is absent), exercising the cache.
+    #[tokio::test]
+    async fn multi_operation_transaction_uses_cache_for_repeated_hash() {
+        let server = MockServer::start().await;
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 7).unwrap();
+        let tx_hash = "cafebabe";
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "history_latest_ledger": 200 })),
+            )
+            .mount(&server)
+            .await;
+
+        // Payments page: three operations sharing the same tx_hash, but with
+        // the `transaction` field omitted so the client must call
+        // `fetch_transaction`.
+        Mock::given(method("GET"))
+            .and(path(format!("/accounts/{custody}/payments")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_embedded": { "records": [
+                    {
+                        "paging_token": "1",
+                        "type": "payment",
+                        "transaction_hash": tx_hash,
+                        "transaction_successful": true,
+                        "to": custody,
+                        "to_muxed": muxed,
+                        "asset_type": "native",
+                        "amount": "1.0000000"
+                        // no "transaction" key → forces fetch_transaction
+                    },
+                    {
+                        "paging_token": "2",
+                        "type": "payment",
+                        "transaction_hash": tx_hash,
+                        "transaction_successful": true,
+                        "to": custody,
+                        "to_muxed": muxed,
+                        "asset_type": "native",
+                        "amount": "2.0000000"
+                    },
+                    {
+                        "paging_token": "3",
+                        "type": "payment",
+                        "transaction_hash": tx_hash,
+                        "transaction_successful": true,
+                        "to": custody,
+                        "to_muxed": muxed,
+                        "asset_type": "native",
+                        "amount": "3.0000000"
+                    }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        // The transaction detail endpoint — mounted with an explicit call count
+        // so the test verifies it is hit exactly once (cache hit for ops 2 & 3).
+        Mock::given(method("GET"))
+            .and(path(format!("/transactions/{tx_hash}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "ledger": 198, "successful": true })),
+            )
+            .expect(1) // must be called exactly once despite three operations
+            .mount(&server)
+            .await;
+
+        let deposits = client(&server).await.deposits_since(195).await.unwrap();
+        assert_eq!(deposits.len(), 3, "all three operations must be credited");
+
+        let total_stroops: i64 = deposits
+            .iter()
+            .map(|d| d.money.to_network_units(engipay_core::Chain::Stellar).unwrap())
+            .sum();
+        assert_eq!(total_stroops, 60_000_000, "1 + 2 + 3 XLM = 6 XLM = 60_000_000 stroops");
+
+        // Each deposit carries a unique reference (paging_token).
+        let refs: std::collections::HashSet<_> = deposits.iter().map(|d| &d.reference).collect();
+        assert_eq!(refs.len(), 3);
+    }
+
+    /// When `join=transactions` already inlines the transaction, `fetch_transaction`
+    /// should not be called at all.
+    #[tokio::test]
+    async fn joined_transaction_does_not_trigger_extra_fetch() {
+        let server = MockServer::start().await;
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 9).unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "history_latest_ledger": 50 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/accounts/{custody}/payments")))
+            .and(query_param("cursor", (48i64 << 32).to_string()))
+            .and(query_param("join", "transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_embedded": { "records": [
+                    {
+                        "paging_token": "206158434305",
+                        "type": "payment",
+                        "transaction_hash": "feed",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "to_muxed": muxed,
+                        "asset_type": "native",
+                        "amount": "4.0000000",
+                        "transaction": { "ledger": 48, "successful": true }
+                    }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+        // No mock for GET /transactions/feed — if it were called the test would
+        // fail with an unexpected request error from wiremock.
+
+        let deposits = client(&server).await.deposits_since(48).await.unwrap();
+        assert_eq!(deposits.len(), 1);
+        assert_eq!(deposits[0].money, Money::from_minor(Asset::Xlm, 40_000_000));
+    }
