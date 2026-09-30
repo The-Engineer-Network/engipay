@@ -63,8 +63,11 @@ pub fn create_token(user_id: Uuid, wallet: String, secret: &[u8]) -> Result<Stri
 /// from a malformed or signature-invalid one.
 pub fn verify_token(token: &str, secret: &[u8]) -> Result<Claims, AuthError> {
     let mut validation = Validation::new(Algorithm::HS256);
-    validation.leeway = 0;
     validation.set_required_spec_claims(&["exp", "sub"]);
+    // jsonwebtoken allows 60 seconds of clock leeway by default, which would
+    // keep accepting a session after it expired. Sessions here end exactly
+    // when they say they do.
+    validation.leeway = 0;
 
     let data =
         decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation).map_err(|err| {
@@ -87,6 +90,7 @@ fn current_timestamp() -> i64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
 

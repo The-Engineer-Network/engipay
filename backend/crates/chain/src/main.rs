@@ -12,11 +12,14 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use engipay_chain::evm::{AlloyProvider, BaseNetwork};
+use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY};
+use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
 use engipay_chain::stellar::{StellarClient, StellarConfig, StellarNetwork};
 use engipay_chain::{ChainClient, is_creditable};
 use engipay_core::stellar::{StellarAddress, parse_address};
 use engipay_core::{Asset, Money};
+use sqlx::postgres::PgPoolOptions;
 use tracing::{info, warn};
 
 /// References remembered to avoid reporting a deposit twice when polls overlap.
@@ -73,28 +76,69 @@ fn stellar_client() -> anyhow::Result<Option<StellarClient>> {
     Ok(Some(StellarClient::new(config)?))
 }
 
+/// Builds a database pool from `DATABASE_URL` if it is set. Returns `None`
+/// when no URL is configured so the watcher can operate without a database
+/// during development and smoke tests.
+async fn db_pool() -> anyhow::Result<Option<sqlx::PgPool>> {
+    let Ok(url) = env::var("DATABASE_URL") else {
+        return Ok(None);
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .context("could not connect to DATABASE_URL")?;
+    Ok(Some(pool))
+}
+
 async fn watch() -> anyhow::Result<()> {
     let Some(stellar) = stellar_client()? else {
         info!("no networks configured; set STELLAR_CUSTODY_ACCOUNT to watch Stellar deposits");
         tokio::signal::ctrl_c().await?;
         return Ok(());
     };
+
+    let pool = db_pool().await?;
+    let cursor_store: Option<CursorStore> = pool.as_ref().map(|p| CursorStore::new(p.clone()));
+
     let poll = Duration::from_secs(
         env::var("STELLAR_POLL_SECONDS")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(5),
     );
-    let mut next_ledger = match env::var("STELLAR_START_LEDGER") {
-        Ok(value) => value
+
+    // Determine the starting ledger:
+    // 1. Explicit override via STELLAR_START_LEDGER (useful for backfills).
+    // 2. Persisted cursor from the database (normal restart path).
+    // 3. Current ledger tip (first-ever run with no database).
+    let mut next_ledger: u64 = if let Ok(value) = env::var("STELLAR_START_LEDGER") {
+        value
             .parse()
-            .context("STELLAR_START_LEDGER must be a ledger number")?,
-        Err(_) => stellar.latest_height().await?,
+            .context("STELLAR_START_LEDGER must be a ledger number")?
+    } else if let Some(store) = &cursor_store {
+        match store.load(STELLAR_CHAIN_KEY).await? {
+            Some(saved_cursor) => {
+                // The saved cursor is a TOID; recover the ledger by shifting
+                // the top 32 bits back out. This is a conservative estimate —
+                // we will re-process the same ledger rather than miss it.
+                saved_cursor
+                    .parse::<i64>()
+                    .ok()
+                    .and_then(|toid| u64::try_from(toid >> 32).ok())
+                    .unwrap_or(0)
+            }
+            None => stellar.latest_height().await?,
+        }
+    } else {
+        stellar.latest_height().await?
     };
+
     info!(
         network = ?stellar.config().network,
         custody = %stellar.config().custody_account,
         from_ledger = next_ledger,
+        db_cursor = cursor_store.is_some(),
         "watching stellar deposits"
     );
 
@@ -159,7 +203,17 @@ async fn watch() -> anyhow::Result<()> {
                 }
             }
         }
+
+        // Advance cursor. Persist it atomically so a restart resumes here.
         next_ledger = tip;
+        if let Some(store) = &cursor_store {
+            let cursor_value = cursor_for_ledger(tip)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| tip.to_string());
+            if let Err(error) = store.save(STELLAR_CHAIN_KEY, &cursor_value).await {
+                warn!(%error, "could not persist cursor; will retry next poll");
+            }
+        }
     }
 }
 

@@ -71,4 +71,5 @@ else
 fi
 
 psql -d "$db" -v ON_ERROR_STOP=1 -f - < scripts/test-profile-migrations.sql
+psql -d "$db" -v ON_ERROR_STOP=1 -f - < scripts/test-integrated-migrations.sql
 echo "All migration verifications passed."

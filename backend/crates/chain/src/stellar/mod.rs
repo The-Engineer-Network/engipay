@@ -3,6 +3,7 @@
 //! Talks to Horizon over HTTPS. Horizon only reads the chain and relays signed
 //! transactions; it never sees a key.
 
+pub mod cursor;
 pub mod horizon;
 pub mod network;
 pub mod payment;
@@ -29,21 +30,7 @@ const PAYMENT_VALIDITY: Duration = Duration::from_secs(120);
 // Bounded integer backoff shared by reads and submissions. The policy remains
 // 500ms exponential delays capped at 30s, with deterministic +/-5% jitter.
 fn retry_delay_ms(attempt: u32) -> u64 {
-    const INITIAL_DELAY_MS: u64 = 500;
-    const MAX_DELAY_MS: u64 = 30_000;
-    let delay_ms = INITIAL_DELAY_MS
-        .saturating_mul(2_u64.checked_pow(attempt).unwrap_or(u64::MAX))
-        .min(MAX_DELAY_MS);
-    let jitter_ms = delay_ms / 10;
-    let jitter_offset = u64::from(attempt)
-        .wrapping_mul(73856093)
-        .wrapping_mul(19349663)
-        .wrapping_mul(83492791)
-        .checked_rem(jitter_ms.saturating_add(1))
-        .unwrap_or(0);
-    delay_ms
-        .saturating_sub(jitter_ms / 2)
-        .saturating_add(jitter_offset)
+    backoff_delay_ms(attempt, 500, 30_000)
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +64,7 @@ impl StellarConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct StellarClient {
     config: StellarConfig,
     http: reqwest::Client,
@@ -237,6 +225,21 @@ impl StellarClient {
 }
 
 impl ChainClient for StellarClient {
+    async fn stream_events(
+        &self,
+        from_height: u64,
+        poll_interval: Duration,
+    ) -> Result<crate::EventStream, ChainError> {
+        if poll_interval.is_zero() {
+            return Err(ChainError::Config("poll interval must be positive".into()));
+        }
+        Ok(crate::polling_stream(
+            std::sync::Arc::new(self.clone()),
+            from_height,
+            poll_interval,
+        ))
+    }
+
     fn chain(&self) -> Chain {
         Chain::Stellar
     }
@@ -305,6 +308,49 @@ impl ChainClient for StellarClient {
             }
         }
         Ok(deposits)
+    }
+}
+
+/// Exponential backoff with a little jitter, in milliseconds.
+///
+/// Integer arithmetic only: the workspace denies operations that can overflow
+/// or truncate silently, and a retry delay is not worth a panic.
+fn backoff_delay_ms(attempt: u32, initial_ms: u64, max_ms: u64) -> u64 {
+    let delay = initial_ms
+        .checked_mul(1u64.checked_shl(attempt.min(16)).unwrap_or(u64::MAX))
+        .unwrap_or(max_ms)
+        .min(max_ms);
+    // Spread retries out by up to a tenth of the delay, so several callers
+    // waiting on the same outage do not return at the same instant.
+    let spread = delay.checked_div(10).unwrap_or(0);
+    let offset = u64::from(attempt)
+        .wrapping_mul(2_654_435_761)
+        .checked_rem(spread.saturating_add(1))
+        .unwrap_or(0);
+    // Clamped again: the jitter must never push a delay past the ceiling.
+    delay
+        .saturating_sub(spread.checked_div(2).unwrap_or(0))
+        .saturating_add(offset)
+        .min(max_ms)
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::backoff_delay_ms;
+
+    #[test]
+    fn grows_with_each_attempt_and_stops_at_the_ceiling() {
+        let first = backoff_delay_ms(0, 500, 30_000);
+        let second = backoff_delay_ms(1, 500, 30_000);
+        assert!(first < second, "{first} < {second}");
+        for attempt in 0..40 {
+            assert!(backoff_delay_ms(attempt, 500, 30_000) <= 30_000);
+        }
+    }
+
+    #[test]
+    fn never_overflows_on_absurd_attempts() {
+        assert!(backoff_delay_ms(u32::MAX, u64::MAX, 30_000) <= 30_000);
     }
 }
 

@@ -110,6 +110,7 @@ fn check_volume(tier: i32, current: Money, amount: Money) -> Result<(), LimitErr
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
 

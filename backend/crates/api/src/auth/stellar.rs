@@ -52,6 +52,8 @@ mod tests {
         Memo, MuxedAccount, SequenceNumber, TimeBounds, TimePoint, TransactionExt, Uint256,
     };
 
+    /// A SEP-10 challenge shaped the way stellar-xdr 28 models one: time bounds
+    /// live in `cond`, and an empty operation list is built through `VecM`.
     fn base_transaction(seq_num: i64, min_time: u64, max_time: u64) -> Transaction {
         Transaction {
             source_account: MuxedAccount::Ed25519(Uint256([0; 32])),

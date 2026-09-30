@@ -10,19 +10,25 @@ publish.workspace = true
 [dependencies]
 alloy.workspace = true
 engipay-core.workspace = true
+anyhow.workspace = true
 ed25519-dalek.workspace = true
+lru.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 stellar-strkey.workspace = true
 stellar-xdr.workspace = true
-zeroize.workspace = true
-anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 wiremock = "0.6"
