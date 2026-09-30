@@ -22,6 +22,26 @@ pub enum ApiError {
     Internal(#[from] anyhow::Error),
 }
 
+/// Ledger-level failures surfaced by the withdrawal flow. Kept separate from
+/// [`ApiError`] so the domain can express money-specific failures (e.g. an
+/// available balance that does not cover the principal plus the network fee)
+/// without leaking HTTP concerns into the ledger layer.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum LedgerError {
+    /// The user's available balance does not cover the withdrawal principal
+    /// plus the estimated network fee. Amounts are in the smallest indivisible
+    /// unit (no floating point) and detail required vs available funds.
+    #[error(
+        "insufficient funds: required {required} (amount {amount} + network fee {network_fee}), available {available}"
+    )]
+    InsufficientFunds {
+        required: i64,
+        available: i64,
+        amount: i64,
+        network_fee: i64,
+    },
+}
+
 impl ApiError {
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
@@ -37,6 +57,14 @@ impl ApiError {
     }
 }
 
+impl From<LedgerError> for ApiError {
+    fn from(error: LedgerError) -> Self {
+        match error {
+            LedgerError::InsufficientFunds { .. } => ApiError::BadRequest(error.to_string()),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code) = self.status_and_code();
@@ -46,5 +74,41 @@ impl IntoResponse for ApiError {
         }
         let body = Json(json!({ "error": { "code": code, "message": self.to_string() } }));
         (status, body).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insufficient_funds_reports_required_and_available() {
+        let error = LedgerError::InsufficientFunds {
+            required: 10_500,
+            available: 10_000,
+            amount: 10_000,
+            network_fee: 500,
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("required 10500"));
+        assert!(message.contains("available 10000"));
+        assert!(message.contains("amount 10000"));
+        assert!(message.contains("network fee 500"));
+    }
+
+    #[test]
+    fn insufficient_funds_maps_to_bad_request() {
+        let error = LedgerError::InsufficientFunds {
+            required: 10_500,
+            available: 10_000,
+            amount: 10_000,
+            network_fee: 500,
+        };
+
+        let api_error: ApiError = error.into();
+        let (status, code) = api_error.status_and_code();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(code, "bad_request");
     }
 }
