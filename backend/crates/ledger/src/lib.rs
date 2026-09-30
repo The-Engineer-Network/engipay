@@ -117,6 +117,20 @@ pub struct Balance {
     pub held: i128,
 }
 
+/// One active (open) hold, returned when `include_holds=true` is passed to
+/// `GET /v1/balances`.  The `amount` is in the asset's smallest unit, the same
+/// as every other money value in the API.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoldItem {
+    /// The idempotency reference that created this hold.
+    pub reference: String,
+    pub asset: Asset,
+    /// Amount locked, in smallest units (e.g. USDC micro-cents).
+    pub amount: i128,
+    /// UTC timestamp when the hold was created, RFC 3339 format.
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HoldState {
