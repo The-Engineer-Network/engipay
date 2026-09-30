@@ -1,8 +1,10 @@
 use thiserror::Error;
 
 /// Reserved system handles a user may never claim as their own tag.
+#[allow(dead_code)] // wired up with PATCH /v1/me; see #111 and #112
 const RESERVED_TAGS: [&str; 5] = ["admin", "engipay", "support", "system", "help"];
 
+#[allow(dead_code)] // wired up with PATCH /v1/me; see #111 and #112
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ValidationError {
     #[error("tag must be 3 to 20 characters long, using only letters, numbers, or underscores")]
@@ -14,17 +16,21 @@ pub enum ValidationError {
 /// Validates a user-supplied tag against the naming rules: 3-20 alphanumeric
 /// characters or underscores, and not one of the reserved system handles.
 /// A leading `@`, if the user included one, is stripped before validation.
+#[allow(dead_code)] // wired up with PATCH /v1/me; see #111 and #112
 pub fn validate_tag(tag: &str) -> Result<(), ValidationError> {
     let tag = tag.strip_prefix('@').unwrap_or(tag);
 
     let len = tag.chars().count();
-    let format_ok = (3..=20).contains(&len)
-        && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let format_ok =
+        (3..=20).contains(&len) && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !format_ok {
         return Err(ValidationError::InvalidFormat);
     }
 
-    if RESERVED_TAGS.iter().any(|reserved| reserved.eq_ignore_ascii_case(tag)) {
+    if RESERVED_TAGS
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(tag))
+    {
         return Err(ValidationError::ReservedTag(tag.to_string()));
     }
 
@@ -32,6 +38,7 @@ pub fn validate_tag(tag: &str) -> Result<(), ValidationError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
 
@@ -60,9 +67,18 @@ mod tests {
 
     #[test]
     fn rejects_special_characters() {
-        assert_eq!(validate_tag("alice-92"), Err(ValidationError::InvalidFormat));
-        assert_eq!(validate_tag("alice 92"), Err(ValidationError::InvalidFormat));
-        assert_eq!(validate_tag("alice@92"), Err(ValidationError::InvalidFormat));
+        assert_eq!(
+            validate_tag("alice-92"),
+            Err(ValidationError::InvalidFormat)
+        );
+        assert_eq!(
+            validate_tag("alice 92"),
+            Err(ValidationError::InvalidFormat)
+        );
+        assert_eq!(
+            validate_tag("alice@92"),
+            Err(ValidationError::InvalidFormat)
+        );
     }
 
     #[test]
