@@ -4,6 +4,9 @@ pub mod balances;
 pub mod deposits;
 pub mod health;
 pub mod me;
+pub mod transactions;
+pub mod requests;
+pub mod transfers;
 
 use axum::Router;
 
@@ -16,4 +19,8 @@ pub fn v1() -> Router<AppState> {
         .merge(auth::routes())
         .merge(balances::routes())
         .merge(deposits::routes())
+        .merge(transactions::routes())
+        .merge(deposits::routes())
+        .merge(requests::routes())
+        .merge(transfers::routes())
 }

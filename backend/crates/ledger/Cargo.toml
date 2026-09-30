@@ -9,7 +9,7 @@ publish.workspace = true
 
 [features]
 default = []
-postgres = ["dep:sqlx", "dep:tokio", "dep:tracing"]
+postgres = ["dep:sqlx", "dep:tokio", "dep:tracing", "dep:chrono"]
 
 [dependencies]
 engipay-core.workspace = true
@@ -20,6 +20,7 @@ uuid.workspace = true
 sqlx = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
 
 [lints]
 workspace = true

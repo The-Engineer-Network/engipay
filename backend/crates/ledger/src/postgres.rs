@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
-use crate::{Balance, HoldState, LedgerError, Receipt};
+use crate::{Balance, HoldItem, HoldState, LedgerError, Receipt};
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -83,6 +83,49 @@ impl PostgresLedgerStore {
                 held: *held.get(&asset).unwrap_or(&0),
             })
             .collect())
+    }
+
+    /// Returns the active (open) holds for `user`, ordered by creation time
+    /// ascending.  Only holds in the `open` state are returned; released and
+    /// settled holds are excluded.
+    ///
+    /// Used by `GET /v1/balances?include_holds=true` to show users which
+    /// in-flight operations are locking their funds.
+    pub async fn get_active_holds(&self, user: UserId) -> Result<Vec<HoldItem>, LedgerError> {
+        let rows = sqlx::query(
+            "SELECT reference, asset, amount::text AS amount, created_at \
+             FROM ledger_holds \
+             WHERE user_id = $1 AND state = 'open' \
+             ORDER BY created_at ASC",
+        )
+        .bind(user.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            let reference: String = row.get("reference");
+            let asset_str: String = row.get("asset");
+            let amount_str: String = row.get("amount");
+            let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+
+            let Ok(asset) = asset_str.parse::<Asset>() else {
+                // An asset this build doesn't know; skip rather than fail.
+                continue;
+            };
+            let amount = amount_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
+
+            items.push(HoldItem {
+                reference,
+                asset,
+                amount,
+                created_at: created_at.to_rfc3339(),
+            });
+        }
+        Ok(items)
     }
 
     /// Credits a user with money that arrived from outside EngiPay.
