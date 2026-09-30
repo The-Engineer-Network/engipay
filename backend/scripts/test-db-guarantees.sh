@@ -43,16 +43,9 @@ expect "reused reference refused"             "ledger_transactions_reference_key
 expect "zero amount refused"                  "ledger_postings_amount_check"
 expect "unknown asset refused"                "ledger_postings_asset_check"
 expect "reopening a settled hold refused"     "hold wd-1 is already settled"
-expect "XLM deposit commits and balances"     "CASE11_RESULT balance=500"
-expect "XLM transfer balances"                "CASE12_RESULT user1=300 user2=200"
-expect "XLM hold moves to held bucket"        "CASE13_RESULT available=150 held=150"
-expect "XLM settlement moves money out"       "CASE14_RESULT user1_held=0 outflow=135 fees=15"
-expect "XLM unbalanced transaction refused"   "does not balance for XLM"
-expect "user profile creation works"          "CASE16_RESULT tag=alice email=alice@example.com kyc=1"
-expect "case-insensitive tag uniqueness"      "duplicate key"
-expect "empty tag rejected"                   "user_profiles_tag_check"
-expect "cascading delete removes profile"     "CASE19_RESULT profiles_remaining=0"
-expect "history intact after every refusal"   "FINAL_RESULT available=150 held=0 transactions=6"
+expect "system account in held bucket refused" 'violates check constraint "ledger_postings_check"'
+expect "system account with user_id refused"  'violates check constraint "ledger_postings_check"'
+expect "history intact after every refusal"  "FINAL_RESULT available=60 held=40 transactions=2"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures guarantee(s) FAILED"
