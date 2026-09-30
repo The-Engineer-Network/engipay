@@ -3,10 +3,10 @@
 //! Talks to Horizon over HTTPS. Horizon only reads the chain and relays signed
 //! transactions; it never sees a key.
 
+pub mod cursor;
 pub mod horizon;
 pub mod network;
 pub mod payment;
-pub mod cursor;
 
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

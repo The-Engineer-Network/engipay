@@ -72,15 +72,15 @@ impl AccountResolver {
         // muxed_id is u64 but Postgres only has signed BIGINT (i64). The
         // column is defined as BIGINT and the application always inserts via
         // the same cast, so the bit pattern round-trips correctly.
-        let row: Option<Uuid> = sqlx::query_scalar!(
+        let row: Option<Uuid> = sqlx::query_scalar(
             r#"
             SELECT user_id
             FROM   deposit_addresses
             WHERE  chain    = 'stellar'
             AND    muxed_id = $1
             "#,
-            i64::from_ne_bytes(muxed_id.to_ne_bytes())
         )
+        .bind(i64::from_ne_bytes(muxed_id.to_ne_bytes()))
         .fetch_optional(&self.pool)
         .await?;
 
@@ -95,6 +95,7 @@ impl AccountResolver {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     //! Unit tests for `AccountResolver`.
     //!

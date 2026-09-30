@@ -117,6 +117,24 @@ pub struct Balance {
     pub held: i128,
 }
 
+/// A single open (in-flight) hold on a user's funds.
+///
+/// Returned when `?include_holds=true` is passed to `GET /v1/balances`.
+/// Amounts are in the asset's smallest unit (the same representation as
+/// [`Balance::held`]).
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveHold {
+    /// The idempotency reference that created this hold.
+    pub reference: String,
+    /// The asset being held.
+    pub asset: Asset,
+    /// The held amount in the asset's smallest unit.
+    pub amount: i128,
+    /// When the hold was created.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HoldState {
