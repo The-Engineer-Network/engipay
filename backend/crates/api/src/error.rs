@@ -10,10 +10,14 @@ use serde_json::json;
 pub enum ApiError {
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Unauthorized(String),
     #[error("not found")]
     NotFound,
     #[error("the database is not available")]
     DatabaseUnavailable,
+    #[error("{0}")]
+    LimitExceeded(String),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -22,10 +26,12 @@ impl ApiError {
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
+            ApiError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             ApiError::DatabaseUnavailable => {
                 (StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
             }
+            ApiError::LimitExceeded(_) => (StatusCode::FORBIDDEN, "limit_exceeded"),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }
