@@ -200,6 +200,19 @@ pub fn cursor_for_ledger(ledger: u64) -> Option<i64> {
     ledger.checked_mul(1 << 32)
 }
 
+/// Extracts the 64-bit muxed account ID from a Stellar `M...` address.
+///
+/// Returns `Some(id)` when `destination` is a valid muxed account address,
+/// and `None` for a plain `G...` custody account address (which carries no
+/// embedded ID and must be flagged for memo parsing or manual review) or for
+/// any invalid input.
+pub fn extract_muxed_id(destination: &str) -> Option<u64> {
+    match engipay_core::stellar::parse_address(destination) {
+        Ok(engipay_core::stellar::StellarAddress::Muxed { id, .. }) => Some(id),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -365,5 +378,39 @@ mod tests {
         let last_operation_in_ledger_99: i64 = (100 << 32) - 1;
         assert!(cursor < first_operation_in_ledger_100);
         assert!(cursor > last_operation_in_ledger_99);
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_the_id_from_a_muxed_address() {
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 42_000).unwrap();
+        assert_eq!(extract_muxed_id(&muxed), Some(42_000));
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_zero_id_when_id_is_zero() {
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 0).unwrap();
+        assert_eq!(extract_muxed_id(&muxed), Some(0));
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_max_u64_id() {
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, u64::MAX).unwrap();
+        assert_eq!(extract_muxed_id(&muxed), Some(u64::MAX));
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_none_for_plain_g_address() {
+        // A plain G... custody account carries no embedded ID; must be reviewed.
+        assert_eq!(extract_muxed_id(&account(1)), None);
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_none_for_invalid_input() {
+        assert_eq!(extract_muxed_id(""), None);
+        assert_eq!(extract_muxed_id("not-an-address"), None);
+        assert_eq!(extract_muxed_id("GABC"), None);
     }
 }

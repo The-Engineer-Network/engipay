@@ -34,6 +34,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+lru = "0.12"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
