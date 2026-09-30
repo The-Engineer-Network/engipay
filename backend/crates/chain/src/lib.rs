@@ -10,8 +10,8 @@
 //! next.
 
 pub mod evm;
-pub mod stellar;
 pub mod services;
+pub mod stellar;
 
 use engipay_core::{Asset, Chain, Money};
 
