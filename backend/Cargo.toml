@@ -44,6 +44,7 @@ rand = "0.8"
 sha3 = "0.10"
 hex = "0.4"
 jsonwebtoken = "9"
+lru = "0.12"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
