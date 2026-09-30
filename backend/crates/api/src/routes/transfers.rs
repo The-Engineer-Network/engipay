@@ -4,8 +4,12 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::AppState;
+use crate::middleware::VelocityLimiter;
+use crate::routes::auth::AuthUser;
 
 /// A validated request to create an internal transfer.
 ///
@@ -95,17 +99,31 @@ fn validate_amount(amount: &str) -> Result<(), TransferRequestError> {
     Ok(())
 }
 
+lazy_static::lazy_static! {
+    static ref VELOCITY_LIMITER: VelocityLimiter = VelocityLimiter::new();
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new().route("/v1/transfers", post(create_transfer))
 }
 
 async fn create_transfer(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    auth: AuthUser,
     Json(request): Json<TransferRequest>,
 ) -> impl IntoResponse {
+    let user_id = match auth.user_id(state.config.jwt_secret.as_bytes()) {
+        Ok(id) => id.to_string(),
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    if let Err((status, msg)) = VELOCITY_LIMITER.check_sensitive_action(&user_id).await {
+        return (status, msg).into_response();
+    }
+
     match request.validate() {
-        Ok(()) => StatusCode::ACCEPTED,
-        Err(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(_) => StatusCode::UNPROCESSABLE_ENTITY.into_response(),
     }
 }
 
