@@ -18,6 +18,7 @@ pub fn v1() -> Router<AppState> {
         .merge(assets::routes())
         .merge(auth::routes())
         .merge(balances::routes())
+        .merge(deposits::routes())
         .merge(transactions::routes())
         .merge(deposits::routes())
         .merge(requests::routes())

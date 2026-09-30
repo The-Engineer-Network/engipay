@@ -43,7 +43,12 @@ elliptic-curve = "0.13"
 rand = "0.8"
 sha3 = "0.10"
 hex = "0.4"
+futures-core = "0.3"
+futures-util = "0.3"
 jsonwebtoken = "9"
+lru = "0.12"
+tower = { version = "0.5", features = ["util"] }
+tokio-util = { version = "0.7", features = ["rt", "sync"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
