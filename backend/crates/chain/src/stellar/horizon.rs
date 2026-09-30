@@ -95,10 +95,18 @@ pub enum Skipped {
     /// Outgoing, or not a payment at all (e.g. account creation or a trustline).
     NotIncoming,
     Failed,
-    /// A token EngiPay does not hold, including fake USDC from another issuer.
+    /// A token EngiPay does not hold, or a USDC-named token from the wrong
+    /// issuer (counterfeit USDC). The `counterfeit_usdc` flag is `true` when
+    /// the asset code is `"USDC"` but the issuer is not Circle's canonical
+    /// issuer for the network, so operators can filter on it specifically.
+    ///
+    /// TODO(#145): route `counterfeit_usdc = true` entries into the quarantine
+    /// table so compliance staff can review them.
     UnsupportedAsset {
         code: String,
         issuer: String,
+        /// `true` when `code == "USDC"` but the issuer is not Circle's.
+        counterfeit_usdc: bool,
     },
     Malformed(&'static str),
 }
@@ -138,7 +146,14 @@ pub fn deposit_from_record(
             if code == "USDC" && issuer == network.usdc_issuer() {
                 Asset::Usdc
             } else {
-                return Err(Skipped::UnsupportedAsset { code, issuer });
+                // Flag tokens named "USDC" from the wrong issuer separately so
+                // operators can distinguish counterfeit USDC from unknown assets.
+                let counterfeit_usdc = code == "USDC";
+                return Err(Skipped::UnsupportedAsset {
+                    code,
+                    issuer,
+                    counterfeit_usdc,
+                });
             }
         }
         _ => return Err(Skipped::Malformed("unknown asset_type")),
@@ -297,7 +312,13 @@ mod tests {
             "asset_code": "USDC",
             "asset_issuer": sender(),
         }));
-        assert!(matches!(skipped, Err(Skipped::UnsupportedAsset { .. })));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -307,7 +328,91 @@ mod tests {
             "asset_code": "USDC",
             "asset_issuer": StellarNetwork::Mainnet.usdc_issuer(),
         }));
-        assert!(matches!(skipped, Err(Skipped::UnsupportedAsset { .. })));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
+    }
+
+    /// alphanum12 assets named "USDC" (e.g. "USDC        " padded) are treated
+    /// as counterfeit — the official Circle USDC is always alphanum4.
+    #[test]
+    fn alphanum12_usdc_from_any_issuer_is_counterfeit() {
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum12",
+            "asset_code": "USDC",
+            "asset_issuer": sender(),
+        }));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
+    }
+
+    /// alphanum12 assets named "USDC" using Circle's testnet issuer still fail:
+    /// the real Circle USDC is alphanum4, not alphanum12.
+    #[test]
+    fn alphanum12_usdc_from_circle_issuer_is_still_counterfeit() {
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum12",
+            "asset_code": "USDC",
+            "asset_issuer": StellarNetwork::Testnet.usdc_issuer(),
+        }));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
+    }
+
+    /// A completely different token (not named USDC) is unsupported but is NOT
+    /// flagged as counterfeit_usdc.
+    #[test]
+    fn unknown_asset_is_unsupported_but_not_counterfeit() {
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum4",
+            "asset_code": "FAKE",
+            "asset_issuer": sender(),
+        }));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: false,
+                ..
+            })
+        ));
+    }
+
+    /// The UnsupportedAsset error carries the issuer so operators can trace
+    /// which account issued the counterfeit token.
+    #[test]
+    fn unsupported_asset_error_carries_issuer() {
+        let fake_issuer = sender();
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum4",
+            "asset_code": "USDC",
+            "asset_issuer": fake_issuer,
+        }));
+        match skipped {
+            Err(Skipped::UnsupportedAsset {
+                code,
+                issuer,
+                counterfeit_usdc,
+            }) => {
+                assert_eq!(code, "USDC");
+                assert_eq!(issuer, fake_issuer);
+                assert!(counterfeit_usdc);
+            }
+            other => panic!("expected UnsupportedAsset, got {other:?}"),
+        }
     }
 
     #[test]
