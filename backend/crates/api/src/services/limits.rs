@@ -35,8 +35,9 @@ impl From<LimitError> for ApiError {
 /// their own figures.
 fn tier_daily_limit(tier: i32) -> Money {
     const TIER_0_LIMIT_MINOR: i128 = 500 * 10_000_000; // USDC, 7 decimals.
-    let multiplier = i128::from(tier.max(0)) + 1;
-    Money::from_minor(Asset::Usdc, TIER_0_LIMIT_MINOR * multiplier)
+    // Even the largest i32 tier fits in i128 when scaled to minor units.
+    let multiplier = i128::from(tier.max(0)).saturating_add(1);
+    Money::from_minor(Asset::Usdc, TIER_0_LIMIT_MINOR.saturating_mul(multiplier))
 }
 
 /// Sum of `user_id`'s outgoing transfers in the reference asset (USDC) over
@@ -86,9 +87,17 @@ pub async fn check_velocity_limits(
     amount: Money,
 ) -> Result<(), LimitError> {
     let current = calculate_24h_volume(pool, user_id).await?;
+    check_volume(tier, current, amount)
+}
+
+fn check_volume(tier: i32, current: Money, amount: Money) -> Result<(), LimitError> {
     let limit = tier_daily_limit(tier);
 
-    if current.minor + amount.minor > limit.minor {
+    if current
+        .minor
+        .checked_add(amount.minor)
+        .is_none_or(|total| total > limit.minor)
+    {
         return Err(LimitError::Exceeded {
             tier,
             current: current.minor,
@@ -106,7 +115,10 @@ mod tests {
 
     #[test]
     fn tier_0_daily_limit_is_500_usdc() {
-        assert_eq!(tier_daily_limit(0), Money::from_minor(Asset::Usdc, 500 * 10_000_000));
+        assert_eq!(
+            tier_daily_limit(0),
+            Money::from_minor(Asset::Usdc, 500 * 10_000_000)
+        );
     }
 
     #[test]
@@ -114,10 +126,6 @@ mod tests {
         assert!(tier_daily_limit(1).minor > tier_daily_limit(0).minor);
     }
 
-    /// `check_velocity_limits` itself needs a real pool (it calls
-    /// `calculate_24h_volume`), so its blocking behaviour is asserted here
-    /// against the limit arithmetic directly: this is exactly the comparison
-    /// `check_velocity_limits` performs before it ever reaches the database.
     #[test]
     fn a_request_that_would_exceed_the_tier_limit_is_rejected() {
         let tier = 0;
@@ -125,14 +133,7 @@ mod tests {
         let current = Money::from_minor(Asset::Usdc, limit.minor - 10);
         let requested = Money::from_minor(Asset::Usdc, 20);
 
-        assert!(current.minor + requested.minor > limit.minor);
-
-        let error = LimitError::Exceeded {
-            tier,
-            current: current.minor,
-            requested: requested.minor,
-            limit: limit.minor,
-        };
+        let error = check_volume(tier, current, requested).expect_err("over the limit");
         let api_error: ApiError = error.into();
         assert!(matches!(api_error, ApiError::LimitExceeded(_)));
     }
@@ -144,7 +145,21 @@ mod tests {
         let current = Money::from_minor(Asset::Usdc, limit.minor - 100);
         let requested = Money::from_minor(Asset::Usdc, 20);
 
-        assert!(current.minor + requested.minor <= limit.minor);
+        assert!(check_volume(tier, current, requested).is_ok());
+    }
+
+    #[test]
+    fn volume_overflow_is_rejected_instead_of_wrapping() {
+        assert!(matches!(
+            check_volume(
+                0,
+                Money::from_minor(Asset::Usdc, i128::MAX),
+                Money::from_minor(Asset::Usdc, 1)
+            ),
+            Err(LimitError::Exceeded { .. })
+        ));
+        assert_eq!(tier_daily_limit(i32::MIN), tier_daily_limit(0));
+        assert_eq!(tier_daily_limit(i32::MAX).minor, 10_737_418_240_000_000_000);
     }
 
     /// Requires `DATABASE_URL`: a fresh user with no postings has zero 24h
@@ -155,17 +170,24 @@ mod tests {
         let Ok(database_url) = std::env::var("DATABASE_URL") else {
             return;
         };
-        let pool = PgPool::connect(&database_url).await.unwrap();
-        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("valid test fixture");
+        sqlx::migrate!("../../migrations")
+            .run(&pool)
+            .await
+            .expect("valid test fixture");
 
         let user = UserId::new();
         sqlx::query("INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING")
             .bind(user.as_uuid())
             .execute(&pool)
             .await
-            .unwrap();
+            .expect("valid test fixture");
 
-        let volume = calculate_24h_volume(&pool, user).await.unwrap();
+        let volume = calculate_24h_volume(&pool, user)
+            .await
+            .expect("valid test fixture");
         assert_eq!(volume, Money::zero(Asset::Usdc));
 
         let over_limit = Money::from_minor(Asset::Usdc, tier_daily_limit(0).minor + 1);

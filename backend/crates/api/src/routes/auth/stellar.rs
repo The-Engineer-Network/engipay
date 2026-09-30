@@ -1,16 +1,17 @@
 use axum::{
+    Json, Router,
     extract::{Query, State},
     routing::{get, post},
-    Json, Router,
 };
+use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
-use stellar_xdr::TransactionEnvelope;
+use stellar_xdr::{Limits, ReadXdr, TransactionEnvelope, WriteXdr};
 use uuid::Uuid;
 
 use crate::{
+    AppState,
     auth::{jwt, stellar as sep10},
     error::ApiError,
-    AppState,
 };
 use engipay_core::stellar::parse_address;
 
@@ -52,9 +53,8 @@ async fn get_challenge(
     Query(req): Query<ChallengeRequest>,
 ) -> Result<Json<ChallengeResponse>, ApiError> {
     // Validate the Stellar account
-    let _address = parse_address(&req.account).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid Stellar account: {}", e))
-    })?;
+    let _address = parse_address(&req.account)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid Stellar account: {}", e)))?;
 
     // Build the challenge transaction
     let mut challenge = build_challenge_transaction(&req.account)?;
@@ -93,15 +93,16 @@ async fn verify(
     let claimed_address = parse_address(&req.account)
         .map_err(|e| ApiError::BadRequest(format!("Invalid Stellar account: {}", e)))?;
 
-    let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(req.transaction.trim())
-        .map_err(|_| ApiError::Unauthorized("malformed challenge transaction".to_string()))?;
+    let envelope: TransactionEnvelope =
+        TransactionEnvelope::from_xdr_base64(req.transaction.trim(), Limits::none())
+            .map_err(|_| ApiError::Unauthorized("malformed challenge transaction".to_string()))?;
 
     let tx_v1 = match &envelope {
-        TransactionEnvelope::TxV1(tx_v1) => tx_v1,
+        TransactionEnvelope::Tx(tx_v1) => tx_v1,
         _ => {
             return Err(ApiError::Unauthorized(
                 "challenge transaction must carry a signature".to_string(),
-            ))
+            ));
         }
     };
 
@@ -111,8 +112,9 @@ async fn verify(
         .map_err(|_| ApiError::Internal(anyhow::anyhow!("time error")))?
         .as_secs();
 
-    sep10::validate_challenge(&tx_v1.tx, now)
-        .map_err(|_| ApiError::Unauthorized("challenge transaction is invalid or expired".to_string()))?;
+    sep10::validate_challenge(&tx_v1.tx, now).map_err(|_| {
+        ApiError::Unauthorized("challenge transaction is invalid or expired".to_string())
+    })?;
 
     // The client's transaction must be for the account it claims.
     if !source_account_matches(&tx_v1.tx.source_account, &claimed_address) {
@@ -121,9 +123,8 @@ async fn verify(
         ));
     }
 
-    // `hash_transaction_with_network` hashes the bare `Transaction`, not the
-    // signed envelope, so re-wrap it the same way the challenge builder does.
-    let tx_hash = hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone()))?;
+    // Signatures are over the transaction and network ID, without the envelope.
+    let tx_hash = hash_transaction_with_network(&tx_v1.tx)?;
 
     let server_public_key = server_public_key_bytes(server_secret)?;
     let client_public_key = client_public_key_bytes(&claimed_address)?;
@@ -131,11 +132,11 @@ async fn verify(
     let server_signed = tx_v1
         .signatures
         .iter()
-        .any(|sig| signature_matches(&server_public_key, &tx_hash, &sig.signature.0));
+        .any(|sig| signature_matches(&server_public_key, &tx_hash, sig.signature.0.as_slice()));
     let client_signed = tx_v1
         .signatures
         .iter()
-        .any(|sig| signature_matches(&client_public_key, &tx_hash, &sig.signature.0));
+        .any(|sig| signature_matches(&client_public_key, &tx_hash, sig.signature.0.as_slice()));
 
     if !server_signed {
         return Err(ApiError::Unauthorized(
@@ -150,31 +151,29 @@ async fn verify(
 
     let wallet_address = claimed_address.base_account().to_string();
 
-    let existing_user = sqlx::query!("SELECT id FROM users WHERE wallet_address = $1", wallet_address)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+    let existing_user =
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE wallet_address = $1")
+            .bind(&wallet_address)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
 
     let user_id = if let Some(user) = existing_user {
-        Uuid::from_bytes(user.id.into())
+        user
     } else {
         let new_user_id = Uuid::new_v4();
-        sqlx::query!(
-            "INSERT INTO users (id, wallet_address) VALUES ($1, $2)",
-            new_user_id,
-            wallet_address
-        )
-        .execute(db)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+        sqlx::query("INSERT INTO users (id, wallet_address) VALUES ($1, $2)")
+            .bind(new_user_id)
+            .bind(&wallet_address)
+            .execute(db)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
 
-        sqlx::query!(
-            "INSERT INTO user_profiles (id, tier) VALUES ($1, 0)",
-            new_user_id
-        )
-        .execute(db)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+        sqlx::query("INSERT INTO user_profiles (id, tier) VALUES ($1, 0)")
+            .bind(new_user_id)
+            .execute(db)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
 
         new_user_id
     };
@@ -190,8 +189,8 @@ fn source_account_matches(
     claimed: &engipay_core::stellar::StellarAddress,
 ) -> bool {
     let source_key = match source {
-        stellar_xdr::MuxedAccount::KeyTypeEd25519(key) => key.0,
-        stellar_xdr::MuxedAccount::KeyTypeMuxedEd25519(muxed) => muxed.ed25519.0,
+        stellar_xdr::MuxedAccount::Ed25519(key) => key.0,
+        stellar_xdr::MuxedAccount::MuxedEd25519(muxed) => muxed.ed25519.0,
     };
 
     match stellar_strkey::ed25519::PublicKey::from_string(claimed.base_account()) {
@@ -232,191 +231,136 @@ fn signature_matches(public_key: &[u8; 32], message: &[u8; 32], signature: &[u8]
 }
 
 fn build_challenge_transaction(account: &str) -> Result<ChallengeResponse, ApiError> {
-    use rand::Rng;
+    use rand::RngCore;
     use stellar_xdr::{
-        int64, uint32, uint64, ManageDataOp, Operation, OperationBody, TransactionExt, Uint256,
+        ManageDataOp, Operation, OperationBody, Preconditions, SequenceNumber, TimeBounds,
+        TimePoint, Transaction, TransactionExt, TransactionV1Envelope,
     };
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // Get current time
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| ApiError::Internal("time error".into()))?
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| ApiError::Internal(error.into()))?
         .as_secs();
-
-    let timeout_seconds = 300u64;
-
-    // Create a random 64-bit value for uniqueness
-    let mut rng = rand::thread_rng();
-    let random_bytes = rng.gen::<u64>();
-
-    // Parse the account to get the account ID
-    let account_id = parse_stellar_account_id(account)?;
-
-    // Create manage_data operations
-    let mut operations = Vec::new();
-
-    // Add random data operations for challenge uniqueness
-    let challenge_name = format!("challenge-{}", random_bytes);
-    let challenge_value = format!("{}", random_bytes);
-
-    let manage_data_op = Operation {
+    let expires = now
+        .checked_add(300)
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("time overflow")))?;
+    let mut nonce = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut nonce);
+    let operation = Operation {
         source_account: None,
         body: OperationBody::ManageData(ManageDataOp {
-            data_name: challenge_name.into(),
-            data_value: Some(challenge_value.into_bytes().into()),
+            data_name: stellar_xdr::String64(
+                "challenge"
+                    .try_into()
+                    .map_err(|error| ApiError::Internal(anyhow::Error::new(error)))?,
+            ),
+            data_value: Some(
+                nonce
+                    .to_vec()
+                    .try_into()
+                    .map_err(|error| ApiError::Internal(anyhow::Error::new(error)))?,
+            ),
         }),
     };
-
-    operations.push(manage_data_op);
-
-    // Create the transaction
-    let transaction = stellar_xdr::Transaction {
-        source_account: account_id,
-        fee: uint32(100),
-        seq_num: int64(1),
-        cond: TransactionExt::TxFeeBumpTx(None),
-        operations: operations.into(),
-        ext: TransactionExt::TxFeeBumpTx(None),
-        time_bounds: Some(stellar_xdr::TimeBounds {
-            min_time: uint64(now),
-            max_time: uint64(now + timeout_seconds),
+    let tx = Transaction {
+        source_account: parse_stellar_account_id(account)?,
+        fee: 100,
+        seq_num: SequenceNumber(0),
+        cond: Preconditions::Time(TimeBounds {
+            min_time: TimePoint(now),
+            max_time: TimePoint(expires),
         }),
-        memo: stellar_xdr::Memo::MemoNone,
+        memo: stellar_xdr::Memo::None,
+        operations: vec![operation]
+            .try_into()
+            .map_err(|error| ApiError::Internal(anyhow::Error::new(error)))?,
+        ext: TransactionExt::V0,
     };
-
-    // Encode to XDR
-    let envelope = TransactionEnvelope::Tx(transaction);
-
-    let xdr = stellar_xdr::WriteXdr::to_xdr(&envelope).map_err(|e| {
-        ApiError::Internal(format!("failed to encode transaction: {}", e).into())
-    })?;
-
+    let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+        tx,
+        signatures: Default::default(),
+    });
     Ok(ChallengeResponse {
-        transaction: xdr,
-        network_passphrase: NETWORK_PASSPHRASE.to_string(),
+        transaction: envelope
+            .to_xdr_base64(Limits::none())
+            .map_err(|error| ApiError::Internal(error.into()))?,
+        network_passphrase: NETWORK_PASSPHRASE.to_owned(),
     })
 }
 
 fn sign_transaction_envelope(xdr: &str, server_secret: &str) -> Result<String, ApiError> {
-    use ed25519_dalek::{Signature, SigningKey};
-    use sha2::Digest;
-    use stellar_strkey::ed25519;
-    use stellar_xdr::{TransactionEnvelope, WriteXdr};
-
-    // Parse the server's secret key
-    let secret_key = ed25519::PrivateKey::from_string(server_secret.trim())
-        .map_err(|_| ApiError::BadRequest("invalid server secret key".to_string()))?;
-
-    // Decode the XDR transaction envelope
-    let mut envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(xdr)
-        .map_err(|e| ApiError::Internal(format!("failed to decode transaction: {}", e).into()))?;
-
-    // Sign the transaction
-    let signing_key = SigningKey::from_bytes(&secret_key.0);
-
-    // Hash the transaction with network passphrase
-    let tx_hash = hash_transaction_with_network(&envelope)?;
-
-    // Create the signature
-    let sig = signing_key.sign(&tx_hash);
-
-    // Add the signature to the envelope
-    match &mut envelope {
-        TransactionEnvelope::Tx(tx) => {
-            let hint = stellar_xdr::SignatureHint(get_hint(&sig.to_bytes()));
-            let signer_key = stellar_xdr::SignerKey::Ed25519(stellar_xdr::Uint256(secret_key.0));
-            let decorated_sig = stellar_xdr::DecoratedSignature {
-                hint,
-                signature: stellar_xdr::Signature(sig.to_bytes().to_vec().into()),
-            };
-
-            let signatures = std::vec![decorated_sig];
-            let tx_v0 = stellar_xdr::TransactionV1Envelope {
-                tx: tx.clone(),
-                signatures: signatures.into(),
-            };
-
-            let signed_envelope = TransactionEnvelope::TxV1(tx_v0);
-            let signed_xdr = signed_envelope
-                .to_xdr()
-                .map_err(|e| ApiError::Internal(format!("failed to encode signed transaction: {}", e).into()))?;
-
-            Ok(signed_xdr)
-        }
-        _ => Err(ApiError::Internal("unexpected transaction envelope type".into())),
-    }
+    use ed25519_dalek::SigningKey;
+    let secret = stellar_strkey::ed25519::PrivateKey::from_string(server_secret.trim())
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("invalid server secret key")))?;
+    let signing_key = SigningKey::from_bytes(&secret.0);
+    let mut envelope = TransactionEnvelope::from_xdr_base64(xdr, Limits::none())
+        .map_err(|error| ApiError::Internal(error.into()))?;
+    let TransactionEnvelope::Tx(tx) = &mut envelope else {
+        return Err(ApiError::BadRequest("expected a v1 transaction".to_owned()));
+    };
+    let hash = hash_transaction_with_network(&tx.tx)?;
+    let signature = signing_key.sign(&hash);
+    let key = signing_key.verifying_key().to_bytes();
+    let mut signatures = tx.signatures.to_vec();
+    signatures.push(stellar_xdr::DecoratedSignature {
+        hint: stellar_xdr::SignatureHint([key[28], key[29], key[30], key[31]]),
+        signature: stellar_xdr::Signature(
+            signature
+                .to_bytes()
+                .to_vec()
+                .try_into()
+                .map_err(|error| ApiError::Internal(anyhow::Error::new(error)))?,
+        ),
+    });
+    tx.signatures = signatures
+        .try_into()
+        .map_err(|error| ApiError::Internal(anyhow::Error::new(error)))?;
+    envelope
+        .to_xdr_base64(Limits::none())
+        .map_err(|error| ApiError::Internal(error.into()))
 }
 
-fn hash_transaction_with_network(envelope: &TransactionEnvelope) -> Result<[u8; 32], ApiError> {
-    use sha2::Digest;
-    use stellar_xdr::WriteXdr;
-
-    // Create the transaction hash input: network hash + discriminant + tx hash
-    let mut hasher = sha2::Sha256::new();
-
-    // Hash the network passphrase
-    let network_id = hash_network_passphrase(NETWORK_PASSPHRASE);
-    hasher.update(&network_id);
-
-    // Add discriminant for envelope type
-    hasher.update(&[0, 0, 0, 2]); // ENVELOPE_TYPE_TX = 2
-
-    // Extract and hash the transaction
-    match envelope {
-        TransactionEnvelope::Tx(tx) => {
-            let tx_xdr = tx.to_xdr().map_err(|e| {
-                ApiError::Internal(format!("failed to encode transaction for hashing: {}", e).into())
-            })?;
-            hasher.update(&tx_xdr);
-        }
-        _ => {
-            return Err(ApiError::Internal("unexpected transaction envelope type".into()))
-        }
-    }
-
-    let hash = hasher.finalize();
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&hash);
-    Ok(result)
+fn hash_transaction_with_network(tx: &stellar_xdr::Transaction) -> Result<[u8; 32], ApiError> {
+    use sha2::{Digest, Sha256};
+    tx.hash(Sha256::digest(NETWORK_PASSPHRASE.as_bytes()).into())
+        .map_err(|error| ApiError::Internal(error.into()))
 }
 
-fn hash_network_passphrase(passphrase: &str) -> [u8; 32] {
-    use sha2::Digest;
+fn parse_stellar_account_id(account: &str) -> Result<stellar_xdr::MuxedAccount, ApiError> {
+    use stellar_strkey::Strkey;
+    use stellar_xdr::MuxedAccount;
 
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(passphrase.as_bytes());
-    let hash = hasher.finalize();
-
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&hash);
-    result
-}
-
-fn get_hint(signature: &[u8]) -> [u8; 4] {
-    let len = signature.len();
-    if len >= 4 {
-        [signature[len - 4], signature[len - 3], signature[len - 2], signature[len - 1]]
-    } else {
-        let mut hint = [0u8; 4];
-        hint[..len].copy_from_slice(signature);
-        hint
+    match Strkey::from_string(account.trim()) {
+        Ok(Strkey::PublicKeyEd25519(key)) => {
+            let account_id = MuxedAccount::Ed25519(stellar_xdr::Uint256(key.0));
+            Ok(account_id)
+        }
+        Ok(Strkey::MuxedAccountEd25519(muxed)) => {
+            let account_id = MuxedAccount::MuxedEd25519(stellar_xdr::MuxedAccountMed25519 {
+                ed25519: stellar_xdr::Uint256(muxed.ed25519),
+                id: muxed.id,
+            });
+            Ok(account_id)
+        }
+        _ => Err(ApiError::BadRequest(
+            "Invalid Stellar account format".to_string(),
+        )),
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use stellar_strkey::ed25519;
 
     fn test_account() -> String {
         let key = ed25519::PublicKey([7; 32]);
-        key.to_string()
+        key.to_string().as_str().to_owned()
     }
 
     fn test_secret_key() -> String {
         let key = ed25519::PrivateKey([3; 32]);
-        key.as_unredacted().to_string()
+        key.as_unredacted().to_string().as_str().to_owned()
     }
 
     #[test]
@@ -425,8 +369,18 @@ mod tests {
         let response = build_challenge_transaction(&account).unwrap();
 
         // Should be able to decode the XDR
-        let result: Result<TransactionEnvelope, _> = stellar_xdr::ReadXdr::from_xdr(&response.transaction);
+        let result: Result<TransactionEnvelope, _> =
+            TransactionEnvelope::from_xdr_base64(&response.transaction, Limits::none());
         assert!(result.is_ok());
+        let TransactionEnvelope::Tx(envelope) = result.unwrap() else {
+            panic!("v1 transaction")
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(sep10::validate_challenge(&envelope.tx, now).is_ok());
+        assert_eq!(envelope.tx.seq_num.0, 0);
     }
 
     #[test]
@@ -434,16 +388,25 @@ mod tests {
         let account = test_account();
         let response = build_challenge_transaction(&account).unwrap();
 
-        let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(&response.transaction).unwrap();
+        let envelope: TransactionEnvelope =
+            TransactionEnvelope::from_xdr_base64(&response.transaction, Limits::none()).unwrap();
 
         match envelope {
-            TransactionEnvelope::Tx(tx) => {
-                assert!(!tx.operations.is_empty(), "transaction should have operations");
+            TransactionEnvelope::Tx(envelope) => {
+                let tx = envelope.tx;
+                assert!(
+                    !tx.operations.is_empty(),
+                    "transaction should have operations"
+                );
                 // Check that at least one operation is ManageData
-                let has_manage_data = tx.operations.iter().any(|op| {
-                    matches!(op.body, stellar_xdr::OperationBody::ManageData(_))
-                });
-                assert!(has_manage_data, "transaction should have ManageData operation");
+                let has_manage_data = tx
+                    .operations
+                    .iter()
+                    .any(|op| matches!(op.body, stellar_xdr::OperationBody::ManageData(_)));
+                assert!(
+                    has_manage_data,
+                    "transaction should have ManageData operation"
+                );
             }
             _ => panic!("unexpected envelope type"),
         }
@@ -454,18 +417,25 @@ mod tests {
         let account = test_account();
         let response = build_challenge_transaction(&account).unwrap();
 
-        let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(&response.transaction).unwrap();
+        let envelope: TransactionEnvelope =
+            TransactionEnvelope::from_xdr_base64(&response.transaction, Limits::none()).unwrap();
 
         match envelope {
-            TransactionEnvelope::Tx(tx) => {
+            TransactionEnvelope::Tx(envelope) => {
+                let tx = envelope.tx;
                 assert!(
-                    tx.time_bounds.is_some(),
+                    matches!(tx.cond, stellar_xdr::Preconditions::Time(_)),
                     "transaction should have time bounds"
                 );
-                let bounds = tx.time_bounds.unwrap();
-                assert!(bounds.max_time.0 > bounds.min_time.0, "max time should be greater than min time");
+                let stellar_xdr::Preconditions::Time(bounds) = tx.cond else {
+                    panic!("missing time bounds")
+                };
+                assert!(
+                    bounds.max_time.0 > bounds.min_time.0,
+                    "max time should be greater than min time"
+                );
                 assert_eq!(
-                    bounds.max_time.0 - bounds.min_time.0,
+                    bounds.max_time.0.checked_sub(bounds.min_time.0).unwrap(),
                     300,
                     "time bounds should be 300 seconds"
                 );
@@ -482,15 +452,20 @@ mod tests {
         let response = build_challenge_transaction(&account).unwrap();
         let signed_xdr = sign_transaction_envelope(&response.transaction, &server_secret).unwrap();
 
-        let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(&signed_xdr).unwrap();
+        let envelope: TransactionEnvelope =
+            TransactionEnvelope::from_xdr_base64(&signed_xdr, Limits::none()).unwrap();
 
         match envelope {
-            TransactionEnvelope::TxV1(tx_v1) => {
+            TransactionEnvelope::Tx(tx_v1) => {
                 assert!(
                     !tx_v1.signatures.is_empty(),
                     "signed transaction should have signatures"
                 );
-                assert_eq!(tx_v1.signatures.len(), 1, "should have exactly one signature");
+                assert_eq!(
+                    tx_v1.signatures.len(),
+                    1,
+                    "should have exactly one signature"
+                );
             }
             _ => panic!("signed envelope should be TxV1"),
         }
@@ -515,30 +490,34 @@ mod tests {
         use ed25519_dalek::SigningKey;
         use stellar_xdr::{ReadXdr, WriteXdr};
 
-        let mut envelope: TransactionEnvelope = ReadXdr::from_xdr(server_signed_xdr).unwrap();
+        let mut envelope: TransactionEnvelope =
+            TransactionEnvelope::from_xdr_base64(server_signed_xdr, Limits::none()).unwrap();
         let tx = match &envelope {
-            TransactionEnvelope::TxV1(tx_v1) => tx_v1.tx.clone(),
+            TransactionEnvelope::Tx(tx_v1) => tx_v1.tx.clone(),
             _ => panic!("expected a TxV1 envelope"),
         };
-        let tx_hash = hash_transaction_with_network(&TransactionEnvelope::Tx(tx)).unwrap();
+        let tx_hash = hash_transaction_with_network(&tx).unwrap();
 
         let secret_key = ed25519::PrivateKey::from_string(client_secret.trim()).unwrap();
         let signing_key = SigningKey::from_bytes(&secret_key.0);
         let sig = signing_key.sign(&tx_hash);
 
         match &mut envelope {
-            TransactionEnvelope::TxV1(tx_v1) => {
+            TransactionEnvelope::Tx(tx_v1) => {
                 let mut signatures = tx_v1.signatures.to_vec();
                 signatures.push(stellar_xdr::DecoratedSignature {
-                    hint: stellar_xdr::SignatureHint(get_hint(&sig.to_bytes())),
-                    signature: stellar_xdr::Signature(sig.to_bytes().to_vec().into()),
+                    hint: stellar_xdr::SignatureHint({
+                        let key = signing_key.verifying_key().to_bytes();
+                        [key[28], key[29], key[30], key[31]]
+                    }),
+                    signature: stellar_xdr::Signature(sig.to_bytes().to_vec().try_into().unwrap()),
                 });
                 tx_v1.signatures = signatures.try_into().unwrap();
             }
             _ => unreachable!(),
         }
 
-        envelope.to_xdr().unwrap()
+        envelope.to_xdr_base64(Limits::none()).unwrap()
     }
 
     #[test]
@@ -548,19 +527,20 @@ mod tests {
 
         let response = build_challenge_transaction(&account).unwrap();
         let signed_xdr = sign_transaction_envelope(&response.transaction, &secret).unwrap();
-        let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(&signed_xdr).unwrap();
+        let envelope: TransactionEnvelope =
+            TransactionEnvelope::from_xdr_base64(&signed_xdr, Limits::none()).unwrap();
 
         let tx_v1 = match &envelope {
-            TransactionEnvelope::TxV1(tx_v1) => tx_v1,
+            TransactionEnvelope::Tx(tx_v1) => tx_v1,
             _ => panic!("expected TxV1"),
         };
-        let tx_hash = hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone())).unwrap();
+        let tx_hash = hash_transaction_with_network(&tx_v1.tx).unwrap();
         let server_key = server_public_key_bytes(&secret).unwrap();
 
         let matches = tx_v1
             .signatures
             .iter()
-            .any(|sig| signature_matches(&server_key, &tx_hash, &sig.signature.0));
+            .any(|sig| signature_matches(&server_key, &tx_hash, sig.signature.0.as_slice()));
         assert!(matches);
     }
 
@@ -571,19 +551,20 @@ mod tests {
 
         let response = build_challenge_transaction(&account).unwrap();
         let signed_xdr = sign_transaction_envelope(&response.transaction, &secret).unwrap();
-        let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(&signed_xdr).unwrap();
+        let envelope: TransactionEnvelope =
+            TransactionEnvelope::from_xdr_base64(&signed_xdr, Limits::none()).unwrap();
 
         let tx_v1 = match &envelope {
-            TransactionEnvelope::TxV1(tx_v1) => tx_v1,
+            TransactionEnvelope::Tx(tx_v1) => tx_v1,
             _ => panic!("expected TxV1"),
         };
-        let tx_hash = hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone())).unwrap();
+        let tx_hash = hash_transaction_with_network(&tx_v1.tx).unwrap();
         let wrong_key = [9u8; 32];
 
         let matches = tx_v1
             .signatures
             .iter()
-            .any(|sig| signature_matches(&wrong_key, &tx_hash, &sig.signature.0));
+            .any(|sig| signature_matches(&wrong_key, &tx_hash, sig.signature.0.as_slice()));
         assert!(!matches);
     }
 
@@ -591,7 +572,7 @@ mod tests {
     fn source_account_matches_accepts_the_claimed_account() {
         let account = test_account();
         let claimed = engipay_core::stellar::parse_address(&account).unwrap();
-        let source = stellar_xdr::MuxedAccount::KeyTypeEd25519(stellar_xdr::Uint256(
+        let source = stellar_xdr::MuxedAccount::Ed25519(stellar_xdr::Uint256(
             ed25519::PublicKey::from_string(&account).unwrap().0,
         ));
 
@@ -602,7 +583,7 @@ mod tests {
     fn source_account_matches_rejects_a_different_account() {
         let other_account = ed25519::PublicKey([1; 32]).to_string();
         let claimed = engipay_core::stellar::parse_address(&test_account()).unwrap();
-        let source = stellar_xdr::MuxedAccount::KeyTypeEd25519(stellar_xdr::Uint256(
+        let source = stellar_xdr::MuxedAccount::Ed25519(stellar_xdr::Uint256(
             ed25519::PublicKey::from_string(&other_account).unwrap().0,
         ));
 
@@ -612,57 +593,38 @@ mod tests {
     #[test]
     fn fully_signed_challenge_verifies_against_both_server_and_client_keys() {
         let client_secret = test_secret_key();
-        let client_account = test_account();
+        let client_account =
+            ed25519::PublicKey(server_public_key_bytes(&client_secret).unwrap()).to_string();
         let server_secret_key = ed25519::PrivateKey([5; 32]);
         let server_secret = server_secret_key.as_unredacted().to_string();
 
         let response = build_challenge_transaction(&client_account).unwrap();
-        let server_signed = sign_transaction_envelope(&response.transaction, &server_secret).unwrap();
+        let server_signed =
+            sign_transaction_envelope(&response.transaction, &server_secret).unwrap();
         let fully_signed = add_client_signature(&server_signed, &client_secret);
 
-        let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(&fully_signed).unwrap();
+        let envelope: TransactionEnvelope =
+            TransactionEnvelope::from_xdr_base64(&fully_signed, Limits::none()).unwrap();
         let tx_v1 = match &envelope {
-            TransactionEnvelope::TxV1(tx_v1) => tx_v1,
+            TransactionEnvelope::Tx(tx_v1) => tx_v1,
             _ => panic!("expected TxV1"),
         };
         assert_eq!(tx_v1.signatures.len(), 2);
 
-        let tx_hash = hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone())).unwrap();
+        let tx_hash = hash_transaction_with_network(&tx_v1.tx).unwrap();
         let server_key = server_public_key_bytes(&server_secret).unwrap();
         let client_key = server_public_key_bytes(&client_secret).unwrap();
 
         let server_signed_ok = tx_v1
             .signatures
             .iter()
-            .any(|sig| signature_matches(&server_key, &tx_hash, &sig.signature.0));
+            .any(|sig| signature_matches(&server_key, &tx_hash, sig.signature.0.as_slice()));
         let client_signed_ok = tx_v1
             .signatures
             .iter()
-            .any(|sig| signature_matches(&client_key, &tx_hash, &sig.signature.0));
+            .any(|sig| signature_matches(&client_key, &tx_hash, sig.signature.0.as_slice()));
 
         assert!(server_signed_ok, "server signature should verify");
         assert!(client_signed_ok, "client signature should verify");
-    }
-}
-
-fn parse_stellar_account_id(account: &str) -> Result<stellar_xdr::MuxedAccount, ApiError> {
-    use stellar_strkey::Strkey;
-    use stellar_xdr::MuxedAccount;
-
-    match Strkey::from_string(account.trim()) {
-        Ok(Strkey::PublicKeyEd25519(key)) => {
-            let account_id = MuxedAccount::KeyTypeEd25519(stellar_xdr::Uint256(key.0));
-            Ok(account_id)
-        }
-        Ok(Strkey::MuxedAccountEd25519(muxed)) => {
-            let account_id = MuxedAccount::KeyTypeMuxedEd25519(stellar_xdr::MuxedAccountMed25519 {
-                ed25519: stellar_xdr::Uint256(muxed.ed25519),
-                id: stellar_xdr::uint64(muxed.id),
-            });
-            Ok(account_id)
-        }
-        _ => Err(ApiError::BadRequest(
-            "Invalid Stellar account format".to_string(),
-        )),
     }
 }

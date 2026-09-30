@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use engipay_core::Chain;
 use engipay_core::stellar::{StellarAddress, parse_address};
-use tracing::{warn, error};
+use tracing::{error, warn};
 
 use self::horizon::{Account, Page, PaymentRecord, Root, SubmitProblem, Submitted};
 pub use self::network::StellarNetwork;
@@ -25,6 +25,26 @@ const PAGE_LIMIT: usize = 200;
 const MAX_PAGES: usize = 25;
 /// How long a signed payment stays valid if it does not land.
 const PAYMENT_VALIDITY: Duration = Duration::from_secs(120);
+
+// Bounded integer backoff shared by reads and submissions. The policy remains
+// 500ms exponential delays capped at 30s, with deterministic +/-5% jitter.
+fn retry_delay_ms(attempt: u32) -> u64 {
+    const INITIAL_DELAY_MS: u64 = 500;
+    const MAX_DELAY_MS: u64 = 30_000;
+    let delay_ms = INITIAL_DELAY_MS
+        .saturating_mul(2_u64.checked_pow(attempt).unwrap_or(u64::MAX))
+        .min(MAX_DELAY_MS);
+    let jitter_ms = delay_ms / 10;
+    let jitter_offset = u64::from(attempt)
+        .wrapping_mul(73856093)
+        .wrapping_mul(19349663)
+        .wrapping_mul(83492791)
+        .checked_rem(jitter_ms.saturating_add(1))
+        .unwrap_or(0);
+    delay_ms
+        .saturating_sub(jitter_ms / 2)
+        .saturating_add(jitter_offset)
+}
 
 #[derive(Debug, Clone)]
 pub struct StellarConfig {
@@ -86,8 +106,6 @@ impl StellarClient {
         attempt: u32,
     ) -> Result<T, ChainError> {
         const MAX_RETRIES: u32 = 5;
-        const INITIAL_DELAY_MS: u64 = 500;
-        const MAX_DELAY_MS: u64 = 30_000;
 
         let url = format!("{}{path}", self.config.horizon_url);
         let response = self
@@ -111,26 +129,18 @@ impl StellarClient {
             )));
         }
 
-        let delay_ms = std::cmp::min(
-            (INITIAL_DELAY_MS as f64 * 2_f64.powi(attempt as i32)) as u64,
-            MAX_DELAY_MS,
-        );
-        let jitter_ms = (delay_ms as f64 * 0.1) as u64;
-        let jitter_offset = ((attempt as u64).wrapping_mul(73856093))
-            .wrapping_mul(19349663)
-            .wrapping_mul(83492791) % (jitter_ms + 1);
-        let jittered_delay = delay_ms - jitter_ms / 2 + jitter_offset;
+        let jittered_delay = retry_delay_ms(attempt);
 
         warn!(
             status = status.as_u16(),
-            attempt = attempt + 1,
+            attempt = attempt.saturating_add(1),
             max_retries = MAX_RETRIES,
             delay_ms = jittered_delay,
             "Horizon returned transient error, retrying"
         );
 
         tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        Box::pin(self.get_with_retry(path, attempt + 1)).await
+        Box::pin(self.get_with_retry(path, attempt.saturating_add(1))).await
     }
 
     /// The account's current sequence number.
@@ -173,10 +183,12 @@ impl StellarClient {
         self.submit_payment_with_retry(&encoded, 0).await
     }
 
-    async fn submit_payment_with_retry(&self, encoded: &str, attempt: u32) -> Result<String, ChainError> {
+    async fn submit_payment_with_retry(
+        &self,
+        encoded: &str,
+        attempt: u32,
+    ) -> Result<String, ChainError> {
         const MAX_RETRIES: u32 = 5;
-        const INITIAL_DELAY_MS: u64 = 500;
-        const MAX_DELAY_MS: u64 = 30_000;
 
         let response = self
             .http
@@ -209,26 +221,18 @@ impl StellarClient {
             return Err(ChainError::Rejected(detail));
         }
 
-        let delay_ms = std::cmp::min(
-            (INITIAL_DELAY_MS as f64 * 2_f64.powi(attempt as i32)) as u64,
-            MAX_DELAY_MS,
-        );
-        let jitter_ms = (delay_ms as f64 * 0.1) as u64;
-        let jitter_offset = ((attempt as u64).wrapping_mul(73856093))
-            .wrapping_mul(19349663)
-            .wrapping_mul(83492791) % (jitter_ms + 1);
-        let jittered_delay = delay_ms - jitter_ms / 2 + jitter_offset;
+        let jittered_delay = retry_delay_ms(attempt);
 
         warn!(
             status = status.as_u16(),
-            attempt = attempt + 1,
+            attempt = attempt.saturating_add(1),
             max_retries = MAX_RETRIES,
             delay_ms = jittered_delay,
             "Horizon returned transient error on payment submission, retrying"
         );
 
         tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        Box::pin(self.submit_payment_with_retry(encoded, attempt + 1)).await
+        Box::pin(self.submit_payment_with_retry(encoded, attempt.saturating_add(1))).await
     }
 }
 
@@ -307,6 +311,14 @@ impl ChainClient for StellarClient {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    #[test]
+    fn retry_delays_remain_bounded_at_extreme_attempt_counts() {
+        assert_eq!(super::retry_delay_ms(0), 475);
+        for attempt in [6, 32, 64, u32::MAX] {
+            assert!((28_500..=31_500).contains(&super::retry_delay_ms(attempt)));
+        }
+    }
+
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

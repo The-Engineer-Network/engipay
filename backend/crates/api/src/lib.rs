@@ -9,6 +9,8 @@ pub mod error;
 mod routes;
 pub mod services;
 
+pub use routes::me::{ValidationError as TagValidationError, validate_tag};
+
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
 use sqlx::PgPool;

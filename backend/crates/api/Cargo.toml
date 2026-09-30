@@ -18,11 +18,18 @@ sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
-uuid.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 jsonwebtoken.workspace = true
+ed25519-dalek.workspace = true
+stellar-strkey.workspace = true
+stellar-xdr.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+k256.workspace = true
+hex.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

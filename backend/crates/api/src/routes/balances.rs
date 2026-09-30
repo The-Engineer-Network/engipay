@@ -4,9 +4,9 @@ use axum::{Json, Router};
 use engipay_ledger::Balance;
 use engipay_ledger::postgres::PostgresLedgerStore;
 
+use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
-use crate::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/balances", get(get_balances))
@@ -42,7 +42,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::Config;
-    use crate::{router, AppState};
+    use crate::{AppState, router};
 
     fn app() -> axum::Router {
         let config = Config::for_tests();
@@ -62,10 +62,10 @@ mod tests {
                 Request::builder()
                     .uri("/v1/balances")
                     .body(Body::empty())
-                    .unwrap(),
+                    .expect("valid test fixture"),
             )
             .await
-            .unwrap();
+            .expect("valid test fixture");
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
@@ -78,7 +78,7 @@ mod tests {
             "test-wallet".to_string(),
             config.jwt_secret.as_bytes(),
         )
-        .unwrap();
+        .expect("valid test fixture");
 
         let response = app()
             .oneshot(
@@ -86,14 +86,19 @@ mod tests {
                     .uri("/v1/balances")
                     .header("Authorization", format!("Bearer {token}"))
                     .body(Body::empty())
-                    .unwrap(),
+                    .expect("valid test fixture"),
             )
             .await
-            .unwrap();
+            .expect("valid test fixture");
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("valid test fixture")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&bytes).expect("valid test fixture");
         assert_eq!(json["error"]["code"], "database_unavailable");
     }
 
@@ -108,22 +113,27 @@ mod tests {
         let Ok(database_url) = std::env::var("DATABASE_URL") else {
             return;
         };
-        let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        let pool = sqlx::PgPool::connect(&database_url)
+            .await
+            .expect("valid test fixture");
+        sqlx::migrate!("../../migrations")
+            .run(&pool)
+            .await
+            .expect("valid test fixture");
 
         let user = UserId::new();
         sqlx::query("INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING")
             .bind(user.as_uuid())
             .execute(&pool)
             .await
-            .unwrap();
+            .expect("valid test fixture");
 
         let store = PostgresLedgerStore::new(pool.clone());
         let deposit = Money::from_minor(Asset::Usdc, 25_000_000);
         store
             .deposit(user, deposit, &format!("balances-test-{}", user.as_uuid()))
             .await
-            .unwrap();
+            .expect("valid test fixture");
 
         let config = Config::for_tests();
         let state = AppState {
@@ -137,7 +147,7 @@ mod tests {
             "test-wallet".to_string(),
             config.jwt_secret.as_bytes(),
         )
-        .unwrap();
+        .expect("valid test fixture");
 
         let response = app
             .oneshot(
@@ -145,15 +155,20 @@ mod tests {
                     .uri("/v1/balances")
                     .header("Authorization", format!("Bearer {token}"))
                     .body(Body::empty())
-                    .unwrap(),
+                    .expect("valid test fixture"),
             )
             .await
-            .unwrap();
+            .expect("valid test fixture");
 
         assert_eq!(response.status(), StatusCode::OK);
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let balances = body.as_array().unwrap();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("valid test fixture")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).expect("valid test fixture");
+        let balances = body.as_array().expect("valid test fixture");
         let usdc = balances
             .iter()
             .find(|b| b["asset"] == "USDC")

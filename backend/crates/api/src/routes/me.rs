@@ -18,13 +18,16 @@ pub fn validate_tag(tag: &str) -> Result<(), ValidationError> {
     let tag = tag.strip_prefix('@').unwrap_or(tag);
 
     let len = tag.chars().count();
-    let format_ok = (3..=20).contains(&len)
-        && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let format_ok =
+        (3..=20).contains(&len) && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !format_ok {
         return Err(ValidationError::InvalidFormat);
     }
 
-    if RESERVED_TAGS.iter().any(|reserved| reserved.eq_ignore_ascii_case(tag)) {
+    if RESERVED_TAGS
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(tag))
+    {
         return Err(ValidationError::ReservedTag(tag.to_string()));
     }
 
@@ -60,9 +63,18 @@ mod tests {
 
     #[test]
     fn rejects_special_characters() {
-        assert_eq!(validate_tag("alice-92"), Err(ValidationError::InvalidFormat));
-        assert_eq!(validate_tag("alice 92"), Err(ValidationError::InvalidFormat));
-        assert_eq!(validate_tag("alice@92"), Err(ValidationError::InvalidFormat));
+        assert_eq!(
+            validate_tag("alice-92"),
+            Err(ValidationError::InvalidFormat)
+        );
+        assert_eq!(
+            validate_tag("alice 92"),
+            Err(ValidationError::InvalidFormat)
+        );
+        assert_eq!(
+            validate_tag("alice@92"),
+            Err(ValidationError::InvalidFormat)
+        );
     }
 
     #[test]

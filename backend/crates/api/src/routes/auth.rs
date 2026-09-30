@@ -1,12 +1,12 @@
 mod evm;
 mod nonce;
-mod user;
 mod stellar;
+mod user;
 
 pub use user::AuthUser;
 
-use axum::Router;
 use crate::AppState;
+use axum::Router;
 
 pub fn routes() -> Router<AppState> {
     Router::new()

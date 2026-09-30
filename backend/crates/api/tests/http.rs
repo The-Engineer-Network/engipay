@@ -116,11 +116,15 @@ async fn stellar_challenge_endpoint_returns_valid_transaction() {
     assert_eq!(status, StatusCode::OK);
 
     assert!(body["transaction"].is_string());
-    assert_eq!(body["network_passphrase"], "Test SDF Network ; September 2015");
+    assert_eq!(
+        body["network_passphrase"],
+        "Test SDF Network ; September 2015"
+    );
 
     // Verify the transaction XDR is valid
     let xdr = body["transaction"].as_str().unwrap();
-    let result: Result<stellar_xdr::TransactionEnvelope, _> = stellar_xdr::ReadXdr::from_xdr(xdr);
+    let result: Result<stellar_xdr::TransactionEnvelope, _> =
+        stellar_xdr::ReadXdr::from_xdr_base64(xdr, stellar_xdr::Limits::none());
     assert!(result.is_ok());
 }
 
@@ -138,8 +142,11 @@ async fn stellar_challenge_rejects_secret_key() {
     let secret = ed25519::PrivateKey([3; 32]);
     let secret_str = secret.as_unredacted().to_string();
 
-    let (status, _body) = get_json(&format!("/v1/auth/stellar/challenge?account={}", secret_str))
-        .await;
+    let (status, _body) = get_json(&format!(
+        "/v1/auth/stellar/challenge?account={}",
+        secret_str
+    ))
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 

@@ -44,7 +44,9 @@ pub fn create_token(user_id: Uuid, wallet: String, secret: &[u8]) -> Result<Stri
         sub: user_id,
         wallet,
         iat: now,
-        exp: now + DEFAULT_EXPIRY_SECONDS,
+        exp: now
+            .checked_add(DEFAULT_EXPIRY_SECONDS)
+            .ok_or(AuthError::TokenCreation)?,
     };
 
     encode(
@@ -61,14 +63,16 @@ pub fn create_token(user_id: Uuid, wallet: String, secret: &[u8]) -> Result<Stri
 /// from a malformed or signature-invalid one.
 pub fn verify_token(token: &str, secret: &[u8]) -> Result<Claims, AuthError> {
     let mut validation = Validation::new(Algorithm::HS256);
+    validation.leeway = 0;
     validation.set_required_spec_claims(&["exp", "sub"]);
 
-    let data = decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation).map_err(
-        |err| match err.kind() {
-            jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::ExpiredToken,
-            _ => AuthError::InvalidToken,
-        },
-    )?;
+    let data =
+        decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation).map_err(|err| {
+            match err.kind() {
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::ExpiredToken,
+                _ => AuthError::InvalidToken,
+            }
+        })?;
 
     Ok(data.claims)
 }
@@ -95,8 +99,8 @@ mod tests {
         let user_id = Uuid::new_v4();
         let wallet = "GABCDEF...".to_string();
 
-        let token = create_token(user_id, wallet.clone(), secret()).unwrap();
-        let claims = verify_token(&token, secret()).unwrap();
+        let token = create_token(user_id, wallet.clone(), secret()).expect("valid test fixture");
+        let claims = verify_token(&token, secret()).expect("valid test fixture");
 
         assert_eq!(claims.sub, user_id);
         assert_eq!(claims.wallet, wallet);
@@ -104,8 +108,9 @@ mod tests {
 
     #[test]
     fn expiry_defaults_to_24_hours_from_issued_at() {
-        let token = create_token(Uuid::new_v4(), "wallet".to_string(), secret()).unwrap();
-        let claims = verify_token(&token, secret()).unwrap();
+        let token = create_token(Uuid::new_v4(), "wallet".to_string(), secret())
+            .expect("valid test fixture");
+        let claims = verify_token(&token, secret()).expect("valid test fixture");
 
         assert_eq!(claims.exp - claims.iat, DEFAULT_EXPIRY_SECONDS);
     }
@@ -113,15 +118,17 @@ mod tests {
     #[test]
     fn round_trips_through_verify_token() {
         let user_id = Uuid::new_v4();
-        let token = create_token(user_id, "wallet".to_string(), secret()).unwrap();
+        let token =
+            create_token(user_id, "wallet".to_string(), secret()).expect("valid test fixture");
 
-        let claims = verify_token(&token, secret()).unwrap();
+        let claims = verify_token(&token, secret()).expect("valid test fixture");
         assert_eq!(claims.sub, user_id);
     }
 
     #[test]
     fn rejects_a_token_signed_with_a_different_secret() {
-        let token = create_token(Uuid::new_v4(), "wallet".to_string(), secret()).unwrap();
+        let token = create_token(Uuid::new_v4(), "wallet".to_string(), secret())
+            .expect("valid test fixture");
 
         let result = verify_token(&token, b"a-completely-different-secret");
         assert!(matches!(result, Err(AuthError::InvalidToken)));
@@ -141,7 +148,7 @@ mod tests {
             &claims,
             &EncodingKey::from_secret(secret()),
         )
-        .unwrap();
+        .expect("valid test fixture");
 
         let result = verify_token(&token, secret());
         assert!(matches!(result, Err(AuthError::ExpiredToken)));
