@@ -9,6 +9,7 @@ pub mod error;
 pub mod middleware;
 mod routes;
 pub mod services;
+pub mod middleware;
 
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
