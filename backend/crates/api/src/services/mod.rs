@@ -2,3 +2,4 @@
 //! itself does not know about, such as AML velocity limits.
 
 pub mod limits;
+pub mod payment_requests;
