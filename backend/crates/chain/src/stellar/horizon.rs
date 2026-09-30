@@ -46,6 +46,10 @@ pub struct PaymentRecord {
     pub transaction_hash: String,
     #[serde(default)]
     pub transaction_successful: bool,
+    /// The paying account. Logged when a transfer into custody is refused, so a
+    /// person can trace it back.
+    #[serde(default)]
+    pub from: Option<String>,
     #[serde(default)]
     pub to: Option<String>,
     #[serde(default)]
@@ -208,6 +212,19 @@ pub fn parse_stroops(amount: &str) -> Option<i64> {
 pub fn cursor_for_ledger(ledger: u64) -> Option<i64> {
     let ledger = i64::try_from(ledger).ok()?;
     ledger.checked_mul(1 << 32)
+}
+
+/// Extracts the 64-bit muxed account ID from a Stellar `M...` address.
+///
+/// Returns `Some(id)` when `destination` is a valid muxed account address,
+/// and `None` for a plain `G...` custody account address (which carries no
+/// embedded ID and must be flagged for memo parsing or manual review) or for
+/// any invalid input.
+pub fn extract_muxed_id(destination: &str) -> Option<u64> {
+    match engipay_core::stellar::parse_address(destination) {
+        Ok(engipay_core::stellar::StellarAddress::Muxed { id, .. }) => Some(id),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -380,8 +397,14 @@ mod tests {
         assert_eq!(parse_stroops("100000.0000000"), Some(1_000_000_000_000));
         assert_eq!(parse_stroops("1000000.0000000"), Some(10_000_000_000_000));
         assert_eq!(parse_stroops("10000000.0000000"), Some(100_000_000_000_000));
-        assert_eq!(parse_stroops("100000000.0000000"), Some(1_000_000_000_000_000));
-        assert_eq!(parse_stroops("1000000000.0000000"), Some(10_000_000_000_000_000));
+        assert_eq!(
+            parse_stroops("100000000.0000000"),
+            Some(1_000_000_000_000_000)
+        );
+        assert_eq!(
+            parse_stroops("1000000000.0000000"),
+            Some(10_000_000_000_000_000)
+        );
     }
 
     #[test]
@@ -396,7 +419,8 @@ mod tests {
         assert_eq!(parse_stroops("1.0000000"), Some(10_000_000));
         assert_eq!(parse_stroops("0.1234567"), Some(1_234_567));
         assert_eq!(parse_stroops("0.9999999"), Some(9_999_999));
-        assert_eq!(parse_stroops("123.4567890"), None);
+        // Seven decimals is exactly what Horizon sends, so this is valid.
+        assert_eq!(parse_stroops("123.4567890"), Some(1_234_567_890));
         assert_eq!(parse_stroops("123.456789"), None);
     }
 
@@ -442,5 +466,39 @@ mod tests {
         let last_operation_in_ledger_99: i64 = (100 << 32) - 1;
         assert!(cursor < first_operation_in_ledger_100);
         assert!(cursor > last_operation_in_ledger_99);
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_the_id_from_a_muxed_address() {
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 42_000).unwrap();
+        assert_eq!(extract_muxed_id(&muxed), Some(42_000));
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_zero_id_when_id_is_zero() {
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 0).unwrap();
+        assert_eq!(extract_muxed_id(&muxed), Some(0));
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_max_u64_id() {
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, u64::MAX).unwrap();
+        assert_eq!(extract_muxed_id(&muxed), Some(u64::MAX));
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_none_for_plain_g_address() {
+        // A plain G... custody account carries no embedded ID; must be reviewed.
+        assert_eq!(extract_muxed_id(&account(1)), None);
+    }
+
+    #[test]
+    fn extract_muxed_id_returns_none_for_invalid_input() {
+        assert_eq!(extract_muxed_id(""), None);
+        assert_eq!(extract_muxed_id("not-an-address"), None);
+        assert_eq!(extract_muxed_id("GABC"), None);
     }
 }

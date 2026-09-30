@@ -35,8 +35,8 @@ impl From<LimitError> for ApiError {
 /// their own figures.
 fn tier_daily_limit(tier: i32) -> Money {
     const TIER_0_LIMIT_MINOR: i128 = 500 * 10_000_000; // USDC, 7 decimals.
-    let multiplier = i128::from(tier.max(0)) + 1;
-    Money::from_minor(Asset::Usdc, TIER_0_LIMIT_MINOR * multiplier)
+    let multiplier = i128::from(tier.max(0)).saturating_add(1);
+    Money::from_minor(Asset::Usdc, TIER_0_LIMIT_MINOR.saturating_mul(multiplier))
 }
 
 /// Sum of `user_id`'s outgoing transfers in the reference asset (USDC) over
@@ -88,7 +88,7 @@ pub async fn check_velocity_limits(
     let current = calculate_24h_volume(pool, user_id).await?;
     let limit = tier_daily_limit(tier);
 
-    if current.minor + amount.minor > limit.minor {
+    if current.minor.saturating_add(amount.minor) > limit.minor {
         return Err(LimitError::Exceeded {
             tier,
             current: current.minor,
@@ -101,12 +101,16 @@ pub async fn check_velocity_limits(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
 
     #[test]
     fn tier_0_daily_limit_is_500_usdc() {
-        assert_eq!(tier_daily_limit(0), Money::from_minor(Asset::Usdc, 500 * 10_000_000));
+        assert_eq!(
+            tier_daily_limit(0),
+            Money::from_minor(Asset::Usdc, 500 * 10_000_000)
+        );
     }
 
     #[test]

@@ -246,9 +246,9 @@ fn build_challenge_transaction(account: &str) -> Result<ChallengeResponse, ApiEr
 
     let timeout_seconds = 300u64;
 
-    // Create a random 64-bit value for uniqueness
-    let mut rng = rand::thread_rng();
-    let random_bytes = rng.gen::<u64>();
+    // A random 64-bit value makes each challenge unique. `rng.gen()` cannot be
+    // spelled that way in edition 2024, where `gen` is a reserved keyword.
+    let random_bytes: u64 = rand::random();
 
     // Parse the account to get the account ID
     let account_id = parse_stellar_account_id(account)?;

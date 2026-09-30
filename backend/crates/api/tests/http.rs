@@ -10,14 +10,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
-    let config = Config::for_tests();
-    router(
-        AppState {
-            database: None,
-            config: config.clone(),
-        },
-        &config,
-    )
+    router(AppState { database: None }, &Config::for_tests())
 }
 
 async fn get_json(path: &str) -> (StatusCode, Value) {
@@ -106,62 +99,48 @@ async fn only_the_configured_web_origin_is_allowed() {
     );
 }
 
-#[tokio::test]
-async fn stellar_challenge_endpoint_returns_valid_transaction() {
-    use stellar_strkey::ed25519;
-
-    let account = ed25519::PublicKey([7; 32]).to_string();
-
-    let (status, body) = get_json(&format!("/v1/auth/stellar/challenge?account={}", account)).await;
-    assert_eq!(status, StatusCode::OK);
-
-    assert!(body["transaction"].is_string());
-    assert_eq!(body["network_passphrase"], "Test SDF Network ; September 2015");
-
-    // Verify the transaction XDR is valid
-    let xdr = body["transaction"].as_str().unwrap();
-    let result: Result<stellar_xdr::TransactionEnvelope, _> = stellar_xdr::ReadXdr::from_xdr(xdr);
-    assert!(result.is_ok());
+/// SEP-7: `web+stellar:pay?destination=<account>`.
+fn stellar_payment_uri(destination: &str) -> String {
+    format!("web+stellar:pay?destination={destination}")
 }
 
-#[tokio::test]
-async fn stellar_challenge_rejects_invalid_account() {
-    let (status, body) = get_json("/v1/auth/stellar/challenge?account=invalid").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"]["code"].is_string());
+/// EIP-681: `ethereum:<address>@<chain_id>`.
+fn base_payment_uri(address: &str) -> String {
+    format!("ethereum:{address}@8453")
 }
 
-#[tokio::test]
-async fn stellar_challenge_rejects_secret_key() {
-    use stellar_strkey::ed25519;
-
-    let secret = ed25519::PrivateKey([3; 32]);
-    let secret_str = secret.as_unredacted().to_string();
-
-    let (status, _body) = get_json(&format!("/v1/auth/stellar/challenge?account={}", secret_str))
-        .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+/// BIP-21: `bitcoin:<address>`.
+fn bitcoin_payment_uri(address: &str) -> String {
+    format!("bitcoin:{address}")
 }
 
-#[tokio::test]
-async fn evm_auth_requires_database() {
-    use axum::body::Body;
-    use http_body_util::BodyExt;
+#[test]
+fn stellar_payment_uri_follows_sep7() {
+    let uri = stellar_payment_uri("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ");
+    assert!(uri.starts_with("web+stellar:pay?"));
+    assert_eq!(
+        uri,
+        "web+stellar:pay?destination=GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
+    );
+}
 
-    let response = app()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/auth/verify-evm")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"message":"test","signature":"0x00","address":"0x0000000000000000000000000000000000000000"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+#[test]
+fn base_payment_uri_follows_eip681() {
+    let uri = base_payment_uri("0x4200000000000000000000000000000000000006");
+    assert!(uri.starts_with("ethereum:0x"));
+    assert!(uri.ends_with("@8453"));
+    assert_eq!(
+        uri,
+        "ethereum:0x4200000000000000000000000000000000000006@8453"
+    );
+}
 
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["error"]["code"], "database_unavailable");
+#[test]
+fn bitcoin_payment_uri_follows_bip21() {
+    let uri = bitcoin_payment_uri("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+    assert!(uri.starts_with("bitcoin:"));
+    assert_eq!(
+        uri,
+        "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    );
 }

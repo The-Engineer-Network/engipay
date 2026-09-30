@@ -6,12 +6,13 @@
 pub mod horizon;
 pub mod network;
 pub mod payment;
+pub mod cursor;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use engipay_core::Chain;
 use engipay_core::stellar::{StellarAddress, parse_address};
-use tracing::{warn, error};
+use tracing::{error, warn};
 
 use self::horizon::{Account, Page, PaymentRecord, Root, SubmitProblem, Submitted};
 pub use self::network::StellarNetwork;
@@ -111,26 +112,20 @@ impl StellarClient {
             )));
         }
 
-        let delay_ms = std::cmp::min(
-            (INITIAL_DELAY_MS as f64 * 2_f64.powi(attempt as i32)) as u64,
-            MAX_DELAY_MS,
-        );
-        let jitter_ms = (delay_ms as f64 * 0.1) as u64;
-        let jitter_offset = ((attempt as u64).wrapping_mul(73856093))
-            .wrapping_mul(19349663)
-            .wrapping_mul(83492791) % (jitter_ms + 1);
-        let jittered_delay = delay_ms - jitter_ms / 2 + jitter_offset;
+        let jittered_delay = backoff_delay_ms(attempt, INITIAL_DELAY_MS, MAX_DELAY_MS);
 
         warn!(
             status = status.as_u16(),
-            attempt = attempt + 1,
+            attempt = attempt.saturating_add(1),
             max_retries = MAX_RETRIES,
             delay_ms = jittered_delay,
             "Horizon returned transient error, retrying"
         );
 
         tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        self.get_with_retry(path, attempt + 1).await
+        // Boxed: an async fn that calls itself needs indirection to have a
+        // finite size.
+        Box::pin(self.get_with_retry(path, attempt.saturating_add(1))).await
     }
 
     /// The account's current sequence number.
@@ -173,7 +168,11 @@ impl StellarClient {
         self.submit_payment_with_retry(&encoded, 0).await
     }
 
-    async fn submit_payment_with_retry(&self, encoded: &str, attempt: u32) -> Result<String, ChainError> {
+    async fn submit_payment_with_retry(
+        &self,
+        encoded: &str,
+        attempt: u32,
+    ) -> Result<String, ChainError> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 500;
         const MAX_DELAY_MS: u64 = 30_000;
@@ -209,26 +208,18 @@ impl StellarClient {
             return Err(ChainError::Rejected(detail));
         }
 
-        let delay_ms = std::cmp::min(
-            (INITIAL_DELAY_MS as f64 * 2_f64.powi(attempt as i32)) as u64,
-            MAX_DELAY_MS,
-        );
-        let jitter_ms = (delay_ms as f64 * 0.1) as u64;
-        let jitter_offset = ((attempt as u64).wrapping_mul(73856093))
-            .wrapping_mul(19349663)
-            .wrapping_mul(83492791) % (jitter_ms + 1);
-        let jittered_delay = delay_ms - jitter_ms / 2 + jitter_offset;
+        let jittered_delay = backoff_delay_ms(attempt, INITIAL_DELAY_MS, MAX_DELAY_MS);
 
         warn!(
             status = status.as_u16(),
-            attempt = attempt + 1,
+            attempt = attempt.saturating_add(1),
             max_retries = MAX_RETRIES,
             delay_ms = jittered_delay,
             "Horizon returned transient error on payment submission, retrying"
         );
 
         tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        self.submit_payment_with_retry(encoded, attempt + 1).await
+        Box::pin(self.submit_payment_with_retry(encoded, attempt.saturating_add(1))).await
     }
 }
 
@@ -302,6 +293,49 @@ impl ChainClient for StellarClient {
             }
         }
         Ok(deposits)
+    }
+}
+
+/// Exponential backoff with a little jitter, in milliseconds.
+///
+/// Integer arithmetic only: the workspace denies operations that can overflow
+/// or truncate silently, and a retry delay is not worth a panic.
+fn backoff_delay_ms(attempt: u32, initial_ms: u64, max_ms: u64) -> u64 {
+    let delay = initial_ms
+        .checked_mul(1u64.checked_shl(attempt.min(16)).unwrap_or(u64::MAX))
+        .unwrap_or(max_ms)
+        .min(max_ms);
+    // Spread retries out by up to a tenth of the delay, so several callers
+    // waiting on the same outage do not return at the same instant.
+    let spread = delay.checked_div(10).unwrap_or(0);
+    let offset = u64::from(attempt)
+        .wrapping_mul(2_654_435_761)
+        .checked_rem(spread.saturating_add(1))
+        .unwrap_or(0);
+    // Clamped again: the jitter must never push a delay past the ceiling.
+    delay
+        .saturating_sub(spread.checked_div(2).unwrap_or(0))
+        .saturating_add(offset)
+        .min(max_ms)
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::backoff_delay_ms;
+
+    #[test]
+    fn grows_with_each_attempt_and_stops_at_the_ceiling() {
+        let first = backoff_delay_ms(0, 500, 30_000);
+        let second = backoff_delay_ms(1, 500, 30_000);
+        assert!(first < second, "{first} < {second}");
+        for attempt in 0..40 {
+            assert!(backoff_delay_ms(attempt, 500, 30_000) <= 30_000);
+        }
+    }
+
+    #[test]
+    fn never_overflows_on_absurd_attempts() {
+        assert!(backoff_delay_ms(u32::MAX, u64::MAX, 30_000) <= 30_000);
     }
 }
 

@@ -44,7 +44,7 @@ pub fn create_token(user_id: Uuid, wallet: String, secret: &[u8]) -> Result<Stri
         sub: user_id,
         wallet,
         iat: now,
-        exp: now + DEFAULT_EXPIRY_SECONDS,
+        exp: now.saturating_add(DEFAULT_EXPIRY_SECONDS),
     };
 
     encode(
@@ -62,13 +62,18 @@ pub fn create_token(user_id: Uuid, wallet: String, secret: &[u8]) -> Result<Stri
 pub fn verify_token(token: &str, secret: &[u8]) -> Result<Claims, AuthError> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_required_spec_claims(&["exp", "sub"]);
+    // jsonwebtoken allows 60 seconds of clock leeway by default, which would
+    // keep accepting a session after it expired. Sessions here end exactly
+    // when they say they do.
+    validation.leeway = 0;
 
-    let data = decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation).map_err(
-        |err| match err.kind() {
-            jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::ExpiredToken,
-            _ => AuthError::InvalidToken,
-        },
-    )?;
+    let data =
+        decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation).map_err(|err| {
+            match err.kind() {
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::ExpiredToken,
+                _ => AuthError::InvalidToken,
+            }
+        })?;
 
     Ok(data.claims)
 }
@@ -83,6 +88,7 @@ fn current_timestamp() -> i64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
 
