@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod auth;
 pub mod balances;
+pub mod deposits;
 pub mod health;
 pub mod me;
 
@@ -14,4 +15,5 @@ pub fn v1() -> Router<AppState> {
         .merge(assets::routes())
         .merge(auth::routes())
         .merge(balances::routes())
+        .merge(deposits::routes())
 }
