@@ -3,10 +3,12 @@
 //! Routes live here rather than in `main.rs` so tests can drive the real router
 //! without opening a socket.
 
+pub mod auth;
 pub mod config;
 pub mod error;
 pub mod middleware;
 mod routes;
+pub mod services;
 
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
@@ -22,6 +24,7 @@ pub struct AppState {
     /// `None` only in local development without Postgres. Endpoints that need
     /// the database return 503 rather than pretending to work.
     pub database: Option<PgPool>,
+    pub config: Config,
 }
 
 pub fn router(state: AppState, config: &Config) -> Router {

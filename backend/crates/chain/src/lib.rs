@@ -9,8 +9,9 @@
 //! implemented ([`stellar`]); Base (via `alloy`) and Bitcoin (via `bdk`) come
 //! next.
 
-pub mod dlq;
+pub mod evm;
 pub mod stellar;
+pub mod services;
 
 use std::pin::Pin;
 use std::sync::Arc;
