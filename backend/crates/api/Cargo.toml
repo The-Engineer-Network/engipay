@@ -12,11 +12,13 @@ engipay-core.workspace = true
 engipay-ledger = { workspace = true, features = ["postgres"] }
 anyhow.workspace = true
 axum.workspace = true
+futures-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tower.workspace = true
 tower-http.workspace = true
 uuid.workspace = true
 tracing.workspace = true
@@ -37,6 +39,4 @@ rand.workspace = true
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-
-[lints]
-workspace = true
+serde_json.workspace = true
