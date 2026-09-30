@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod middleware;
 mod routes;
 pub mod services;
 
@@ -16,6 +17,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
+use crate::middleware::recovery::CatchPanicLayer;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -31,6 +33,9 @@ pub fn router(state: AppState, config: &Config) -> Router {
         .nest("/v1", routes::v1())
         .layer(cors(config))
         .layer(TraceLayer::new_for_http())
+        // CatchPanic must be the outermost layer so it catches panics in all
+        // inner layers and handlers. It returns RFC 7807 problem+json 500s.
+        .layer(CatchPanicLayer::new())
         .with_state(state)
 }
 
