@@ -27,6 +27,15 @@ impl Txid {
     }
 }
 
+impl std::fmt::Display for Txid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
 /// A Bitcoin script pubkey (the locking script of an output).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ScriptPubKey(pub Vec<u8>);
@@ -72,6 +81,43 @@ pub struct DetectedUtxo {
     pub value_sats: u64,
     /// The user deposit address that owns the matched script pubkey.
     pub address: String,
+}
+
+impl DetectedUtxo {
+    /// Returns the deterministic idempotency reference string for Bitcoin deposits.
+    ///
+    /// Formatted as `btc:<tx_hash>:<vout>` (e.g. `btc:7f8e...:0`), which uniquely
+    /// identifies the exact unspent transaction output credited.
+    pub fn idempotency_reference(&self) -> String {
+        format!("btc:{}:{}", self.txid, self.vout)
+    }
+
+    /// Converts the integer satoshi amount to ledger minor units for [`engipay_core::Asset::Btc`].
+    ///
+    /// Bitcoin amounts are denominated in satoshis (1 BTC = 100,000,000 sats).
+    /// Since the ledger stores BTC at 8 decimals, satoshi amounts map 1:1 to minor units
+    /// of [`engipay_core::Asset::Btc`].
+    pub fn to_minor_units(&self) -> i128 {
+        sats_to_minor_units(self.value_sats)
+    }
+
+    /// Converts the detected UTXO satoshi amount into a typed [`engipay_core::Money`] value.
+    pub fn to_money(&self) -> engipay_core::Money {
+        sats_to_money(self.value_sats)
+    }
+}
+
+/// Converts a Bitcoin satoshi amount to ledger minor units for [`engipay_core::Asset::Btc`].
+///
+/// Satoshis map 1:1 to minor units of [`engipay_core::Asset::Btc`] because both Bitcoin
+/// on-chain and the EngiPay ledger represent BTC at 8 decimal places (1 BTC = 100,000,000 units).
+pub fn sats_to_minor_units(sats: u64) -> i128 {
+    i128::from(sats)
+}
+
+/// Converts a Bitcoin satoshi amount directly into typed [`engipay_core::Money`] of [`engipay_core::Asset::Btc`].
+pub fn sats_to_money(sats: u64) -> engipay_core::Money {
+    engipay_core::Money::from_minor(engipay_core::Asset::Btc, sats_to_minor_units(sats))
 }
 
 /// Errors produced while watching transactions for user UTXOs.
@@ -381,5 +427,67 @@ mod tests {
         assert_eq!(detected[0].value_sats, 1_500);
         assert_eq!(detected[1].txid, txid(0x06));
         assert_eq!(detected[1].value_sats, 2_500);
+    }
+
+    #[test]
+    fn format_deterministic_idempotency_reference() {
+        let mut tx_bytes = [0u8; 32];
+        tx_bytes[0] = 0x7f;
+        tx_bytes[1] = 0x8e;
+        tx_bytes[31] = 0x01;
+        let utxo = DetectedUtxo {
+            txid: Txid::from_bytes(tx_bytes),
+            vout: 0,
+            value_sats: 50_000,
+            address: "bc1qtest".to_string(),
+        };
+        let expected_ref = format!("btc:{}:0", utxo.txid);
+        assert_eq!(utxo.idempotency_reference(), expected_ref);
+        assert!(utxo.idempotency_reference().starts_with("btc:7f8e"));
+        assert!(utxo.idempotency_reference().ends_with(":0"));
+    }
+
+    #[test]
+    fn txid_display_formats_lowercase_hex() {
+        let mut bytes = [0u8; 32];
+        bytes[0] = 0xab;
+        bytes[1] = 0xcd;
+        bytes[2] = 0xef;
+        let id = Txid::from_bytes(bytes);
+        let s = id.to_string();
+        assert_eq!(s.len(), 64);
+        assert!(s.starts_with("abcdef"));
+    }
+
+    #[test]
+    fn satoshis_map_one_to_one_to_ledger_minor_units() {
+        // 1 satoshi = 1 minor unit
+        assert_eq!(sats_to_minor_units(1), 1);
+        // 1 BTC = 100,000,000 satoshis = 100,000,000 minor units
+        let one_btc_sats = 100_000_000_u64;
+        assert_eq!(sats_to_minor_units(one_btc_sats), 100_000_000_i128);
+
+        let money = sats_to_money(one_btc_sats);
+        assert_eq!(money.asset, engipay_core::Asset::Btc);
+        assert_eq!(money.minor, 100_000_000);
+        assert_eq!(money.asset.decimals(), 8);
+
+        // Maximum Bitcoin supply: 21,000,000 BTC
+        let max_supply_sats = 21_000_000 * 100_000_000_u64;
+        assert_eq!(sats_to_minor_units(max_supply_sats), max_supply_sats as i128);
+    }
+
+    #[test]
+    fn detected_utxo_converts_to_minor_units_and_money() {
+        let utxo = DetectedUtxo {
+            txid: txid(0x01),
+            vout: 3,
+            value_sats: 123_456_789,
+            address: "bc1quser".to_string(),
+        };
+        assert_eq!(utxo.to_minor_units(), 123_456_789_i128);
+        let m = utxo.to_money();
+        assert_eq!(m.asset, engipay_core::Asset::Btc);
+        assert_eq!(m.minor, 123_456_789);
     }
 }
