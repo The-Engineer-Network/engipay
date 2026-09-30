@@ -501,6 +501,141 @@ mod tests {
         assert_eq!(deposits[0].confirmations, 3);
     }
 
+    /// Counterfeit USDC (USDC from any issuer other than Circle) must never be
+    /// credited, regardless of how many counterfeit tokens are sent in a batch.
+    /// Each refused record triggers the dedicated "counterfeit USDC" warn log.
+    #[tokio::test]
+    async fn counterfeit_usdc_is_never_credited() {
+        let server = MockServer::start().await;
+        let custody = account(1);
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "history_latest_ledger": 50 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/accounts/{custody}/payments")))
+            .and(query_param("join", "transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_embedded": { "records": [
+                    // Counterfeit USDC alphanum4 from a random issuer.
+                    {
+                        "paging_token": "1",
+                        "type": "payment",
+                        "transaction_hash": "aaa",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "asset_type": "credit_alphanum4",
+                        "asset_code": "USDC",
+                        "asset_issuer": account(5),
+                        "amount": "100.0000000",
+                        "transaction": { "ledger": 48, "successful": true }
+                    },
+                    // Counterfeit USDC alphanum12 (padded code) — still counterfeit.
+                    {
+                        "paging_token": "2",
+                        "type": "payment",
+                        "transaction_hash": "bbb",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "asset_type": "credit_alphanum12",
+                        "asset_code": "USDC",
+                        "asset_issuer": account(6),
+                        "amount": "50.0000000",
+                        "transaction": { "ledger": 48, "successful": true }
+                    },
+                    // Mainnet Circle USDC is not valid on testnet.
+                    {
+                        "paging_token": "3",
+                        "type": "payment",
+                        "transaction_hash": "ccc",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "asset_type": "credit_alphanum4",
+                        "asset_code": "USDC",
+                        "asset_issuer": StellarNetwork::Mainnet.usdc_issuer(),
+                        "amount": "25.0000000",
+                        "transaction": { "ledger": 48, "successful": true }
+                    }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let deposits = client(&server).await.deposits_since(48).await.unwrap();
+        assert_eq!(
+            deposits.len(),
+            0,
+            "no counterfeit USDC variant must ever be credited"
+        );
+    }
+
+    /// Real Circle USDC on testnet is accepted; a USDC token from the mainnet
+    /// Circle issuer is rejected even though the address is a known Circle key.
+    #[tokio::test]
+    async fn only_circle_testnet_usdc_is_credited() {
+        let server = MockServer::start().await;
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 7).unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "history_latest_ledger": 60 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/accounts/{custody}/payments")))
+            .and(query_param("join", "transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_embedded": { "records": [
+                    // Legitimate Circle USDC on testnet — must be credited.
+                    {
+                        "paging_token": "10",
+                        "type": "payment",
+                        "transaction_hash": "good",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "to_muxed": muxed,
+                        "asset_type": "credit_alphanum4",
+                        "asset_code": "USDC",
+                        "asset_issuer": StellarNetwork::Testnet.usdc_issuer(),
+                        "amount": "5.0000000",
+                        "transaction": { "ledger": 58, "successful": true }
+                    },
+                    // Mainnet Circle issuer on testnet — different network, must be refused.
+                    {
+                        "paging_token": "11",
+                        "type": "payment",
+                        "transaction_hash": "bad",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "asset_type": "credit_alphanum4",
+                        "asset_code": "USDC",
+                        "asset_issuer": StellarNetwork::Mainnet.usdc_issuer(),
+                        "amount": "5.0000000",
+                        "transaction": { "ledger": 58, "successful": true }
+                    }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let deposits = client(&server).await.deposits_since(58).await.unwrap();
+        assert_eq!(deposits.len(), 1, "only real Circle testnet USDC is credited");
+        assert_eq!(
+            deposits[0].money,
+            Money::from_minor(Asset::Usdc, 50_000_000)
+        );
+        assert_eq!(deposits[0].address, muxed);
+    }
+
     #[tokio::test]
     async fn horizon_errors_surface_as_unavailable() {
         let server = MockServer::start().await;
