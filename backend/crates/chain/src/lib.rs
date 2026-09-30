@@ -10,6 +10,7 @@
 //! next.
 
 pub mod evm;
+pub mod routes;
 pub mod services;
 pub mod stellar;
 
@@ -128,20 +129,15 @@ where
     use std::task::{Context, Poll};
 
     // All state lives in a single struct so the stream is `Send`.
+    type PendingFuture =
+        Pin<Box<dyn std::future::Future<Output = Result<LedgerEvent, ChainError>> + Send + 'static>>;
+
     struct Poller<C> {
         client: Arc<C>,
         next_height: u64,
         interval: tokio::time::Interval,
         /// Currently in-flight future (if any).
-        pending: Option<
-            Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<LedgerEvent, ChainError>>
-                        + Send
-                        + 'static,
-                >,
-            >,
-        >,
+        pending: Option<PendingFuture>,
     }
 
     // SAFETY: All fields are Send, so Poller<C: Send> is Send.
@@ -243,8 +239,6 @@ mod tests {
     /// Verifies that `stream_events` starts and produces at least one event.
     #[tokio::test]
     async fn stream_events_produces_ledger_events() {
-        use futures_util::StreamExt;
-
         let stream = FakeBase
             .stream_events(90, Duration::from_millis(10))
             .await
@@ -269,8 +263,6 @@ mod tests {
     /// than panicking.
     #[tokio::test]
     async fn stream_events_propagates_errors() {
-        use futures_util::StreamExt;
-
         struct ErrorClient;
         impl ChainClient for ErrorClient {
             fn chain(&self) -> Chain {

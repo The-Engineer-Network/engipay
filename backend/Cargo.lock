@@ -492,6 +492,7 @@ dependencies = [
  "elliptic-curve",
  "engipay-core",
  "engipay-ledger",
+ "futures-core",
  "hex",
  "http-body-util",
  "jsonwebtoken",
@@ -518,8 +519,11 @@ name = "engipay-chain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "ed25519-dalek",
  "engipay-core",
+ "futures-core",
+ "futures-util",
  "lru",
  "reqwest",
  "serde",
@@ -530,6 +534,8 @@ dependencies = [
  "stellar-xdr",
  "thiserror",
  "tokio",
+ "tokio-util",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -552,6 +558,7 @@ dependencies = [
 name = "engipay-ledger"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "engipay-core",
  "serde",
  "sqlx",
@@ -2532,6 +2539,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

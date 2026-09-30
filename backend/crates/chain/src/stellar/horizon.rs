@@ -143,6 +143,12 @@ impl TransactionCache {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Returns `true` when the cache contains no entries.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// `400` from `POST /transactions`.
@@ -219,7 +225,7 @@ pub fn deposit_from_record(
 
     let asset = match record.asset_type.as_deref() {
         Some("native") => Asset::Xlm,
-        Some("credit_alphanum4") | Some("credit_alphanum12") => {
+        Some("credit_alphanum4") => {
             let code = record.asset_code.clone().unwrap_or_default();
             let issuer = record.asset_issuer.clone().unwrap_or_default();
             if code == "USDC" && issuer == network.usdc_issuer() {
@@ -234,6 +240,19 @@ pub fn deposit_from_record(
                     counterfeit_usdc,
                 });
             }
+        }
+        Some("credit_alphanum12") => {
+            // The official Circle USDC is always alphanum4. Any alphanum12 asset
+            // named "USDC" — even one bearing Circle's issuer address — is
+            // counterfeit: the type mismatch alone disqualifies it.
+            let code = record.asset_code.clone().unwrap_or_default();
+            let issuer = record.asset_issuer.clone().unwrap_or_default();
+            let counterfeit_usdc = code == "USDC";
+            return Err(Skipped::UnsupportedAsset {
+                code,
+                issuer,
+                counterfeit_usdc,
+            });
         }
         _ => return Err(Skipped::Malformed("unknown asset_type")),
     };
@@ -623,6 +642,7 @@ mod tests {
         let unsupported = Skipped::UnsupportedAsset {
             code: "FAKE".to_owned(),
             issuer: "GXXXX".to_owned(),
+            counterfeit_usdc: false,
         };
         assert!(unsupported.is_security_sensitive());
 

@@ -10,6 +10,7 @@ use std::env;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use engipay_chain::routes;
 use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY};
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
@@ -68,6 +69,21 @@ async fn db_pool() -> anyhow::Result<Option<sqlx::PgPool>> {
 }
 
 async fn watch() -> anyhow::Result<()> {
+    // Always start the internal HTTP server so the API can reach fee estimates
+    // even when no Stellar custody account is configured.
+    let internal_addr = env::var("CHAIN_INTERNAL_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
+    let app = routes::internal();
+    let listener = tokio::net::TcpListener::bind(&internal_addr)
+        .await
+        .with_context(|| format!("could not bind internal server to {internal_addr}"))?;
+    info!(address = %internal_addr, "engipay-chain internal server listening");
+    tokio::spawn(async move {
+        if let Err(error) = axum::serve(listener, app).await {
+            tracing::error!(%error, "internal HTTP server error");
+        }
+    });
+
     let Some(stellar) = stellar_client()? else {
         info!("no networks configured; set STELLAR_CUSTODY_ACCOUNT to watch Stellar deposits");
         tokio::signal::ctrl_c().await?;

@@ -369,6 +369,21 @@ impl ChainClient for StellarClient {
         }
         Ok(deposits)
     }
+
+    async fn stream_events(
+        &self,
+        from_height: u64,
+        poll_interval: std::time::Duration,
+    ) -> Result<crate::EventStream, ChainError> {
+        // Re-create a StellarClient wrapping the same config so we can clone it
+        // into the polling stream (which needs `Arc<impl ChainClient>`).
+        let cloned = StellarClient::new(self.config.clone())?;
+        Ok(crate::polling_stream(
+            std::sync::Arc::new(cloned),
+            from_height,
+            poll_interval,
+        ))
+    }
 }
 
 /// Exponential backoff with a little jitter, in milliseconds.
@@ -766,7 +781,7 @@ mod tests {
         let deposits = client(&server).await.deposits_since(195).await.unwrap();
         assert_eq!(deposits.len(), 3, "all three operations must be credited");
 
-        let total_stroops: i64 = deposits
+        let total_stroops: i128 = deposits
             .iter()
             .map(|d| d.money.to_network_units(engipay_core::Chain::Stellar).unwrap())
             .sum();
@@ -821,3 +836,4 @@ mod tests {
         assert_eq!(deposits.len(), 1);
         assert_eq!(deposits[0].money, Money::from_minor(Asset::Xlm, 40_000_000));
     }
+}
