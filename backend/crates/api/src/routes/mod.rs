@@ -1,10 +1,6 @@
 pub mod assets;
-pub mod auth;
-pub mod balances;
+pub mod deposits;
 pub mod health;
-pub mod me;
-pub mod payment_requests;
-pub mod transactions;
 
 use axum::Router;
 
@@ -14,8 +10,5 @@ use crate::AppState;
 pub fn v1() -> Router<AppState> {
     Router::new()
         .merge(assets::routes())
-        .merge(auth::routes())
-        .merge(balances::routes())
-        .merge(payment_requests::routes())
-        .merge(transactions::routes())
+        .merge(deposits::routes())
 }
