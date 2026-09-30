@@ -95,6 +95,7 @@ impl AccountResolver {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     //! Unit tests for `AccountResolver`.
     //!

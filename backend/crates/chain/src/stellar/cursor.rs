@@ -45,12 +45,11 @@ impl CursorStore {
     /// Returns `Ok(Some(cursor))` when a previous run saved one, or
     /// `Ok(None)` when the watcher is starting from scratch.
     pub async fn load(&self, chain: &str) -> Result<Option<String>, CursorError> {
-        let row: Option<String> = sqlx::query_scalar!(
-            "SELECT cursor FROM chain_cursors WHERE chain = $1",
-            chain
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<String> =
+            sqlx::query_scalar("SELECT cursor FROM chain_cursors WHERE chain = $1")
+                .bind(chain)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row)
     }
 
@@ -59,7 +58,7 @@ impl CursorStore {
     /// Uses an upsert so the first call creates the row and subsequent calls
     /// update it. The `updated_at` column is refreshed on every write.
     pub async fn save(&self, chain: &str, cursor: &str) -> Result<(), CursorError> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO chain_cursors (chain, cursor, updated_at)
             VALUES ($1, $2, now())
@@ -67,9 +66,9 @@ impl CursorStore {
                 SET cursor     = EXCLUDED.cursor,
                     updated_at = EXCLUDED.updated_at
             "#,
-            chain,
-            cursor,
         )
+        .bind(chain)
+        .bind(cursor)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -77,6 +76,7 @@ impl CursorStore {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     //! Unit tests for cursor persistence and recovery.
     //!
@@ -118,10 +118,7 @@ mod tests {
     fn save_then_load_returns_the_same_cursor() {
         let mut store = FakeCursorStore::new();
         store.save("stellar", "429496729600");
-        assert_eq!(
-            store.load("stellar"),
-            Some("429496729600".to_owned())
-        );
+        assert_eq!(store.load("stellar"), Some("429496729600".to_owned()));
     }
 
     #[test]
@@ -138,10 +135,7 @@ mod tests {
         store.save("stellar", "stellar-cursor");
         store.save("base", "base-cursor");
 
-        assert_eq!(
-            store.load("stellar"),
-            Some("stellar-cursor".to_owned())
-        );
+        assert_eq!(store.load("stellar"), Some("stellar-cursor".to_owned()));
         assert_eq!(store.load("base"), Some("base-cursor".to_owned()));
     }
 

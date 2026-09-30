@@ -9,7 +9,9 @@ publish.workspace = true
 
 [dependencies]
 engipay-core.workspace = true
+anyhow.workspace = true
 ed25519-dalek.workspace = true
+lru.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
@@ -26,7 +28,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
-lru.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 wiremock = "0.6"
