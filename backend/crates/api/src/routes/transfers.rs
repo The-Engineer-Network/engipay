@@ -118,6 +118,54 @@ fn validate_amount(amount: &str) -> Result<(), TransferRequestError> {
     Ok(())
 }
 
+/// A structured receipt returned after a transfer is executed successfully.
+///
+/// `amount` is serialized as a string of exact minor units so money is never
+/// represented as a floating point value. `created_at` is an ISO 8601 timestamp
+/// and `status` is always `"completed"` for a successful transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferReceipt {
+    pub transaction_id: String,
+    pub reference: String,
+    pub sender_tag: String,
+    pub recipient_tag: String,
+    pub asset: Asset,
+    pub amount: String,
+    pub created_at: String,
+    pub status: TransferStatus,
+}
+
+/// Terminal status of a successfully executed transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransferStatus {
+    Completed,
+}
+
+impl TransferReceipt {
+    /// Build a completed receipt from a validated request and its ledger result.
+    ///
+    /// `amount` is rendered from the exact integer minor units, and `created_at`
+    /// is provided by the caller as an ISO 8601 timestamp.
+    pub fn completed(
+        transaction_id: String,
+        request: &TransferRequest,
+        amount_minor_units: u128,
+        created_at: String,
+    ) -> Self {
+        Self {
+            transaction_id,
+            reference: request.reference.clone(),
+            sender_tag: request.sender.clone(),
+            recipient_tag: request.recipient.clone(),
+            asset: request.asset,
+            amount: amount_minor_units.to_string(),
+            created_at,
+            status: TransferStatus::Completed,
+        }
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new().route("/v1/transfers", post(create_transfer))
 }
@@ -127,12 +175,12 @@ async fn create_transfer(
     Json(request): Json<TransferRequest>,
 ) -> impl IntoResponse {
     if request.validate().is_err() {
-        return StatusCode::UNPROCESSABLE_ENTITY;
+        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
     }
 
     let amount = match request.amount_minor_units() {
         Ok(amount) => amount,
-        Err(_) => return StatusCode::UNPROCESSABLE_ENTITY,
+        Err(_) => return StatusCode::UNPROCESSABLE_ENTITY.into_response(),
     };
 
     // Execute the atomic ledger transfer inside a database transaction. The
@@ -149,9 +197,63 @@ async fn create_transfer(
         .await;
 
     match result {
-        Ok(_) => StatusCode::CREATED,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(transaction_id) => {
+            let receipt = TransferReceipt::completed(
+                transaction_id,
+                &request,
+                amount,
+                now_iso8601(),
+            );
+            (StatusCode::CREATED, Json(receipt)).into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+/// Current time as an ISO 8601 (UTC) timestamp.
+fn now_iso8601() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format_iso8601(secs)
+}
+
+/// Format a Unix timestamp (seconds) as an ISO 8601 UTC string.
+fn format_iso8601(unix_secs: u64) -> String {
+    let days = (unix_secs / 86_400) as i64;
+    let secs_of_day = unix_secs % 86_400;
+    let (hour, minute, second) = (
+        secs_of_day / 3_600,
+        (secs_of_day % 3_600) / 60,
+        secs_of_day % 60,
+    );
+
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hour, minute, second
+    )
+}
+
+/// Convert days since the Unix epoch to a (year, month, day) civil date.
+///
+/// Uses Howard Hinnant's `civil_from_days` algorithm, which is exact for the
+/// proleptic Gregorian calendar and avoids any floating point arithmetic.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m, d)
 }
 
 #[cfg(test)]
@@ -241,5 +343,70 @@ mod tests {
             req.amount_minor_units(),
             Err(TransferRequestError::NonPositiveAmount)
         );
+    }
+
+    #[test]
+    fn receipt_serializes_with_transaction_metadata() {
+        let req = request("bob", "alice", "100", "ref-1");
+        let receipt = TransferReceipt::completed(
+            "txn-123".to_string(),
+            &req,
+            100,
+            "2024-01-02T03:04:05Z".to_string(),
+        );
+
+        let json = serde_json::to_value(&receipt).expect("receipt serializes");
+
+        assert_eq!(json["transaction_id"], "txn-123");
+        assert_eq!(json["reference"], "ref-1");
+        assert_eq!(json["sender_tag"], "bob");
+        assert_eq!(json["recipient_tag"], "alice");
+        assert_eq!(json["asset"], "usd");
+        assert_eq!(json["amount"], "100");
+        assert_eq!(json["created_at"], "2024-01-02T03:04:05Z");
+        assert_eq!(json["status"], "completed");
+    }
+
+    #[test]
+    fn receipt_amount_is_exact_minor_units_string() {
+        let req = request("bob", "alice", "250.00", "ref-2");
+        let amount = req.amount_minor_units().expect("valid amount");
+        let receipt = TransferReceipt::completed(
+            "txn-456".to_string(),
+            &req,
+            amount,
+            "2024-06-07T08:09:10Z".to_string(),
+        );
+
+        let json = serde_json::to_value(&receipt).expect("receipt serializes");
+        assert_eq!(json["amount"], "250");
+        assert!(json["amount"].is_string());
+    }
+
+    #[test]
+    fn receipt_round_trips_through_json() {
+        let req = request("bob", "alice", "100", "ref-1");
+        let receipt = TransferReceipt::completed(
+            "txn-123".to_string(),
+            &req,
+            100,
+            "2024-01-02T03:04:05Z".to_string(),
+        );
+
+        let json = serde_json::to_string(&receipt).expect("receipt serializes");
+        let decoded: TransferReceipt =
+            serde_json::from_str(&json).expect("receipt deserializes");
+        assert_eq!(decoded, receipt);
+    }
+
+    #[test]
+    fn formats_epoch_as_iso8601() {
+        assert_eq!(format_iso8601(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn formats_known_timestamp_as_iso8601() {
+        // 2024-01-02T03:04:05Z
+        assert_eq!(format_iso8601(1_704_164_645), "2024-01-02T03:04:05Z");
     }
 }
