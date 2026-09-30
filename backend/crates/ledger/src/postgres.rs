@@ -735,11 +735,17 @@ mod tests {
     // Run with: DATABASE_URL=postgres://… cargo test -p engipay-ledger \
     //           --features postgres -- --ignored
 
-    async fn test_pool() -> Option<PgPool> {
-        let url = std::env::var("DATABASE_URL").ok()?;
-        let pool = PgPool::connect(&url).await.ok()?;
-        sqlx::migrate!("../../migrations").run(&pool).await.ok()?;
-        Some(pool)
+    async fn test_pool() -> PgPool {
+        let url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL is required for ignored tests");
+        let pool = PgPool::connect(&url)
+            .await
+            .expect("connect to the test database");
+        sqlx::migrate!("../../migrations")
+            .run(&pool)
+            .await
+            .expect("apply the test database migrations");
+        pool
     }
 
     async fn ensure_user(pool: &PgPool, user: UserId) {
@@ -759,7 +765,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn deposit_credits_user_available_balance() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -776,7 +782,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn get_user_balances_reports_every_asset_zero_filled() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -806,7 +812,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn deposit_replay_returns_same_receipt() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -825,7 +831,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn deposit_idempotency_conflict() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -847,7 +853,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn hold_moves_from_available_to_held() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -868,7 +874,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn hold_insufficient_funds() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -887,7 +893,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn transfer_moves_between_users_symmetrically() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let (alice, bob) = (UserId::new(), UserId::new());
         ensure_user(&pool, alice).await;
@@ -910,7 +916,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn transfer_insufficient_funds() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let (alice, bob) = (UserId::new(), UserId::new());
         ensure_user(&pool, alice).await;
@@ -946,7 +952,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn release_hold_returns_money_to_available() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -973,7 +979,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn release_hold_replay_returns_same_receipt() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -997,8 +1003,8 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
-    async fn release_hold_on_non_open_hold_fails() {
-        let pool = test_pool().await.unwrap();
+    async fn release_hold_on_settled_hold_fails() {
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -1011,18 +1017,32 @@ mod tests {
             .create_hold(alice, usdc(60), "hold-closed")
             .await
             .unwrap();
-        store.release_hold("hold-closed").await.unwrap();
+        // A repeated release is an idempotent success (tested above). A hold
+        // closed by settlement instead must reject an attempt to release it.
+        sqlx::query(
+            "UPDATE ledger_holds SET state = 'settled', closed_at = now() WHERE reference = $1",
+        )
+        .bind("hold-closed")
+        .execute(&pool)
+        .await
+        .unwrap();
 
-        // Try to release again
+        // Try to release the settled hold.
         let result = store.release_hold("hold-closed").await;
 
-        assert!(matches!(result, Err(LedgerError::HoldClosed { .. })));
+        assert!(matches!(
+            result,
+            Err(LedgerError::HoldClosed {
+                state: HoldState::Settled,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn release_hold_non_existent_hold_fails() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
 
         let result = store.release_hold("nonexistent").await;
@@ -1035,7 +1055,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn deposit_idempotency_detects_fingerprint_mismatch() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
@@ -1052,7 +1072,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn transfer_idempotency_detects_fingerprint_mismatch() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool.clone());
         let (alice, bob, charlie) = (UserId::new(), UserId::new(), UserId::new());
         ensure_user(&pool, alice).await;
@@ -1081,7 +1101,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn connection_pool_initializes_successfully() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         let store = PostgresLedgerStore::new(pool);
         // If we got here, the pool initialized successfully.
         // The store is created and ready for use.
@@ -1091,7 +1111,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn connection_pool_health_ping_succeeds() {
-        let pool = test_pool().await.unwrap();
+        let pool = test_pool().await;
         // Perform a simple health check by pinging the database
         let result = sqlx::query("SELECT 1 AS health_check")
             .fetch_optional(&pool)

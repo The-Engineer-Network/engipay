@@ -2,15 +2,12 @@
 -- Includes user profiles, deposit addresses, bank accounts, token conversions,
 -- ramp orders, and deduplicated partner webhook events.
 
-CREATE TABLE IF NOT EXISTS user_profiles (
-    user_id     UUID PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-    tag         TEXT UNIQUE,
-    email       TEXT,
-    phone       TEXT,
-    kyc_tier    INT NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- Extend the authentication profile while preserving its canonical id and tier.
+ALTER TABLE user_profiles
+    ADD COLUMN tag TEXT,
+    ADD COLUMN email TEXT,
+    ADD COLUMN phone TEXT,
+    ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_profiles_tag_lower
     ON user_profiles (LOWER(btrim(tag))) WHERE tag IS NOT NULL;

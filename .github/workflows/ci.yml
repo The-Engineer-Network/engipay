@@ -94,13 +94,19 @@ jobs:
           echo "POSTGRES_PASSWORD=ci-only-not-a-secret" > .env
           docker compose up -d --wait postgres
 
-      - name: Verify migrations are idempotent
+      - name: Verify migrations and profile schema
         run: bash ./scripts/verify-migrations.sh
 
       - name: Database refuses ledger corruption
         run: bash ./scripts/test-db-guarantees.sh
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
       - name: PostgreSQL ledger operations
-        run: cargo test -p engipay-ledger postgres_queries_settlement_and_sender_locking
+        run: cargo test -p engipay-ledger --features postgres --locked -- --ignored --test-threads=1
         env:
           DATABASE_URL: postgres://engipay:ci-only-not-a-secret@localhost:5432/engipay
