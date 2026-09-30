@@ -26,6 +26,8 @@ pub struct Counterparty {
     pub chain: Option<String>,
     pub address: Option<String>,
     pub tx_hash: Option<String>,
+    pub timestamp: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,6 +69,8 @@ fn encode_cursor(created_at: &str, tx_id: &str) -> String {
 }
 
 /// Get unified transaction history with cursor pagination, filtering, and directional metadata
+/// Get unified transaction history for the authenticated user (#131).
+/// Returns a chronological feed of conversions and ramp orders.
 async fn get_transactions(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -173,6 +177,40 @@ async fn get_transactions(
         transactions,
         cursor,
         has_more,
+    // Query ramp orders
+    let ramp_orders = sqlx::query!(
+        r#"
+        SELECT id, direction, asset, crypto_amount, created_at, status
+        FROM ramp_orders
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+        user_id,
+        limit
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    // Build transaction list
+    let mut transactions: Vec<Transaction> = Vec::new();
+
+    for order in ramp_orders {
+        transactions.push(Transaction {
+            id: order.id,
+            kind: order.direction.unwrap_or_default(),
+            asset: order.asset,
+            amount: order.crypto_amount.unwrap_or_default().to_string(),
+            timestamp: order.created_at.to_rfc3339(),
+            description: order.status,
+        });
+    }
+
+    Ok(Json(TransactionsResponse {
+        transactions,
+        cursor: None,
+        has_more: false,
     }))
 }
 
