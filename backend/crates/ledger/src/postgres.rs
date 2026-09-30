@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
-use crate::{Balance, HoldState, LedgerError, Receipt};
+use crate::{ActiveHold, Balance, HoldState, LedgerError, Receipt};
 
 /// One active (open) hold belonging to a user, returned by [`PostgresLedgerStore::get_active_holds`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +96,9 @@ impl PostgresLedgerStore {
             .collect())
     }
 
+    /// Returns all open (in-flight) holds for `user`, ordered by creation
+    /// time ascending.  Only holds in the `open` state are returned; released
+    /// and settled holds are not included.
     /// All open (active) holds for `user`, ordered by creation time ascending.
     ///
     /// Returns an empty `Vec` when the user has no open holds.  Each entry
@@ -114,6 +117,31 @@ impl PostgresLedgerStore {
         .await
         .map_err(db_err)?;
 
+        rows.into_iter()
+            .map(|row| {
+                let reference: String = row.get("reference");
+                let asset_str: String = row.get("asset");
+                let amount_str: String = row.get("amount");
+                let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+
+                let asset = asset_str
+                    .parse::<Asset>()
+                    .map_err(|_| LedgerError::Database {
+                        code: None,
+                        message: format!("unknown asset in hold: {asset_str}"),
+                    })?;
+                let amount = amount_str
+                    .parse::<i128>()
+                    .map_err(|_| LedgerError::Overflow)?;
+
+                Ok(ActiveHold {
+                    reference,
+                    asset,
+                    amount,
+                    created_at,
+                })
+            })
+            .collect()
         let mut holds = Vec::with_capacity(rows.len());
         for row in rows {
             let reference: String = row.get("reference");
