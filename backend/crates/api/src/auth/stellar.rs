@@ -6,7 +6,7 @@
 //! indefinitely. Both checks are pure functions over an already-decoded
 //! transaction so they can be unit tested without touching the network.
 
-use stellar_xdr::Transaction;
+use stellar_xdr::{Preconditions, Transaction};
 
 use super::AuthError;
 
@@ -21,7 +21,12 @@ pub fn validate_sequence_number(tx: &Transaction) -> Result<(), AuthError> {
 /// The challenge must carry time bounds, and `now` must fall within them:
 /// `min_time <= now <= max_time`.
 pub fn validate_time_bounds(tx: &Transaction, now: u64) -> Result<(), AuthError> {
-    let bounds = tx.time_bounds.as_ref().ok_or(AuthError::InvalidToken)?;
+    // In stellar-xdr 28 the time bounds live in the transaction's
+    // preconditions, not in a `time_bounds` field.
+    let bounds = match &tx.cond {
+        Preconditions::Time(bounds) => bounds,
+        _ => return Err(AuthError::InvalidToken),
+    };
 
     if now < bounds.min_time.0 {
         return Err(AuthError::InvalidToken);
@@ -44,23 +49,24 @@ pub fn validate_challenge(tx: &Transaction, now: u64) -> Result<(), AuthError> {
 mod tests {
     use super::*;
     use stellar_xdr::{
-        Memo, MuxedAccount, Operation, OperationBody, TimeBounds, TransactionExt, Uint256, int64,
-        uint32, uint64,
+        Memo, MuxedAccount, Preconditions, SequenceNumber, TimeBounds, TimePoint, TransactionExt,
+        Uint256,
     };
 
+    /// A SEP-10 challenge shaped the way stellar-xdr 28 models one: time bounds
+    /// live in `cond`, and an empty operation list is built through `VecM`.
     fn base_transaction(seq_num: i64, min_time: u64, max_time: u64) -> Transaction {
         Transaction {
-            source_account: MuxedAccount::KeyTypeEd25519(Uint256([0; 32])),
-            fee: uint32(100),
-            seq_num: int64(seq_num),
-            cond: TransactionExt::TxFeeBumpTx(None),
-            operations: Vec::<Operation>::new().into(),
-            ext: TransactionExt::TxFeeBumpTx(None),
-            time_bounds: Some(TimeBounds {
-                min_time: uint64(min_time),
-                max_time: uint64(max_time),
+            source_account: MuxedAccount::Ed25519(Uint256([0; 32])),
+            fee: 100,
+            seq_num: SequenceNumber(seq_num),
+            cond: Preconditions::Time(TimeBounds {
+                min_time: TimePoint(min_time),
+                max_time: TimePoint(max_time),
             }),
-            memo: Memo::MemoNone,
+            memo: Memo::None,
+            operations: Vec::new().try_into().expect("no operations fits"),
+            ext: TransactionExt::V0,
         }
     }
 
@@ -99,7 +105,8 @@ mod tests {
     #[test]
     fn rejects_a_transaction_with_no_time_bounds() {
         let mut tx = base_transaction(0, 0, 300);
-        tx.time_bounds = None;
+        // A challenge with no time bounds at all: valid XDR, but SEP-10 requires them.
+        tx.cond = Preconditions::None;
 
         assert!(validate_time_bounds(&tx, 100).is_err());
     }

@@ -3,7 +3,7 @@ use axum::http::request::Parts;
 use engipay_core::UserId;
 
 use crate::auth::jwt::{self, Claims};
-use crate::{error::ApiError, AppState};
+use crate::{AppState, error::ApiError};
 
 /// Authenticated bearer token extracted from the request header.
 ///
@@ -26,11 +26,11 @@ impl AuthUser {
     /// Verifies the token and returns the caller's [`UserId`] — the common
     /// case for a handler that just needs to know who is calling.
     pub fn user_id(&self, jwt_secret: &[u8]) -> Result<UserId, ApiError> {
-        self.verify(jwt_secret).map(|claims| UserId::from_uuid(claims.sub))
+        self.verify(jwt_secret)
+            .map(|claims| UserId::from_uuid(claims.sub))
     }
 }
 
-#[axum::async_trait]
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 

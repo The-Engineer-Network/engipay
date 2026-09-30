@@ -1,4 +1,4 @@
-use axum::{routing::post, Json, Router};
+use axum::{Json, Router, routing::post};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -29,6 +29,11 @@ mod tests {
     async fn issues_a_32_character_nonce() {
         let Json(response) = issue_nonce().await;
         assert_eq!(response.nonce.len(), 32);
-        assert!(response.nonce.chars().all(|character| character.is_ascii_hexdigit()));
+        assert!(
+            response
+                .nonce
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        );
     }
 }

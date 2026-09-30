@@ -4,9 +4,9 @@ use axum::{Json, Router};
 use engipay_ledger::Balance;
 use engipay_ledger::postgres::PostgresLedgerStore;
 
+use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
-use crate::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/balances", get(get_balances))
@@ -34,6 +34,7 @@ async fn get_balances(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -42,7 +43,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::Config;
-    use crate::{router, AppState};
+    use crate::{AppState, router};
 
     fn app() -> axum::Router {
         let config = Config::for_tests();

@@ -53,7 +53,8 @@ impl PostgresLedgerStore {
         .await
         .map_err(db_err)?;
 
-        let mut available: std::collections::HashMap<Asset, i128> = std::collections::HashMap::new();
+        let mut available: std::collections::HashMap<Asset, i128> =
+            std::collections::HashMap::new();
         let mut held: std::collections::HashMap<Asset, i128> = std::collections::HashMap::new();
         for row in rows {
             let symbol: String = row.get("asset");
@@ -276,7 +277,15 @@ impl PostgresLedgerStore {
 
         let neg = negate(hold.amount)?;
         insert_posting_user(&mut tx, tx_id, hold.user, hold.asset, "held", neg).await?;
-        insert_posting_user(&mut tx, tx_id, hold.user, hold.asset, "available", hold.amount).await?;
+        insert_posting_user(
+            &mut tx,
+            tx_id,
+            hold.user,
+            hold.asset,
+            "available",
+            hold.amount,
+        )
+        .await?;
 
         update_hold_state(&mut tx, hold_reference, "released").await?;
 
@@ -498,13 +507,12 @@ async fn get_hold(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     reference: &str,
 ) -> Result<Hold, LedgerError> {
-    let row = sqlx::query(
-        "SELECT user_id, asset, amount, state FROM ledger_holds WHERE reference = $1",
-    )
-    .bind(reference)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db_err)?;
+    let row =
+        sqlx::query("SELECT user_id, asset, amount, state FROM ledger_holds WHERE reference = $1")
+            .bind(reference)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db_err)?;
 
     match row {
         None => Err(LedgerError::HoldNotFound {
@@ -521,16 +529,25 @@ async fn get_hold(
                 "ETH" => Asset::Eth,
                 "BTC" => Asset::Btc,
                 "XLM" => Asset::Xlm,
-                _ => return Err(LedgerError::Database {
-                    code: None,
-                    message: format!("unknown asset: {}", asset_str),
-                }),
+                _ => {
+                    return Err(LedgerError::Database {
+                        code: None,
+                        message: format!("unknown asset: {}", asset_str),
+                    });
+                }
             };
 
-            let amount = amount_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            let amount = amount_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
             let user = UserId::from_uuid(user_uuid);
 
-            Ok(Hold { user, asset, amount, state })
+            Ok(Hold {
+                user,
+                asset,
+                amount,
+                state,
+            })
         }
     }
 }
@@ -568,32 +585,26 @@ fn transfer_fingerprint(from: UserId, to: UserId, money: Money) -> String {
 
 // ── Error conversion ───────────────────────────────────────────────────
 
+/// Maps a database failure onto a ledger error. The Postgres SQLSTATE codes are
+/// the guarantees in `migrations/`: a violated check constraint means the
+/// ledger refused to go out of balance, and a unique violation means the same
+/// reference was posted twice.
 fn db_err(e: sqlx::Error) -> LedgerError {
-    let (code, mapped_error) = match &e {
-        sqlx::Error::Database(db_err) => {
-            let code = db_err.code().map(|c| c.to_string());
-            let mapped = match code.as_deref() {
-                Some("23514") => {
-                    return LedgerError::InvariantViolated("database constraint violated")
-                }
-                Some("23505") => {
-                    return LedgerError::IdempotencyConflict {
-                        reference: "conflict".to_owned(),
-                    }
-                }
-                Some("23503") => {
-                    return LedgerError::InvariantViolated("foreign key constraint violation")
-                }
-                _ => None,
-            };
-            (code, mapped)
-        }
-        _ => (None, None),
+    let code = match &e {
+        sqlx::Error::Database(db_err) => db_err.code().map(|c| c.to_string()),
+        _ => None,
     };
 
-    LedgerError::Database {
-        code,
-        message: e.to_string(),
+    match code.as_deref() {
+        Some("23514") => LedgerError::InvariantViolated("database constraint violated"),
+        Some("23505") => LedgerError::IdempotencyConflict {
+            reference: "conflict".to_owned(),
+        },
+        Some("23503") => LedgerError::InvariantViolated("foreign key constraint violation"),
+        _ => LedgerError::Database {
+            code,
+            message: e.to_string(),
+        },
     }
 }
 
@@ -764,8 +775,14 @@ mod tests {
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
 
-        store.deposit(alice, usdc(250), "balances-dep-1").await.unwrap();
-        store.create_hold(alice, usdc(60), "balances-hold-1").await.unwrap();
+        store
+            .deposit(alice, usdc(250), "balances-dep-1")
+            .await
+            .unwrap();
+        store
+            .create_hold(alice, usdc(60), "balances-hold-1")
+            .await
+            .unwrap();
 
         let balances = store.get_user_balances(alice).await.unwrap();
         assert_eq!(balances.len(), Asset::ALL.len());
@@ -928,8 +945,14 @@ mod tests {
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
 
-        store.deposit(alice, usdc(100), "seed-release").await.unwrap();
-        store.create_hold(alice, usdc(60), "hold-release").await.unwrap();
+        store
+            .deposit(alice, usdc(100), "seed-release")
+            .await
+            .unwrap();
+        store
+            .create_hold(alice, usdc(60), "hold-release")
+            .await
+            .unwrap();
 
         let receipt = store.release_hold("hold-release").await.unwrap();
         assert!(!receipt.replayed);
@@ -949,8 +972,14 @@ mod tests {
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
 
-        store.deposit(alice, usdc(100), "seed-release-replay").await.unwrap();
-        store.create_hold(alice, usdc(60), "hold-release-replay").await.unwrap();
+        store
+            .deposit(alice, usdc(100), "seed-release-replay")
+            .await
+            .unwrap();
+        store
+            .create_hold(alice, usdc(60), "hold-release-replay")
+            .await
+            .unwrap();
 
         let first = store.release_hold("hold-release-replay").await.unwrap();
         let second = store.release_hold("hold-release-replay").await.unwrap();
@@ -968,8 +997,14 @@ mod tests {
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
 
-        store.deposit(alice, usdc(100), "seed-release-closed").await.unwrap();
-        store.create_hold(alice, usdc(60), "hold-closed").await.unwrap();
+        store
+            .deposit(alice, usdc(100), "seed-release-closed")
+            .await
+            .unwrap();
+        store
+            .create_hold(alice, usdc(60), "hold-closed")
+            .await
+            .unwrap();
         store.release_hold("hold-closed").await.unwrap();
 
         // Try to release again
@@ -1018,8 +1053,14 @@ mod tests {
         ensure_user(&pool, bob).await;
         ensure_user(&pool, charlie).await;
 
-        store.deposit(alice, usdc(100), "seed-xfer-fp").await.unwrap();
-        store.transfer(alice, bob, usdc(30), "xfer-fp").await.unwrap();
+        store
+            .deposit(alice, usdc(100), "seed-xfer-fp")
+            .await
+            .unwrap();
+        store
+            .transfer(alice, bob, usdc(30), "xfer-fp")
+            .await
+            .unwrap();
 
         let result = store.transfer(alice, charlie, usdc(30), "xfer-fp").await;
 
@@ -1035,17 +1076,15 @@ mod tests {
     #[ignore = "requires DATABASE_URL"]
     async fn connection_pool_initializes_successfully() {
         let pool = test_pool().await.unwrap();
-        let store = PostgresLedgerStore::new(pool);
-        // If we got here, the pool initialized successfully.
-        // The store is created and ready for use.
-        assert!(true);
+        let _store = PostgresLedgerStore::new(pool.clone());
+        assert!(!pool.is_closed(), "the pool should be usable once built");
     }
 
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn connection_pool_health_ping_succeeds() {
         let pool = test_pool().await.unwrap();
-        let store = PostgresLedgerStore::new(pool.clone());
+        let _store = PostgresLedgerStore::new(pool.clone());
         // Perform a simple health check by pinging the database
         let result = sqlx::query("SELECT 1 AS health_check")
             .fetch_optional(&pool)

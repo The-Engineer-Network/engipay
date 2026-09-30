@@ -26,8 +26,8 @@ CREATE OR REPLACE FUNCTION user_profile_immutable_fields() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
     IF TG_OP = 'UPDATE' THEN
-        IF OLD.user_id <> NEW.user_id THEN
-            RAISE EXCEPTION 'user_profile user_id is immutable: cannot change % to %', OLD.user_id, NEW.user_id;
+        IF OLD.id <> NEW.id THEN
+            RAISE EXCEPTION 'user_profile id is immutable: cannot change % to %', OLD.id, NEW.id;
         END IF;
         IF OLD.created_at <> NEW.created_at THEN
             RAISE EXCEPTION 'user_profile created_at is immutable: cannot change % to %', OLD.created_at, NEW.created_at;
