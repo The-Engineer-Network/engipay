@@ -10,6 +10,8 @@
 //! next.
 
 pub mod evm;
+pub mod routes;
+pub mod services;
 pub mod stellar;
 
 use std::pin::Pin;
@@ -127,6 +129,7 @@ where
     use std::task::{Context, Poll};
 
     // All state lives in a single struct so the stream is `Send`.
+    #[allow(clippy::type_complexity)]
     struct Poller<C> {
         client: Arc<C>,
         next_height: u64,
@@ -242,8 +245,6 @@ mod tests {
     /// Verifies that `stream_events` starts and produces at least one event.
     #[tokio::test]
     async fn stream_events_produces_ledger_events() {
-        use futures_util::StreamExt;
-
         let stream = FakeBase
             .stream_events(90, Duration::from_millis(10))
             .await
@@ -268,8 +269,6 @@ mod tests {
     /// than panicking.
     #[tokio::test]
     async fn stream_events_propagates_errors() {
-        use futures_util::StreamExt;
-
         struct ErrorClient;
         impl ChainClient for ErrorClient {
             fn chain(&self) -> Chain {

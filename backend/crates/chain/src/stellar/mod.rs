@@ -8,7 +8,7 @@ pub mod horizon;
 pub mod network;
 pub mod payment;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use engipay_core::Chain;
@@ -18,7 +18,7 @@ use tracing::{error, warn};
 use self::horizon::{Account, Page, PaymentRecord, Root, SubmitProblem, Submitted, TransactionCache};
 pub use self::network::StellarNetwork;
 use self::payment::{PaymentRequest, StellarSigner};
-use crate::{ChainClient, ChainError, ObservedDeposit};
+use crate::{ChainClient, ChainError, EventStream, ObservedDeposit};
 
 /// Records per Horizon page, the maximum it allows.
 const PAGE_LIMIT: usize = 200;
@@ -369,6 +369,20 @@ impl ChainClient for StellarClient {
         }
         Ok(deposits)
     }
+
+    async fn stream_events(
+        &self,
+        from_height: u64,
+        poll_interval: Duration,
+    ) -> Result<EventStream, ChainError> {
+        // Stellar finality is deterministic and Horizon does not offer a push
+        // stream, so we use the polling fallback provided by the crate.
+        Ok(crate::polling_stream(
+            Arc::new(StellarClient::new(self.config.clone())?),
+            from_height,
+            poll_interval,
+        ))
+    }
 }
 
 /// Exponential backoff with a little jitter, in milliseconds.
@@ -631,7 +645,7 @@ mod tests {
         let deposits = client(&server).await.deposits_since(195).await.unwrap();
         assert_eq!(deposits.len(), 3, "all three operations must be credited");
 
-        let total_stroops: i64 = deposits
+        let total_stroops: i128 = deposits
             .iter()
             .map(|d| d.money.to_network_units(engipay_core::Chain::Stellar).unwrap())
             .sum();
@@ -686,3 +700,4 @@ mod tests {
         assert_eq!(deposits.len(), 1);
         assert_eq!(deposits[0].money, Money::from_minor(Asset::Xlm, 40_000_000));
     }
+}

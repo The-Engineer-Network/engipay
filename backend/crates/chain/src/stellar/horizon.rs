@@ -140,6 +140,7 @@ impl TransactionCache {
     /// Number of entries currently in the cache (including possibly-stale ones
     /// that have not been read since they expired).
     #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }

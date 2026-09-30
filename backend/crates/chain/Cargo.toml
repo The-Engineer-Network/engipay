@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 engipay-core.workspace = true
 anyhow.workspace = true
+axum.workspace = true
 ed25519-dalek.workspace = true
 lru.workspace = true
 futures-core.workspace = true
@@ -23,10 +24,9 @@ stellar-strkey.workspace = true
 stellar-xdr.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-util = { workspace = true, features = ["rt", "sync"] }
+tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-sqlx.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 
