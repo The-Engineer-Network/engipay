@@ -111,7 +111,11 @@ export async function startStellarConnection(): Promise<{
 }> {
   const client = await getStellarSignClient()
   const { uri, approval } = await client.connect({
-    optionalNamespaces: {
+    // Required, not optional: Freighter mobile and LOBSTR ignore a proposal
+    // that asks for no network, which is why the wallet opened without ever
+    // showing an approval prompt. This matches Freighter's own documented
+    // example.
+    requiredNamespaces: {
       stellar: {
         methods: METHODS,
         chains: [STELLAR_WC_CHAIN],
