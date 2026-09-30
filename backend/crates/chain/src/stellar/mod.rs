@@ -6,6 +6,7 @@
 pub mod horizon;
 pub mod network;
 pub mod payment;
+pub mod cursor;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

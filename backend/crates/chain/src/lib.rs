@@ -11,6 +11,7 @@
 
 pub mod evm;
 pub mod stellar;
+pub mod services;
 
 use engipay_core::{Asset, Chain, Money};
 
