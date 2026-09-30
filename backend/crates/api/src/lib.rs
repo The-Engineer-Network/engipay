@@ -8,6 +8,7 @@ pub mod config;
 pub mod error;
 mod routes;
 pub mod services;
+pub mod middleware;
 
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
