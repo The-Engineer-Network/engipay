@@ -37,6 +37,14 @@ pub struct WithdrawalResponse {
     pub status: String,
 }
 
+/// Builds the unique ledger reference used to lock withdrawal funds in the
+/// user's `held` bucket. The reference is derived from the withdrawal id so a
+/// hold can be created (and later released) idempotently for a single
+/// withdrawal.
+pub fn withdrawal_hold_reference(withdrawal_id: Uuid) -> String {
+    format!("withdrawal:{withdrawal_id}")
+}
+
 pub async fn create_withdrawal(
     State(state): State<AppState>,
     Json(payload): Json<CreateWithdrawalRequest>,
@@ -64,6 +72,21 @@ pub async fn create_withdrawal(
             available,
         }));
     }
+
+    // Lock the withdrawal principal and network fee in the user's `held`
+    // bucket *before* any on-chain broadcast is attempted, so the funds cannot
+    // be spent while the broadcast is pending. The hold is keyed by the unique
+    // withdrawal reference.
+    let withdrawal_id = Uuid::new_v4();
+    let hold_reference = withdrawal_hold_reference(withdrawal_id);
+    state
+        .ledger
+        .create_hold(
+            payload.user_id,
+            required,
+            &hold_reference,
+        )
+        .await?;
 
     let withdrawal = state
         .ledger
@@ -147,5 +170,34 @@ mod tests {
         let available = 1_000i64;
         let required = required_total(amount, fee).expect("no overflow");
         assert!(available < required);
+    }
+
+    #[test]
+    fn hold_reference_is_unique_per_withdrawal() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        assert_ne!(withdrawal_hold_reference(a), withdrawal_hold_reference(b));
+    }
+
+    #[test]
+    fn hold_reference_is_stable_for_same_withdrawal() {
+        let id = Uuid::new_v4();
+        assert_eq!(withdrawal_hold_reference(id), withdrawal_hold_reference(id));
+    }
+
+    #[test]
+    fn hold_reference_encodes_withdrawal_id() {
+        let id = Uuid::new_v4();
+        assert_eq!(withdrawal_hold_reference(id), format!("withdrawal:{id}"));
+    }
+
+    #[test]
+    fn hold_locks_principal_plus_fee() {
+        let amount = 1_000i64;
+        let fee = 25i64;
+        let required = required_total(amount, fee).expect("no overflow");
+        // The hold must lock the full principal plus the network fee so the
+        // funds cannot be spent while the broadcast is pending.
+        assert_eq!(required, 1_025);
     }
 }

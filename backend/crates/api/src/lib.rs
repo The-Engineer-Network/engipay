@@ -9,7 +9,6 @@ pub mod error;
 pub mod middleware;
 mod routes;
 pub mod services;
-pub mod middleware;
 
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
@@ -18,6 +17,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
+use crate::middleware::logging::RequestLoggingLayer;
 use crate::middleware::recovery::CatchPanicLayer;
 
 #[derive(Clone)]
@@ -34,6 +34,10 @@ pub fn router(state: AppState, config: &Config) -> Router {
         .nest("/v1", routes::v1())
         .layer(cors(config))
         .layer(TraceLayer::new_for_http())
+        // Structured JSON request logging with correlation IDs. Placed inside
+        // CatchPanic so panics are still converted to problem+json 500s, and
+        // outside the routes so every request is logged exactly once.
+        .layer(RequestLoggingLayer::new())
         // CatchPanic must be the outermost layer so it catches panics in all
         // inner layers and handlers. It returns RFC 7807 problem+json 500s.
         .layer(CatchPanicLayer::new())
