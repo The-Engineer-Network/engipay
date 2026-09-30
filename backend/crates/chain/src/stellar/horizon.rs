@@ -46,6 +46,10 @@ pub struct PaymentRecord {
     pub transaction_hash: String,
     #[serde(default)]
     pub transaction_successful: bool,
+    /// The paying account. Logged when a transfer into custody is refused, so a
+    /// person can trace it back.
+    #[serde(default)]
+    pub from: Option<String>,
     #[serde(default)]
     pub to: Option<String>,
     #[serde(default)]
@@ -380,8 +384,14 @@ mod tests {
         assert_eq!(parse_stroops("100000.0000000"), Some(1_000_000_000_000));
         assert_eq!(parse_stroops("1000000.0000000"), Some(10_000_000_000_000));
         assert_eq!(parse_stroops("10000000.0000000"), Some(100_000_000_000_000));
-        assert_eq!(parse_stroops("100000000.0000000"), Some(1_000_000_000_000_000));
-        assert_eq!(parse_stroops("1000000000.0000000"), Some(10_000_000_000_000_000));
+        assert_eq!(
+            parse_stroops("100000000.0000000"),
+            Some(1_000_000_000_000_000)
+        );
+        assert_eq!(
+            parse_stroops("1000000000.0000000"),
+            Some(10_000_000_000_000_000)
+        );
     }
 
     #[test]
@@ -396,7 +406,8 @@ mod tests {
         assert_eq!(parse_stroops("1.0000000"), Some(10_000_000));
         assert_eq!(parse_stroops("0.1234567"), Some(1_234_567));
         assert_eq!(parse_stroops("0.9999999"), Some(9_999_999));
-        assert_eq!(parse_stroops("123.4567890"), None);
+        // Seven decimals is exactly what Horizon sends, so this is valid.
+        assert_eq!(parse_stroops("123.4567890"), Some(1_234_567_890));
         assert_eq!(parse_stroops("123.456789"), None);
     }
 

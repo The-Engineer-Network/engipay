@@ -2,15 +2,15 @@
 -- Includes user profiles, deposit addresses, bank accounts, token conversions,
 -- ramp orders, and deduplicated partner webhook events.
 
-CREATE TABLE IF NOT EXISTS user_profiles (
-    user_id     UUID PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-    tag         TEXT UNIQUE,
-    email       TEXT,
-    phone       TEXT,
-    kyc_tier    INT NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- user_profiles is created in 0003_auth.sql, keyed by `id` with a `tier`
+-- column, which is what the API writes on first sign-in. This migration adds
+-- the profile fields the rest of the product needs, rather than declaring a
+-- second, conflicting table.
+ALTER TABLE user_profiles
+    ADD COLUMN IF NOT EXISTS tag        TEXT UNIQUE,
+    ADD COLUMN IF NOT EXISTS email      TEXT,
+    ADD COLUMN IF NOT EXISTS phone      TEXT,
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_profiles_tag_lower
     ON user_profiles (LOWER(btrim(tag))) WHERE tag IS NOT NULL;
