@@ -6,6 +6,9 @@
 pub mod confirmations;
 pub mod erc20;
 pub mod eth;
+pub mod provider;
+
+pub use provider::{AlloyProvider, BaseNetwork, ProviderHealth};
 
 /// Why a transaction or log was not turned into a deposit.
 #[derive(Debug, Clone, PartialEq, Eq)]
