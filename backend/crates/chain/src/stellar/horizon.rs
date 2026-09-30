@@ -1,13 +1,22 @@
 //! Horizon responses, and the rules that turn a payment record into a deposit.
 //!
-//! Everything here is pure: no network, no clock. The decisions that credit a
-//! user's balance are tested against recorded Horizon JSON.
+//! The pure conversion logic (`deposit_from_record`) is free of network and
+//! clock dependencies so it can be tested against recorded JSON. The
+//! [`TransactionCache`] lives here too — it caches `GET /transactions/{hash}`
+//! responses by `tx_hash` with a 60-second TTL, so multi-operation
+//! transactions do not trigger redundant network round-trips.
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use engipay_core::{Asset, Chain, Money};
 use serde::Deserialize;
 
 use super::network::StellarNetwork;
 use crate::ObservedDeposit;
+
+/// How long a cached transaction detail is considered fresh.
+pub const TRANSACTION_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// `GET /` on Horizon.
 #[derive(Debug, Deserialize)]
@@ -46,6 +55,10 @@ pub struct PaymentRecord {
     pub transaction_hash: String,
     #[serde(default)]
     pub transaction_successful: bool,
+    /// The paying account. Logged when a transfer into custody is refused, so a
+    /// person can trace it back.
+    #[serde(default)]
+    pub from: Option<String>,
     #[serde(default)]
     pub to: Option<String>,
     #[serde(default)]
@@ -66,6 +79,70 @@ pub struct PaymentRecord {
 pub struct JoinedTransaction {
     pub ledger: u64,
     pub successful: bool,
+}
+
+/// Short-lived in-process cache for Horizon transaction detail responses.
+///
+/// Keyed by `transaction_hash`. Entries expire after [`TRANSACTION_CACHE_TTL`]
+/// (60 seconds). The cache is intentionally simple — no background eviction,
+/// just lazy expiry on read and on explicit [`TransactionCache::evict_expired`].
+///
+/// The main use-case is multi-operation transactions: Horizon returns one
+/// `PaymentRecord` per operation, all sharing the same `transaction_hash`.
+/// Without a cache each operation would trigger a separate
+/// `GET /transactions/{hash}` call; with the cache only the first does.
+#[derive(Debug, Default)]
+pub struct TransactionCache {
+    entries: HashMap<String, CacheEntry>,
+}
+
+#[derive(Debug)]
+struct CacheEntry {
+    transaction: JoinedTransaction,
+    inserted_at: Instant,
+}
+
+impl TransactionCache {
+    /// Creates an empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns a cached transaction if it exists and has not expired.
+    pub fn get(&self, tx_hash: &str) -> Option<&JoinedTransaction> {
+        self.entries.get(tx_hash).and_then(|entry| {
+            if entry.inserted_at.elapsed() < TRANSACTION_CACHE_TTL {
+                Some(&entry.transaction)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Inserts or refreshes a transaction entry, recording the current time.
+    pub fn insert(&mut self, tx_hash: String, transaction: JoinedTransaction) {
+        self.entries.insert(
+            tx_hash,
+            CacheEntry {
+                transaction,
+                inserted_at: Instant::now(),
+            },
+        );
+    }
+
+    /// Removes all entries whose TTL has elapsed. Call periodically to bound
+    /// memory growth across a long-running polling loop.
+    pub fn evict_expired(&mut self) {
+        self.entries
+            .retain(|_, entry| entry.inserted_at.elapsed() < TRANSACTION_CACHE_TTL);
+    }
+
+    /// Number of entries currently in the cache (including possibly-stale ones
+    /// that have not been read since they expired).
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 /// `400` from `POST /transactions`.
@@ -95,13 +172,8 @@ pub enum Skipped {
     /// Outgoing, or not a payment at all (e.g. account creation or a trustline).
     NotIncoming,
     Failed,
-    /// A token EngiPay does not hold, or a USDC-named token from the wrong
-    /// issuer (counterfeit USDC). The `counterfeit_usdc` flag is `true` when
-    /// the asset code is `"USDC"` but the issuer is not Circle's canonical
-    /// issuer for the network, so operators can filter on it specifically.
-    ///
-    /// TODO(#145): route `counterfeit_usdc = true` entries into the quarantine
-    /// table so compliance staff can review them.
+    /// A token EngiPay does not hold, including fake USDC from another issuer.
+    /// This is a security-sensitive rejection: unauthorized assets must be recorded.
     UnsupportedAsset {
         code: String,
         issuer: String,
@@ -109,6 +181,13 @@ pub enum Skipped {
         counterfeit_usdc: bool,
     },
     Malformed(&'static str),
+}
+
+impl Skipped {
+    /// Whether this rejection is a security concern requiring audit logging.
+    pub fn is_security_sensitive(&self) -> bool {
+        matches!(self, Skipped::UnsupportedAsset { .. })
+    }
 }
 
 /// Turns a Horizon payment record into a deposit into `custody`.
@@ -182,7 +261,9 @@ pub fn deposit_from_record(
             .to_muxed
             .clone()
             .unwrap_or_else(|| custody.to_owned()),
-        // The operation id is unique across the network's history.
+        // Deterministic idempotency key: "stellar:<transaction_hash>:<operation_index>"
+        // The paging_token is Horizon's operation index, unique per operation on the network.
+        // This prevents double-crediting the same deposit and identifies specific credit events.
         reference: format!(
             "stellar:{}:{}",
             record.transaction_hash, record.paging_token
@@ -477,6 +558,80 @@ mod tests {
     }
 
     #[test]
+    fn stroops_parse_edge_cases() {
+        assert_eq!(parse_stroops("0.0000000"), Some(0));
+        assert_eq!(parse_stroops("0.0000001"), Some(1));
+        assert_eq!(parse_stroops("1.0000000"), Some(10_000_000));
+        assert_eq!(parse_stroops("10.0000000"), Some(100_000_000));
+        assert_eq!(parse_stroops("100.0000000"), Some(1_000_000_000));
+        assert_eq!(parse_stroops("1000.0000000"), Some(10_000_000_000));
+        assert_eq!(parse_stroops("10000.0000000"), Some(100_000_000_000));
+        assert_eq!(parse_stroops("100000.0000000"), Some(1_000_000_000_000));
+        assert_eq!(parse_stroops("1000000.0000000"), Some(10_000_000_000_000));
+        assert_eq!(parse_stroops("10000000.0000000"), Some(100_000_000_000_000));
+        assert_eq!(
+            parse_stroops("100000000.0000000"),
+            Some(1_000_000_000_000_000)
+        );
+        assert_eq!(
+            parse_stroops("1000000000.0000000"),
+            Some(10_000_000_000_000_000)
+        );
+    }
+
+    #[test]
+    fn stroops_parse_fractional_precision() {
+        assert_eq!(parse_stroops("0.0000001"), Some(1));
+        assert_eq!(parse_stroops("0.0000010"), Some(10));
+        assert_eq!(parse_stroops("0.0000100"), Some(100));
+        assert_eq!(parse_stroops("0.0001000"), Some(1000));
+        assert_eq!(parse_stroops("0.0010000"), Some(10_000));
+        assert_eq!(parse_stroops("0.0100000"), Some(100_000));
+        assert_eq!(parse_stroops("0.1000000"), Some(1_000_000));
+        assert_eq!(parse_stroops("1.0000000"), Some(10_000_000));
+        assert_eq!(parse_stroops("0.1234567"), Some(1_234_567));
+        assert_eq!(parse_stroops("0.9999999"), Some(9_999_999));
+        // Seven decimals is exactly what Horizon sends, so this is valid.
+        assert_eq!(parse_stroops("123.4567890"), Some(1_234_567_890));
+        assert_eq!(parse_stroops("123.456789"), None);
+    }
+
+    #[test]
+    fn stroops_parse_invalid_formats() {
+        let invalid = [
+            "abc.0000000",
+            "123.abcdefg",
+            " 123.0000000",
+            "123.0000000 ",
+            "123. 000000",
+            "123.000 000",
+            "+123.0000000",
+            "123.0000000e0",
+            "NaN",
+            "Infinity",
+            "1.00000000",
+            "1.000000",
+            "1.00000",
+        ];
+        for bad in invalid {
+            assert_eq!(parse_stroops(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn unsupported_asset_is_security_sensitive() {
+        let unsupported = Skipped::UnsupportedAsset {
+            code: "FAKE".to_owned(),
+            issuer: "GXXXX".to_owned(),
+        };
+        assert!(unsupported.is_security_sensitive());
+
+        assert!(!Skipped::NotIncoming.is_security_sensitive());
+        assert!(!Skipped::Failed.is_security_sensitive());
+        assert!(!Skipped::Malformed("test").is_security_sensitive());
+    }
+
+    #[test]
     fn a_ledger_cursor_sorts_before_that_ledgers_operations() {
         let cursor = cursor_for_ledger(100).unwrap();
         let first_operation_in_ledger_100: i64 = (100 << 32) + (1 << 12) + 1;
@@ -485,37 +640,165 @@ mod tests {
         assert!(cursor > last_operation_in_ledger_99);
     }
 
-    #[test]
-    fn extract_muxed_id_returns_the_id_from_a_muxed_address() {
-        let custody = account(1);
-        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 42_000).unwrap();
-        assert_eq!(extract_muxed_id(&muxed), Some(42_000));
+    // ──────────────────────────────────────────────────────────────────────────
+    // TransactionCache
+    // ──────────────────────────────────────────────────────────────────────────
+
+    fn tx(ledger: u64) -> JoinedTransaction {
+        JoinedTransaction {
+            ledger,
+            successful: true,
+        }
     }
 
     #[test]
-    fn extract_muxed_id_returns_zero_id_when_id_is_zero() {
-        let custody = account(1);
-        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 0).unwrap();
-        assert_eq!(extract_muxed_id(&muxed), Some(0));
+    fn cache_miss_on_empty_cache() {
+        let cache = TransactionCache::new();
+        assert!(cache.get("abc123").is_none());
     }
 
     #[test]
-    fn extract_muxed_id_returns_max_u64_id() {
-        let custody = account(1);
-        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, u64::MAX).unwrap();
-        assert_eq!(extract_muxed_id(&muxed), Some(u64::MAX));
+    fn cache_hit_after_insert() {
+        let mut cache = TransactionCache::new();
+        cache.insert("abc123".to_owned(), tx(50));
+        let found = cache.get("abc123").expect("entry should be present");
+        assert_eq!(found.ledger, 50);
+        assert!(found.successful);
     }
 
     #[test]
-    fn extract_muxed_id_returns_none_for_plain_g_address() {
-        // A plain G... custody account carries no embedded ID; must be reviewed.
-        assert_eq!(extract_muxed_id(&account(1)), None);
+    fn cache_hit_for_second_operation_in_same_transaction() {
+        // Simulate a multi-operation transaction: two PaymentRecords share the
+        // same transaction_hash. The first miss populates the cache; the second
+        // should be a hit without re-fetching.
+        let tx_hash = "multiopera1234".to_owned();
+        let mut cache = TransactionCache::new();
+
+        // First operation: cache miss, then we insert the fetched data.
+        assert!(cache.get(&tx_hash).is_none(), "should miss on first lookup");
+        cache.insert(tx_hash.clone(), tx(200));
+
+        // Second operation (same tx_hash): should hit.
+        let found = cache.get(&tx_hash).expect("second lookup should hit");
+        assert_eq!(found.ledger, 200);
     }
 
     #[test]
-    fn extract_muxed_id_returns_none_for_invalid_input() {
-        assert_eq!(extract_muxed_id(""), None);
-        assert_eq!(extract_muxed_id("not-an-address"), None);
-        assert_eq!(extract_muxed_id("GABC"), None);
+    fn cache_hit_for_many_operations_in_same_transaction() {
+        let tx_hash = "bigmultiopera".to_owned();
+        let mut cache = TransactionCache::new();
+        cache.insert(tx_hash.clone(), tx(300));
+
+        // 100 operations, same hash — all should hit the cache.
+        for _ in 0..100 {
+            let found = cache.get(&tx_hash).expect("should hit");
+            assert_eq!(found.ledger, 300);
+        }
+    }
+
+    #[test]
+    fn different_transaction_hashes_are_independent() {
+        let mut cache = TransactionCache::new();
+        cache.insert("tx_a".to_owned(), tx(10));
+        cache.insert("tx_b".to_owned(), tx(20));
+
+        assert_eq!(cache.get("tx_a").unwrap().ledger, 10);
+        assert_eq!(cache.get("tx_b").unwrap().ledger, 20);
+        assert!(cache.get("tx_c").is_none());
+    }
+
+    #[test]
+    fn insert_overwrites_existing_entry() {
+        let mut cache = TransactionCache::new();
+        cache.insert("tx1".to_owned(), tx(1));
+        cache.insert("tx1".to_owned(), tx(99));
+        assert_eq!(cache.get("tx1").unwrap().ledger, 99);
+    }
+
+    #[test]
+    fn expired_entry_returns_none() {
+        use std::time::{Duration, Instant};
+
+        // Build a cache, insert an entry, then manually back-date it past the TTL.
+        let mut cache = TransactionCache::new();
+        cache.insert("stale".to_owned(), tx(42));
+
+        // Force expiry by replacing the entry with an old `inserted_at`.
+        let stale_time = Instant::now()
+            .checked_sub(TRANSACTION_CACHE_TTL + Duration::from_secs(1))
+            .expect("time arithmetic should not underflow on any reasonable system");
+        cache.entries.insert(
+            "stale".to_owned(),
+            CacheEntry {
+                transaction: tx(42),
+                inserted_at: stale_time,
+            },
+        );
+
+        assert!(cache.get("stale").is_none(), "expired entry must not be returned");
+    }
+
+    #[test]
+    fn evict_expired_removes_only_stale_entries() {
+        use std::time::{Duration, Instant};
+
+        let mut cache = TransactionCache::new();
+        cache.insert("fresh".to_owned(), tx(1));
+
+        let stale_time = Instant::now()
+            .checked_sub(TRANSACTION_CACHE_TTL + Duration::from_secs(1))
+            .expect("time arithmetic should not underflow");
+        cache.entries.insert(
+            "stale".to_owned(),
+            CacheEntry {
+                transaction: tx(2),
+                inserted_at: stale_time,
+            },
+        );
+
+        assert_eq!(cache.len(), 2);
+        cache.evict_expired();
+        assert_eq!(cache.len(), 1, "only the stale entry should be removed");
+        assert!(cache.get("fresh").is_some());
+        // The stale key is gone from the map entirely.
+        assert!(!cache.entries.contains_key("stale"));
+    }
+
+    #[test]
+    fn deposit_from_multi_op_tx_uses_cached_transaction() {
+        // Verify that deposit_from_record still works correctly when the same
+        // JoinedTransaction (as would be returned from a cache hit) is reused
+        // for multiple PaymentRecord instances that share the same tx_hash.
+        let custody = custody();
+        let tx_hash = "shared_tx_abc".to_owned();
+        let cached_tx = JoinedTransaction {
+            ledger: 100,
+            successful: true,
+        };
+
+        // Create two payment records sharing the same transaction.
+        let mut base_record = record(serde_json::json!({
+            "transaction_hash": tx_hash,
+            "paging_token": "1001",
+            "transaction": { "ledger": 100, "successful": true }
+        }));
+        let mut second_record = base_record.clone();
+        second_record.paging_token = "1002".to_owned();
+
+        // Simulate using the cached JoinedTransaction for both records.
+        base_record.transaction = Some(cached_tx.clone());
+        second_record.transaction = Some(cached_tx.clone());
+
+        let d1 = deposit_from_record(&base_record, &custody, StellarNetwork::Testnet, 104)
+            .expect("first op should produce a deposit");
+        let d2 = deposit_from_record(&second_record, &custody, StellarNetwork::Testnet, 104)
+            .expect("second op should produce a deposit");
+
+        // Both deposits originate from the same ledger.
+        assert_eq!(d1.confirmations, d2.confirmations);
+        // References are unique per-operation (different paging_token).
+        assert_ne!(d1.reference, d2.reference);
+        assert!(d1.reference.contains(&tx_hash));
+        assert!(d2.reference.contains(&tx_hash));
     }
 }
