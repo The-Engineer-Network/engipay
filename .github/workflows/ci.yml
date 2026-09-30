@@ -110,3 +110,8 @@ jobs:
         run: cargo test -p engipay-ledger --features postgres --locked -- --ignored --test-threads=1
         env:
           DATABASE_URL: postgres://engipay:ci-only-not-a-secret@localhost:5432/engipay
+
+      - name: Authenticated transfer regression
+        run: cargo test -p engipay-api --locked authenticated_transfer_enforces_sender_and_idempotency -- --ignored
+        env:
+          DATABASE_URL: postgres://engipay:ci-only-not-a-secret@localhost:5432/engipay

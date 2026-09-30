@@ -3,3 +3,5 @@
 
 pub mod limits;
 pub mod payment_requests;
+
+pub mod recipient;

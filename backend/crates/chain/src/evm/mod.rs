@@ -1,7 +1,8 @@
-//! Base (EVM) deposit detection.
+//! EVM (Base) chain support.
 //!
-//! Everything here is pure: JSON-RPC responses in, deposits out. The RPC
-//! client that fetches blocks and logs is a separate concern.
+//! Currently provides a block header polling loop ([`watcher`]) that tracks
+//! the latest finalized block on Base. Deposit watching and transaction signing
+//! will follow once the finalized-height plumbing is in place.
 
 pub mod confirmations;
 pub mod erc20;
@@ -86,3 +87,4 @@ mod tests {
         assert_eq!(parse_quantity(&format!("0x{}", "f".repeat(32))), None);
     }
 }
+pub mod watcher;

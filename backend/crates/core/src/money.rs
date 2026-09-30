@@ -381,4 +381,35 @@ mod tests {
             assert_eq!(shown.as_deref(), Some(text));
         }
     }
+
+    #[test]
+    fn base_usdc_six_decimals_scale_to_seven_decimal_ledger_units() {
+        // 1 USDC on Base is 1_000_000 on-chain units (6 decimals); the ledger
+        // holds it as 10_000_000 minor units (7 decimals).
+        let one = Money::from_network_units(Asset::Usdc, Chain::Base, 1_000_000)
+            .expect("valid test amount");
+        assert_eq!(one.minor, 10_000_000);
+        assert_eq!(one, usdc("1").expect("valid test amount"));
+
+        // The smallest Base unit (0.000001 USDC) maps to 10 ledger units with
+        // no truncation.
+        let dust =
+            Money::from_network_units(Asset::Usdc, Chain::Base, 1).expect("valid test amount");
+        assert_eq!(dust.minor, 10);
+
+        // A non-round amount keeps every digit.
+        let odd = Money::from_network_units(Asset::Usdc, Chain::Base, 123_456)
+            .expect("valid test amount");
+        assert_eq!(odd.minor, 1_234_560);
+        assert_eq!(odd, usdc("0.123456").expect("valid test amount"));
+    }
+
+    #[test]
+    fn base_usdc_round_trips_without_loss() {
+        for units in [0i128, 1, 10, 999_999, 1_000_000, 123_456_789] {
+            let money = Money::from_network_units(Asset::Usdc, Chain::Base, units)
+                .expect("valid test amount");
+            assert_eq!(money.to_network_units(Chain::Base), Ok(units));
+        }
+    }
 }

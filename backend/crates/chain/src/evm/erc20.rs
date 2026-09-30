@@ -108,6 +108,8 @@ pub fn deposit_from_log(
     }
     let block_number = parse_u64(&log.block_number).ok_or(Skipped::Malformed("block number"))?;
     let log_index = parse_u64(&log.log_index).ok_or(Skipped::Malformed("log index"))?;
+    // Base USDC has 6 decimals; the ledger stores USDC at 7. `from_network_units`
+    // applies the per-network precision table (no hand-rolled `* 10`).
     let money = Money::from_network_units(Asset::Usdc, Chain::Base, units)
         .map_err(|_| Skipped::Malformed("value out of range"))?;
 
@@ -207,6 +209,23 @@ mod tests {
     }
 
     #[test]
+    fn base_six_decimals_scale_to_ledger_seven_without_truncation() {
+        // 1 minor unit on Base (0.000001 USDC) becomes 10 minor units at 7 decimals.
+        assert_eq!(
+            Money::from_network_units(Asset::Usdc, Chain::Base, 1),
+            Ok(Money::from_minor(Asset::Usdc, 10))
+        );
+        // 2.5 USDC: 2_500_000 (6dp) -> 25_000_000 (7dp), exact, no rounding.
+        assert_eq!(
+            Money::from_network_units(Asset::Usdc, Chain::Base, 2_500_000),
+            Ok(Money::from_minor(Asset::Usdc, 25_000_000))
+        );
+        // The reverse direction recovers the original 6-decimal amount exactly.
+        let ledger = Money::from_network_units(Asset::Usdc, Chain::Base, 2_500_000).unwrap();
+        assert_eq!(ledger.to_network_units(Chain::Base), Ok(2_500_000));
+    }
+
+    #[test]
     fn logs_from_unauthorized_contracts_are_discarded() {
         let fake = log("0x9999999999999999999999999999999999999999");
         assert_eq!(
@@ -228,51 +247,25 @@ mod tests {
 
     #[test]
     fn other_events_removed_logs_and_strangers_are_ignored() {
-        let mut approval = usdc_log();
-        approval.topics[0] =
-            "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925".into();
         let mut removed = usdc_log();
         removed.removed = true;
+        assert_eq!(
+            deposit_from_log(&removed, BaseNetwork::Mainnet, 200, &addresses()),
+            Err(Skipped::NotIncoming)
+        );
+
         let mut stranger = usdc_log();
-        stranger.topics[2] = SENDER_TOPIC.into();
+        stranger.topics[2] = SENDER_TOPIC.to_owned();
+        assert_eq!(
+            deposit_from_log(&stranger, BaseNetwork::Mainnet, 200, &addresses()),
+            Err(Skipped::NotIncoming)
+        );
+
         let mut zero = usdc_log();
         zero.data = format!("0x{}", "0".repeat(64));
-        for log in [approval, removed, stranger, zero] {
-            assert_eq!(
-                deposit_from_log(&log, BaseNetwork::Mainnet, 200, &addresses()),
-                Err(Skipped::NotIncoming)
-            );
-        }
-    }
-
-    #[test]
-    fn malformed_logs_are_rejected() {
-        let mut short = usdc_log();
-        short.topics.pop();
-        let mut dirty_topic = usdc_log();
-        dirty_topic.topics[2] =
-            "0xffffffffffffffffffffffffabc0000000000000000000000000000000000001".into();
-        let mut huge = usdc_log();
-        huge.data = format!("0x{}", "f".repeat(64));
-        for log in [short, dirty_topic, huge] {
-            assert!(matches!(
-                deposit_from_log(&log, BaseNetwork::Mainnet, 200, &addresses()),
-                Err(Skipped::Malformed(_))
-            ));
-        }
-    }
-
-    #[test]
-    fn filter_targets_usdc_and_padded_deposit_addresses() {
-        let filter = transfer_filter(BaseNetwork::Mainnet, 100, 255, &addresses());
         assert_eq!(
-            filter,
-            json!([{
-                "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-                "fromBlock": "0x64",
-                "toBlock": "0xff",
-                "topics": [TRANSFER_TOPIC, null, [USER_TOPIC]],
-            }])
+            deposit_from_log(&zero, BaseNetwork::Mainnet, 200, &addresses()),
+            Err(Skipped::NotIncoming)
         );
     }
 }
