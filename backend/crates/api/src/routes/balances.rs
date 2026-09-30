@@ -44,7 +44,7 @@ impl HoldItem {
             asset: hold.asset,
             amount_minor: hold.amount,
             amount,
-            created_at: hold.created_at,
+            created_at: hold.created_at.to_rfc3339(),
         }
     }
 }
@@ -144,6 +144,20 @@ pub fn format_minor(asset: Asset, minor: i128) -> String {
     format!("{sign}{whole}.{fraction}")
 }
 
+/// The latest holds response wraps formatted balances with all open holds.
+#[derive(Debug, Serialize)]
+pub struct BalancesWithHolds {
+    pub balances: Vec<BalanceResponse>,
+    pub active_holds: Vec<ActiveHold>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum BalancesResponse {
+    Plain(Vec<BalanceResponse>),
+    WithHolds(BalancesWithHolds),
+}
+
 /// Live custodial balances for the authenticated caller, across every asset
 /// EngiPay supports (`ETH`, `USDC`, `BTC`, `XLM`), read from the ledger.
 ///
@@ -153,7 +167,7 @@ async fn get_balances(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<BalancesQuery>,
-) -> Result<Json<Vec<BalanceResponse>>, ApiError> {
+) -> Result<Json<BalancesResponse>, ApiError> {
     let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
     let pool = state
         .database
@@ -166,12 +180,14 @@ async fn get_balances(
         .await
         .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?;
 
+    let mut all_holds = Vec::new();
     let response: Vec<BalanceResponse> = if params.include_holds {
         let active_holds = store
             .get_active_holds(user_id)
             .await
             .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?;
 
+        all_holds = active_holds.clone();
         balances
             .into_iter()
             .map(|b| {
@@ -192,7 +208,15 @@ async fn get_balances(
             .collect()
     };
 
-    Ok(Json(response))
+    let value = if params.include_holds {
+        BalancesResponse::WithHolds(BalancesWithHolds {
+            balances: response,
+            active_holds: all_holds,
+        })
+    } else {
+        BalancesResponse::Plain(response)
+    };
+    Ok(Json(value))
 }
 
 #[cfg(test)]
@@ -205,6 +229,37 @@ mod tests {
     use super::{BalanceResponse, HoldItem, format_minor};
 
     // ── format_minor unit tests ──────────────────────────────────────────────
+
+    #[test]
+    fn wrapped_holds_response_preserves_formatted_balances() {
+        let response = super::BalancesWithHolds {
+            balances: vec![BalanceResponse::from_balance(Balance {
+                asset: Asset::Usdc,
+                available: 15_000_000,
+                held: 0,
+            })],
+            active_holds: Vec::new(),
+        };
+        let value = serde_json::to_value(response).expect("response");
+        assert_eq!(value["balances"][0]["available_minor"], 15_000_000);
+        assert_eq!(value["balances"][0]["available"], "1.5000000");
+        assert_eq!(value["active_holds"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn response_serialization_preserves_full_i128_minor_units() {
+        let balances = vec![BalanceResponse::from_balance(Balance {
+            asset: Asset::Eth,
+            available: i128::MAX,
+            held: 0,
+        })];
+        let response = super::BalancesResponse::WithHolds(super::BalancesWithHolds {
+            balances,
+            active_holds: Vec::new(),
+        });
+        let json = serde_json::to_string(&response).expect("full integer precision");
+        assert!(json.contains(&format!("\"available_minor\":{}", i128::MAX)));
+    }
 
     #[test]
     fn formats_usdc_with_seven_decimals() {
@@ -347,7 +402,7 @@ mod tests {
             reference: "wd-abc123".to_string(),
             asset: Asset::Usdc,
             amount: 5_000_000,
-            created_at: "2026-09-30T11:00:00+00:00".to_string(),
+            created_at: "2026-09-30T11:00:00+00:00".parse().expect("timestamp"),
         };
         let item = HoldItem::from_active_hold(hold);
 
@@ -364,7 +419,7 @@ mod tests {
             reference: "wd-xyz".to_string(),
             asset: Asset::Btc,
             amount: 100_000_000,
-            created_at: "2026-09-30T12:00:00+00:00".to_string(),
+            created_at: "2026-09-30T12:00:00+00:00".parse().expect("timestamp"),
         };
         let item = HoldItem::from_active_hold(hold);
         let json = serde_json::to_value(&item).unwrap();
@@ -389,7 +444,7 @@ mod tests {
             reference: "wd-hold1".to_string(),
             asset: Asset::Usdc,
             amount: 5_000_000,
-            created_at: "2026-09-30T10:00:00+00:00".to_string(),
+            created_at: "2026-09-30T10:00:00+00:00".parse().expect("timestamp"),
         });
         let resp = BalanceResponse::from_balance(balance).with_holds(vec![hold_item]);
 
@@ -426,13 +481,13 @@ mod tests {
                 reference: "wd-1".to_string(),
                 asset: Asset::Usdc,
                 amount: 10_000_000,
-                created_at: "2026-09-30T09:00:00+00:00".to_string(),
+                created_at: "2026-09-30T09:00:00+00:00".parse().expect("timestamp"),
             }),
             HoldItem::from_active_hold(ActiveHold {
                 reference: "wd-2".to_string(),
                 asset: Asset::Usdc,
                 amount: 5_000_000,
-                created_at: "2026-09-30T10:00:00+00:00".to_string(),
+                created_at: "2026-09-30T10:00:00+00:00".parse().expect("timestamp"),
             }),
         ];
         let resp = BalanceResponse::from_balance(balance).with_holds(hold_items);
@@ -462,13 +517,13 @@ mod tests {
                 reference: "wd-usdc".to_string(),
                 asset: Asset::Usdc,
                 amount: 5_000_000,
-                created_at: "2026-09-30T10:00:00+00:00".to_string(),
+                created_at: "2026-09-30T10:00:00+00:00".parse().expect("timestamp"),
             },
             ActiveHold {
                 reference: "wd-xlm".to_string(),
                 asset: Asset::Xlm,
                 amount: 10_000_000,
-                created_at: "2026-09-30T10:01:00+00:00".to_string(),
+                created_at: "2026-09-30T10:01:00+00:00".parse().expect("timestamp"),
             },
         ];
 
@@ -654,7 +709,7 @@ mod tests {
             .unwrap()
             .to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let usdc = body
+        let usdc = body["balances"]
             .as_array()
             .unwrap()
             .iter()
@@ -736,7 +791,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let usdc = body
+        let usdc = body["balances"]
             .as_array()
             .unwrap()
             .iter()

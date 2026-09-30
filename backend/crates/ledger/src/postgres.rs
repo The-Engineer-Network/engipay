@@ -14,20 +14,8 @@ use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
+pub use crate::ActiveHold;
 use crate::{Balance, HoldState, LedgerError, Receipt};
-
-/// One active (open) hold belonging to a user, returned by [`PostgresLedgerStore::get_active_holds`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveHold {
-    pub reference: String,
-    pub asset: Asset,
-    /// Amount in the asset's smallest unit (same precision as the ledger).
-    pub amount: i128,
-    /// RFC 3339 timestamp of when the hold was created.
-    pub created_at: String,
-}
-
-// ── Constants ──────────────────────────────────────────────────────────
 
 const MAX_RETRIES: u32 = 3;
 const BASE_DELAY_MS: u64 = 10;
@@ -96,6 +84,9 @@ impl PostgresLedgerStore {
             .collect())
     }
 
+    /// Returns all open (in-flight) holds for `user`, ordered by creation
+    /// time ascending.  Only holds in the `open` state are returned; released
+    /// and settled holds are not included.
     /// All open (active) holds for `user`, ordered by creation time ascending.
     ///
     /// Returns an empty `Vec` when the user has no open holds.  Each entry
@@ -114,33 +105,31 @@ impl PostgresLedgerStore {
         .await
         .map_err(db_err)?;
 
-        let mut holds = Vec::with_capacity(rows.len());
-        for row in rows {
-            let reference: String = row.get("reference");
-            let asset_str: String = row.get("asset");
-            let amount_str: String = row.get("amount");
-            let created_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
-                row.get("created_at");
+        rows.into_iter()
+            .map(|row| {
+                let reference: String = row.get("reference");
+                let asset_str: String = row.get("asset");
+                let amount_str: String = row.get("amount");
+                let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
 
-            let asset = asset_str
-                .parse::<Asset>()
-                .map_err(|_| LedgerError::Database {
-                    code: None,
-                    message: format!("unknown asset in ledger_holds: {asset_str}"),
-                })?;
-            let amount = amount_str
-                .parse::<i128>()
-                .map_err(|_| LedgerError::Overflow)?;
+                let asset = asset_str
+                    .parse::<Asset>()
+                    .map_err(|_| LedgerError::Database {
+                        code: None,
+                        message: format!("unknown asset in hold: {asset_str}"),
+                    })?;
+                let amount = amount_str
+                    .parse::<i128>()
+                    .map_err(|_| LedgerError::Overflow)?;
 
-            holds.push(ActiveHold {
-                reference,
-                asset,
-                amount,
-                created_at: created_at.to_rfc3339(),
-            });
-        }
-
-        Ok(holds)
+                Ok(ActiveHold {
+                    reference,
+                    asset,
+                    amount,
+                    created_at,
+                })
+            })
+            .collect()
     }
 
     /// Credits a user with money that arrived from outside EngiPay.
@@ -1029,7 +1018,10 @@ mod tests {
         let h1 = holds.iter().find(|h| h.reference == "hold-ah-1").unwrap();
         assert_eq!(h1.asset, Asset::Usdc);
         assert_eq!(h1.amount, 100);
-        assert!(h1.created_at.contains('T'), "created_at should be RFC 3339");
+        assert!(
+            h1.created_at.timestamp() > 0,
+            "hold has a creation timestamp"
+        );
     }
 
     #[tokio::test]
