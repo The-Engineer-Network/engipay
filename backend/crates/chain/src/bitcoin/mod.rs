@@ -5,5 +5,9 @@
 //! process restart.
 
 pub mod cursor;
+pub mod utxo;
 
 pub use cursor::{BitcoinCursor, BitcoinCursorError, BITCOIN_CHAIN_ID};
+pub use utxo::{
+    ConfirmedTransaction, DetectedUtxo, ScriptPubKey, TxOutput, Txid, UtxoWatchError, UtxoWatcher,
+};
