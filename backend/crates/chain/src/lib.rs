@@ -10,7 +10,6 @@
 //! next.
 
 pub mod evm;
-pub mod services;
 pub mod stellar;
 
 use std::pin::Pin;
