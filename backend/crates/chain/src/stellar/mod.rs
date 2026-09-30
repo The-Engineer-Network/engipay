@@ -6,13 +6,14 @@
 pub mod horizon;
 pub mod network;
 pub mod payment;
+pub mod cursor;
 
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use engipay_core::Chain;
 use engipay_core::stellar::{StellarAddress, parse_address};
-use tracing::warn;
+use tracing::{error, warn};
 
 use self::horizon::{Account, Page, PaymentRecord, Root, SubmitProblem, Submitted, TransactionCache};
 pub use self::network::StellarNetwork;
@@ -86,6 +87,18 @@ impl StellarClient {
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ChainError> {
+        self.get_with_retry(path, 0).await
+    }
+
+    async fn get_with_retry<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        attempt: u32,
+    ) -> Result<T, ChainError> {
+        const MAX_RETRIES: u32 = 5;
+        const INITIAL_DELAY_MS: u64 = 500;
+        const MAX_DELAY_MS: u64 = 30_000;
+
         let url = format!("{}{path}", self.config.horizon_url);
         let response = self
             .http
@@ -94,14 +107,34 @@ impl StellarClient {
             .await
             .map_err(|error| ChainError::Unavailable(error.to_string()))?;
         let status = response.status();
-        if !status.is_success() {
+
+        if status.is_success() {
+            return response.json().await.map_err(|error| {
+                ChainError::Unavailable(format!("unexpected Horizon response: {error}"))
+            });
+        }
+
+        let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
+        if !is_retryable || attempt >= MAX_RETRIES {
             return Err(ChainError::Unavailable(format!(
                 "Horizon returned {status} for {path}"
             )));
         }
-        response.json().await.map_err(|error| {
-            ChainError::Unavailable(format!("unexpected Horizon response: {error}"))
-        })
+
+        let jittered_delay = backoff_delay_ms(attempt, INITIAL_DELAY_MS, MAX_DELAY_MS);
+
+        warn!(
+            status = status.as_u16(),
+            attempt = attempt.saturating_add(1),
+            max_retries = MAX_RETRIES,
+            delay_ms = jittered_delay,
+            "Horizon returned transient error, retrying"
+        );
+
+        tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
+        // Boxed: an async fn that calls itself needs indirection to have a
+        // finite size.
+        Box::pin(self.get_with_retry(path, attempt.saturating_add(1))).await
     }
 
     /// The account's current sequence number.
@@ -181,6 +214,18 @@ impl StellarClient {
         let encoded = payment::envelope_base64(&envelope)
             .map_err(|error| ChainError::Rejected(error.to_string()))?;
 
+        self.submit_payment_with_retry(&encoded, 0).await
+    }
+
+    async fn submit_payment_with_retry(
+        &self,
+        encoded: &str,
+        attempt: u32,
+    ) -> Result<String, ChainError> {
+        const MAX_RETRIES: u32 = 5;
+        const INITIAL_DELAY_MS: u64 = 500;
+        const MAX_DELAY_MS: u64 = 30_000;
+
         let response = self
             .http
             .post(format!("{}/transactions", self.config.horizon_url))
@@ -189,7 +234,8 @@ impl StellarClient {
             .await
             .map_err(|error| ChainError::Unavailable(error.to_string()))?;
 
-        if response.status().is_success() {
+        let status = response.status();
+        if status.is_success() {
             let submitted: Submitted = response
                 .json()
                 .await
@@ -198,16 +244,31 @@ impl StellarClient {
             return Ok(submitted.hash);
         }
 
-        let status = response.status();
-        let problem: Option<SubmitProblem> = response.json().await.ok();
-        let detail = problem.map_or_else(
-            || status.to_string(),
-            |problem| match problem.extras.and_then(|extras| extras.result_codes) {
-                Some(codes) => format!("{}: {codes}", problem.title),
-                None => problem.title,
-            },
+        let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
+        if !is_retryable || attempt >= MAX_RETRIES {
+            let problem: Option<SubmitProblem> = response.json().await.ok();
+            let detail = problem.map_or_else(
+                || status.to_string(),
+                |problem| match problem.extras.and_then(|extras| extras.result_codes) {
+                    Some(codes) => format!("{}: {codes}", problem.title),
+                    None => problem.title,
+                },
+            );
+            return Err(ChainError::Rejected(detail));
+        }
+
+        let jittered_delay = backoff_delay_ms(attempt, INITIAL_DELAY_MS, MAX_DELAY_MS);
+
+        warn!(
+            status = status.as_u16(),
+            attempt = attempt.saturating_add(1),
+            max_retries = MAX_RETRIES,
+            delay_ms = jittered_delay,
+            "Horizon returned transient error on payment submission, retrying"
         );
-        Err(ChainError::Rejected(detail))
+
+        tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
+        Box::pin(self.submit_payment_with_retry(encoded, attempt.saturating_add(1))).await
     }
 }
 
@@ -268,12 +329,30 @@ impl ChainClient for StellarClient {
                 ) {
                     Ok(deposit) => deposits.push(deposit),
                     Err(horizon::Skipped::NotIncoming) => {}
-                    Err(reason) => warn!(
-                        transaction = %record.transaction_hash,
-                        operation = %record.paging_token,
-                        ?reason,
-                        "stellar payment into custody was not credited"
-                    ),
+                    Err(reason) => {
+                        let is_security_sensitive = reason.is_security_sensitive();
+                        if is_security_sensitive {
+                            error!(
+                                transaction = %record.transaction_hash,
+                                operation = %record.paging_token,
+                                from = ?record.from,
+                                to = ?record.to,
+                                to_muxed = ?record.to_muxed,
+                                asset_code = ?record.asset_code,
+                                asset_issuer = ?record.asset_issuer,
+                                amount = ?record.amount,
+                                ?reason,
+                                "SECURITY: unauthorized asset transferred to custody; quarantined for review"
+                            );
+                        } else {
+                            warn!(
+                                transaction = %record.transaction_hash,
+                                operation = %record.paging_token,
+                                ?reason,
+                                "stellar payment into custody was not credited"
+                            );
+                        }
+                    }
                 }
             }
 
@@ -289,6 +368,49 @@ impl ChainClient for StellarClient {
             }
         }
         Ok(deposits)
+    }
+}
+
+/// Exponential backoff with a little jitter, in milliseconds.
+///
+/// Integer arithmetic only: the workspace denies operations that can overflow
+/// or truncate silently, and a retry delay is not worth a panic.
+fn backoff_delay_ms(attempt: u32, initial_ms: u64, max_ms: u64) -> u64 {
+    let delay = initial_ms
+        .checked_mul(1u64.checked_shl(attempt.min(16)).unwrap_or(u64::MAX))
+        .unwrap_or(max_ms)
+        .min(max_ms);
+    // Spread retries out by up to a tenth of the delay, so several callers
+    // waiting on the same outage do not return at the same instant.
+    let spread = delay.checked_div(10).unwrap_or(0);
+    let offset = u64::from(attempt)
+        .wrapping_mul(2_654_435_761)
+        .checked_rem(spread.saturating_add(1))
+        .unwrap_or(0);
+    // Clamped again: the jitter must never push a delay past the ceiling.
+    delay
+        .saturating_sub(spread.checked_div(2).unwrap_or(0))
+        .saturating_add(offset)
+        .min(max_ms)
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::backoff_delay_ms;
+
+    #[test]
+    fn grows_with_each_attempt_and_stops_at_the_ceiling() {
+        let first = backoff_delay_ms(0, 500, 30_000);
+        let second = backoff_delay_ms(1, 500, 30_000);
+        assert!(first < second, "{first} < {second}");
+        for attempt in 0..40 {
+            assert!(backoff_delay_ms(attempt, 500, 30_000) <= 30_000);
+        }
+    }
+
+    #[test]
+    fn never_overflows_on_absurd_attempts() {
+        assert!(backoff_delay_ms(u32::MAX, u64::MAX, 30_000) <= 30_000);
     }
 }
 

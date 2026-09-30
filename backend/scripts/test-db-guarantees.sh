@@ -43,6 +43,8 @@ expect "reused reference refused"             "ledger_transactions_reference_key
 expect "zero amount refused"                  "ledger_postings_amount_check"
 expect "unknown asset refused"                "ledger_postings_asset_check"
 expect "reopening a settled hold refused"     "hold wd-1 is already settled"
+expect "system account in held bucket refused" 'violates check constraint "ledger_postings_check"'
+expect "system account with user_id refused"  'violates check constraint "ledger_postings_check"'
 expect "history intact after every refusal"  "FINAL_RESULT available=60 held=40 transactions=2"
 
 if [ "$failures" -gt 0 ]; then
