@@ -16,6 +16,7 @@ pub mod evm;
 pub mod routes;
 pub mod services;
 pub mod stellar;
+pub mod withdrawals;
 
 use std::pin::Pin;
 use std::sync::Arc;
