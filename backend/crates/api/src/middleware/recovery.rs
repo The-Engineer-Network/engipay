@@ -71,25 +71,20 @@ where
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        // `AssertUnwindSafe` lets us call `catch_unwind` on the future. Any
-        // async panic that propagates through `.await` is caught here and
-        // converted to a clean 500 response.
-        let future = self.inner.call(req);
+        use futures_util::FutureExt;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        // A panic can happen while the handler's future is built or, far more
+        // often, while it is polled. Both are caught and turned into a 500.
+        let future = match catch_unwind(AssertUnwindSafe(|| self.inner.call(req))) {
+            Ok(future) => future,
+            Err(panic) => return Box::pin(async move { Ok(panic_response(panic)) }),
+        };
 
         Box::pin(async move {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future))
-                    .map_err(|payload| payload);
-
-            match result {
-                Ok(inner_future) => {
-                    // The future itself runs; panics *inside* the async fn body
-                    // are caught by tokio's task machinery and surface as
-                    // JoinError — the watcher layer above handles those.
-                    // Here we just drive the normal future.
-                    inner_future.await
-                }
-                Err(panic_payload) => Ok(panic_response(panic_payload)),
+            match AssertUnwindSafe(future).catch_unwind().await {
+                Ok(result) => result,
+                Err(panic) => Ok(panic_response(panic)),
             }
         })
     }
@@ -122,10 +117,7 @@ fn panic_response(panic: Box<dyn Any + Send>) -> Response {
 
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/problem+json",
-        )],
+        [(axum::http::header::CONTENT_TYPE, "application/problem+json")],
         axum::Json(body),
     )
         .into_response()
@@ -196,12 +188,7 @@ mod tests {
     #[tokio::test]
     async fn normal_handler_is_not_affected() {
         let response = app()
-            .oneshot(
-                Request::builder()
-                    .uri("/ok")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/ok").body(Body::empty()).unwrap())
             .await
             .unwrap();
 

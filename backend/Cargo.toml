@@ -23,6 +23,7 @@ elliptic-curve = "0.13"
 futures-core = "0.3"
 futures-util = "0.3"
 hex = "0.4"
+base64 = "0.22"
 jsonwebtoken = "9"
 k256 = { version = "0.13", features = ["ecdsa"] }
 lru = "0.12"

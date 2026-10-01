@@ -1,9 +1,9 @@
 use axum::extract::{Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 use crate::AppState;
 use crate::error::ApiError;
@@ -26,8 +26,6 @@ pub struct Counterparty {
     pub chain: Option<String>,
     pub address: Option<String>,
     pub tx_hash: Option<String>,
-    pub timestamp: String,
-    pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,8 +67,6 @@ fn encode_cursor(created_at: &str, tx_id: &str) -> String {
 }
 
 /// Get unified transaction history with cursor pagination, filtering, and directional metadata
-/// Get unified transaction history for the authenticated user (#131).
-/// Returns a chronological feed of conversions and ramp orders.
 async fn get_transactions(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -82,45 +78,56 @@ async fn get_transactions(
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
-    let limit = params.limit.unwrap_or(20).min(100);
+    // Between 1 and 100, so `limit + 1` below cannot overflow.
+    let limit: usize = params
+        .limit
+        .unwrap_or(20)
+        .clamp(1, 100)
+        .try_into()
+        .unwrap_or(20);
 
-    let (cursor_created_at, cursor_tx_id) = if let Some(cursor) = params.cursor {
-        decode_cursor(&cursor)?
-    } else {
-        (String::new(), String::new())
+    let cursor = params.cursor.as_deref().map(decode_cursor).transpose()?;
+
+    // Filters are bound as parameters, never interpolated. Placeholders are
+    // numbered in the order they are pushed, and bound in the same order.
+    let mut sql = String::from(
+        "SELECT id, direction, asset, crypto_amount::TEXT, created_at, status \
+         FROM ramp_orders WHERE user_id = $1",
+    );
+    let mut placeholder = 1_usize;
+    let mut next_placeholder = || {
+        placeholder = placeholder.saturating_add(1);
+        placeholder
     };
 
-    // Safe parameterized query with optional filters
-    let query_base = "SELECT id, direction, asset, crypto_amount, created_at, status FROM ramp_orders WHERE user_id = $1";
-
-    let mut query_with_filters = query_base.to_string();
-    let mut param_count = 1;
-
     if params.asset.is_some() {
-        param_count += 1;
-        query_with_filters.push_str(&format!(" AND asset = ${}", param_count));
+        sql.push_str(&format!(" AND asset = ${}", next_placeholder()));
     }
     if params.r#type.is_some() {
-        param_count += 1;
-        query_with_filters.push_str(&format!(" AND direction = ${}", param_count));
+        sql.push_str(&format!(" AND direction = ${}", next_placeholder()));
     }
-
-    if !cursor_created_at.is_empty() {
-        param_count += 1;
-        query_with_filters.push_str(&format!(
-            " AND (created_at < ${}::TIMESTAMPTZ OR (created_at = ${}::TIMESTAMPTZ AND id < ${}::UUID))",
-            param_count, param_count - 1, param_count + 1
+    if cursor.is_some() {
+        let created_at = next_placeholder();
+        let id = next_placeholder();
+        sql.push_str(&format!(
+            " AND (created_at < ${created_at}::TIMESTAMPTZ \
+             OR (created_at = ${created_at}::TIMESTAMPTZ AND id < ${id}::UUID))"
         ));
-        param_count += 1;
     }
+    sql.push_str(&format!(
+        " ORDER BY created_at DESC, id DESC LIMIT ${}",
+        next_placeholder()
+    ));
 
-    query_with_filters.push_str(&format!(" ORDER BY created_at DESC, id DESC LIMIT ${}", param_count + 1));
-
-    // Build query with dynamic parameters
-    let mut query = sqlx::query_as::<_, (Uuid, String, String, i64, sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>, String)>(
-        &query_with_filters
-    )
-    .bind(user_id);
+    type Row = (
+        Uuid,
+        String,
+        String,
+        String,
+        sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>,
+        String,
+    );
+    let mut query = sqlx::query_as::<_, Row>(&sql).bind(user_id.as_uuid());
 
     if let Some(asset) = params.asset {
         query = query.bind(asset);
@@ -128,11 +135,13 @@ async fn get_transactions(
     if let Some(tx_type) = params.r#type {
         query = query.bind(tx_type);
     }
-    if !cursor_created_at.is_empty() {
-        query = query.bind(&cursor_created_at).bind(&cursor_tx_id);
+    if let Some((created_at, id)) = &cursor {
+        query = query.bind(created_at).bind(id);
     }
 
-    query = query.bind(limit + 1);
+    // One extra row tells us whether there is another page.
+    let fetch = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+    query = query.bind(fetch);
 
     let ramp_orders = query
         .fetch_all(&pool)
@@ -143,17 +152,17 @@ async fn get_transactions(
     let mut transactions: Vec<Transaction> = Vec::new();
 
     for (id, direction, asset, amount, created_at, _status) in ramp_orders {
-        let (final_direction, _counterparty) = match direction.as_str() {
-            "on_ramp" => ("inflow".to_string(), None),
-            "off_ramp" => ("outflow".to_string(), None),
-            _ => (direction.clone(), None),
+        let final_direction = match direction.as_str() {
+            "on_ramp" => "inflow".to_string(),
+            "off_ramp" => "outflow".to_string(),
+            _ => direction.clone(),
         };
 
         transactions.push(Transaction {
             id,
             kind: direction,
             asset,
-            amount: amount.to_string(),
+            amount,
             direction: final_direction,
             timestamp: created_at.to_rfc3339(),
             counterparty: None,
@@ -161,62 +170,44 @@ async fn get_transactions(
     }
 
     // Cursor pagination (#132)
-    let has_more = transactions.len() > limit as usize;
+    // The next page starts after the last row returned on this one.
+    let has_more = transactions.len() > limit;
+    transactions.truncate(limit);
     let cursor = if has_more {
-        let last_tx = &transactions[limit as usize];
-        Some(encode_cursor(&last_tx.timestamp, &last_tx.id.to_string()))
+        transactions
+            .last()
+            .map(|last| encode_cursor(&last.timestamp, &last.id.to_string()))
     } else {
         None
     };
-
-    if has_more {
-        transactions.pop();
-    }
 
     Ok(Json(TransactionsResponse {
         transactions,
         cursor,
         has_more,
-    // Query ramp orders
-    let ramp_orders = sqlx::query!(
-        r#"
-        SELECT id, direction, asset, crypto_amount, created_at, status
-        FROM ramp_orders
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2
-        "#,
-        user_id,
-        limit
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
-
-    // Build transaction list
-    let mut transactions: Vec<Transaction> = Vec::new();
-
-    for order in ramp_orders {
-        transactions.push(Transaction {
-            id: order.id,
-            kind: order.direction.unwrap_or_default(),
-            asset: order.asset,
-            amount: order.crypto_amount.unwrap_or_default().to_string(),
-            timestamp: order.created_at.to_rfc3339(),
-            description: order.status,
-        });
-    }
-
-    Ok(Json(TransactionsResponse {
-        transactions,
-        cursor: None,
-        has_more: false,
     }))
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
-    // Tests skipped as per user request
+    #[test]
+    fn a_cursor_round_trips() {
+        let cursor = encode_cursor("2026-09-30T12:00:00+00:00", "8d1c4c8e");
+        assert_eq!(
+            decode_cursor(&cursor).unwrap(),
+            (
+                "2026-09-30T12:00:00+00:00".to_owned(),
+                "8d1c4c8e".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn a_tampered_cursor_is_refused() {
+        assert!(decode_cursor("not base64!").is_err());
+        assert!(decode_cursor(&BASE64.encode("no-separator")).is_err());
+    }
 }

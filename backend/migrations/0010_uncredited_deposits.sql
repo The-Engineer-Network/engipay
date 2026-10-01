@@ -1,4 +1,4 @@
--- Migration 0008: Dead-Letter Queue for deposits that could not be credited.
+-- Migration 0010: Dead-Letter Queue for deposits that could not be credited.
 --
 -- When the DepositCreditor worker encounters a deposit it cannot apply to the
 -- ledger (unknown recipient, database error, malformed payload, etc.) it

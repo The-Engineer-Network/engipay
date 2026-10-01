@@ -74,7 +74,7 @@ impl DlqEntry {
         // Serialise the deposit to JSON so it can be inspected without
         // deserialising Rust types.
         let raw_payload = serde_json::to_value(DlqDepositPayload::from(deposit))
-            .unwrap_or_else(|_| serde_json::Value::Null);
+            .unwrap_or(serde_json::Value::Null);
 
         Self {
             reason: reason.as_str(),
@@ -139,15 +139,12 @@ pub async fn push_to_dlq(
 ) -> Result<(), DlqError> {
     let entry = DlqEntry::new(deposit, reason);
 
-    sqlx::query!(
-        r#"
-        INSERT INTO uncredited_deposits (reason, raw_payload, status)
-        VALUES ($1, $2, $3)
-        "#,
-        entry.reason,
-        entry.raw_payload,
-        entry.status,
+    sqlx::query(
+        "INSERT INTO uncredited_deposits (reason, raw_payload, status) VALUES ($1, $2, $3)",
     )
+    .bind(&entry.reason)
+    .bind(&entry.raw_payload)
+    .bind(&entry.status)
     .execute(pool)
     .await?;
 
@@ -185,7 +182,10 @@ mod tests {
     #[test]
     fn reason_as_str_returns_stable_codes() {
         assert_eq!(DlqReason::UnknownRecipient.as_str(), "unknown_recipient");
-        assert_eq!(DlqReason::DatabaseConstraint.as_str(), "database_constraint");
+        assert_eq!(
+            DlqReason::DatabaseConstraint.as_str(),
+            "database_constraint"
+        );
         assert_eq!(DlqReason::MalformedPayload.as_str(), "malformed_payload");
         assert_eq!(
             DlqReason::Other("custom reason".to_owned()).as_str(),
@@ -239,10 +239,7 @@ mod tests {
     fn entry_raw_payload_contains_address() {
         let d = deposit("stellar:tx_addr:1");
         let entry = DlqEntry::new(&d, DlqReason::DatabaseConstraint);
-        assert_eq!(
-            entry.raw_payload["address"].as_str().unwrap(),
-            "MABC123"
-        );
+        assert_eq!(entry.raw_payload["address"].as_str().unwrap(), "MABC123");
     }
 
     // ── Round-trip serialisation ──────────────────────────────────────────────
@@ -278,6 +275,9 @@ mod tests {
             "stellar:hash_x:op_y"
         );
         // Money is exact integer, no float.
-        assert_eq!(entry.raw_payload["amount_minor"].as_i64().unwrap(), 100_000_001);
+        assert_eq!(
+            entry.raw_payload["amount_minor"].as_i64().unwrap(),
+            100_000_001
+        );
     }
 }

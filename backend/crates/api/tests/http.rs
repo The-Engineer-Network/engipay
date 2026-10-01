@@ -10,7 +10,14 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
-    router(AppState { database: None }, &Config::for_tests())
+    let config = Config::for_tests();
+    router(
+        AppState {
+            database: None,
+            config: config.clone(),
+        },
+        &config,
+    )
 }
 
 async fn get_json(path: &str) -> (StatusCode, Value) {
@@ -139,8 +146,5 @@ fn base_payment_uri_follows_eip681() {
 fn bitcoin_payment_uri_follows_bip21() {
     let uri = bitcoin_payment_uri("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
     assert!(uri.starts_with("bitcoin:"));
-    assert_eq!(
-        uri,
-        "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
-    );
+    assert_eq!(uri, "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
 }

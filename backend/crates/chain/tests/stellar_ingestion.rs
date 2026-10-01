@@ -63,9 +63,10 @@ async fn client(server: &MockServer) -> StellarClient {
 async fn mount_root(server: &MockServer, latest_ledger: u64) {
     Mock::given(method("GET"))
         .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({ "history_latest_ledger": latest_ledger }),
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "history_latest_ledger": latest_ledger })),
+        )
         .mount(server)
         .await;
 }
@@ -245,7 +246,10 @@ async fn failed_transaction_is_not_credited() {
     .await;
 
     let deposits = client(&server).await.deposits_since(290).await.unwrap();
-    assert!(deposits.is_empty(), "failed transactions must not be credited");
+    assert!(
+        deposits.is_empty(),
+        "failed transactions must not be credited"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -505,9 +509,10 @@ async fn multi_operation_tx_fetches_transaction_details_once() {
     // Transaction detail endpoint — must be called exactly once.
     Mock::given(method("GET"))
         .and(path(format!("/transactions/{tx_hash}")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({ "ledger": 598, "successful": true }),
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "ledger": 598, "successful": true })),
+        )
         .expect(1) // cache hit for ops 2 and 3
         .mount(&server)
         .await;
@@ -653,10 +658,7 @@ async fn path_payment_strict_receive_is_credited() {
     let deposits = client(&server).await.deposits_since(690).await.unwrap();
 
     assert_eq!(deposits.len(), 1);
-    assert_eq!(
-        deposits[0].money,
-        Money::from_minor(Asset::Xlm, 75_000_000)
-    );
+    assert_eq!(deposits[0].money, Money::from_minor(Asset::Xlm, 75_000_000));
     assert_eq!(deposits[0].address, muxed);
 }
 

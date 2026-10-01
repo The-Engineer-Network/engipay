@@ -1,4 +1,4 @@
--- Migration 0002: chain-service support tables.
+-- Migration 0003: chain-service support tables.
 --
 -- chain_cursors: persists the Horizon paging token so the Stellar watcher
 -- can resume from exactly where it stopped after a restart, avoiding both

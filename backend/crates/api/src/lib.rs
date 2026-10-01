@@ -17,7 +17,6 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
-use crate::middleware::logging::RequestLoggingLayer;
 use crate::middleware::recovery::CatchPanicLayer;
 
 #[derive(Clone)]
@@ -37,7 +36,7 @@ pub fn router(state: AppState, config: &Config) -> Router {
         // Structured JSON request logging with correlation IDs. Placed inside
         // CatchPanic so panics are still converted to problem+json 500s, and
         // outside the routes so every request is logged exactly once.
-        .layer(RequestLoggingLayer::new())
+        .layer(axum::middleware::from_fn(middleware::logging::log_requests))
         // CatchPanic must be the outermost layer so it catches panics in all
         // inner layers and handlers. It returns RFC 7807 problem+json 500s.
         .layer(CatchPanicLayer::new())

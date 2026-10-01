@@ -182,7 +182,10 @@ where
                 self.pending = Some(Box::pin(async move {
                     let tip = client.latest_height().await?;
                     let deposits = client.deposits_since(height).await?;
-                    Ok(LedgerEvent { height: tip, deposits })
+                    Ok(LedgerEvent {
+                        height: tip,
+                        deposits,
+                    })
                 }));
                 // Loop back to drive the newly created future immediately.
             }
@@ -221,7 +224,11 @@ mod tests {
             from_height: u64,
             poll_interval: Duration,
         ) -> Result<EventStream, ChainError> {
-            Ok(polling_stream(Arc::new(FakeBase), from_height, poll_interval))
+            Ok(polling_stream(
+                Arc::new(FakeBase),
+                from_height,
+                poll_interval,
+            ))
         }
     }
 

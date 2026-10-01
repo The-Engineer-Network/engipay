@@ -13,6 +13,7 @@ engipay-ledger = { workspace = true, features = ["postgres"] }
 anyhow.workspace = true
 axum.workspace = true
 futures-core.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
@@ -34,6 +35,7 @@ elliptic-curve.workspace = true
 sha2.workspace = true
 sha3.workspace = true
 hex.workspace = true
+base64.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
