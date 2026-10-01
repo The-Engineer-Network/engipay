@@ -18,6 +18,11 @@ pub enum ApiError {
     DatabaseUnavailable,
     #[error("{0}")]
     LimitExceeded(String),
+    #[error("{0}")]
+    TooManyRequests(String),
+    /// A ledger refusal the caller can act on, e.g. a self-transfer.
+    #[error("{0}")]
+    Ledger(engipay_ledger::LedgerError),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -52,6 +57,16 @@ impl ApiError {
                 (StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
             }
             ApiError::LimitExceeded(_) => (StatusCode::FORBIDDEN, "limit_exceeded"),
+            ApiError::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_requests"),
+            ApiError::Ledger(error) => {
+                use engipay_ledger::LedgerError as L;
+                match error {
+                    L::SameAccount => (StatusCode::BAD_REQUEST, "same_account"),
+                    L::InsufficientFunds { .. } => (StatusCode::BAD_REQUEST, "insufficient_funds"),
+                    L::IdempotencyConflict { .. } => (StatusCode::CONFLICT, "idempotency_conflict"),
+                    _ => (StatusCode::BAD_REQUEST, "bad_request"),
+                }
+            }
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }
