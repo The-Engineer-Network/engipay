@@ -12,4 +12,5 @@ pub use confirmations::{is_bitcoin_confirmed, MIN_BITCOIN_CONFIRMATIONS};
 pub use cursor::{BitcoinCursor, BitcoinCursorError, BITCOIN_CHAIN_ID};
 pub use utxo::{
     ConfirmedTransaction, DetectedUtxo, ScriptPubKey, TxOutput, Txid, UtxoWatchError, UtxoWatcher,
+    sats_to_money,
 };
