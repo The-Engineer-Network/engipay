@@ -12,6 +12,7 @@ engipay-core.workspace = true
 engipay-ledger = { workspace = true, features = ["postgres"] }
 anyhow.workspace = true
 axum.workspace = true
+chrono.workspace = true
 ed25519-dalek.workspace = true
 lru.workspace = true
 futures-core.workspace = true
