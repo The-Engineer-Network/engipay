@@ -1,4 +1,8 @@
-//! Stellar transaction finality polling.
+//! Broadcasting signed Stellar withdrawals and polling them to finality.
+//!
+//! [`broadcast_withdrawal`] submits the signed envelope to Horizon's
+//! `POST /transactions`, checks the hash Horizon reports against the one
+//! signed, and records it in `withdrawals.tx_hash`.
 //!
 //! After a Stellar transaction is submitted to Horizon and accepted into the
 //! mempool, its presence in Horizon's response does **not** guarantee ledger
@@ -37,9 +41,181 @@
 
 use std::time::Duration;
 
+use stellar_xdr::TransactionEnvelope;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
+use super::StellarClient;
+use super::payment::{envelope_base64, transaction_hash};
+use super::settlement::{self, HoldLedger, SettlementError};
 use crate::ChainError;
+use crate::withdrawals::{StatusUpdate, WithdrawalError, WithdrawalStatus, WithdrawalStore};
+
+// ── Broadcast ─────────────────────────────────────────────────────────────────
+
+/// A withdrawal Horizon accepted into a ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Broadcast {
+    /// The transaction hash, hex, as recorded in `withdrawals.tx_hash`.
+    pub hash: String,
+    /// The ledger sequence Horizon reported it in.
+    pub ledger: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BroadcastError {
+    /// The network refused the transaction and it did not land. The
+    /// withdrawal is `failed` and its hold released.
+    #[error("withdrawal {id} was rejected: {detail}")]
+    Rejected { id: Uuid, detail: String },
+    /// No definitive answer; the transaction may still land. The withdrawal
+    /// is `pending_manual_review` with its hash recorded, and the money stays
+    /// held.
+    #[error("withdrawal {id} ({hash}) has an unknown outcome: {detail}")]
+    Unknown {
+        id: Uuid,
+        hash: String,
+        detail: String,
+    },
+    #[error("withdrawal {id} is {status}, not awaiting broadcast")]
+    NotPending { id: Uuid, status: WithdrawalStatus },
+    #[error("the signed envelope is unusable: {0}")]
+    Envelope(String),
+    #[error(transparent)]
+    Store(#[from] WithdrawalError),
+    #[error(transparent)]
+    Settlement(#[from] SettlementError),
+}
+
+/// Lower-case hex, the form Horizon uses for transaction hashes.
+pub fn hash_hex(hash: &[u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Submits a signed withdrawal to Horizon and records the outcome.
+///
+/// * Accepted — `tx_hash` is stored and the withdrawal moves to
+///   `broadcast_accepted`. The finality poller takes it from there.
+/// * Rejected (`400`) — unless the transaction is in fact already on the
+///   ledger (a resubmission of a landed transaction is refused with
+///   `tx_bad_seq`), the withdrawal moves to `failed` and its hold is released.
+/// * Unknown — the hash is stored and the withdrawal moves to
+///   `pending_manual_review`. Its money stays held.
+///
+/// Safe to call again for a withdrawal already `broadcast_accepted` with the
+/// same envelope: Horizon refuses the duplicate, the lookup finds it landed,
+/// and the call returns the same [`Broadcast`].
+pub async fn broadcast_withdrawal<W: WithdrawalStore, L: HoldLedger>(
+    client: &StellarClient,
+    store: &W,
+    ledger: &L,
+    withdrawal_id: Uuid,
+    envelope: &TransactionEnvelope,
+) -> Result<Broadcast, BroadcastError> {
+    let withdrawal = store.get(withdrawal_id).await?;
+    if !matches!(
+        withdrawal.status,
+        WithdrawalStatus::PendingBroadcast | WithdrawalStatus::BroadcastAccepted
+    ) {
+        return Err(BroadcastError::NotPending {
+            id: withdrawal_id,
+            status: withdrawal.status,
+        });
+    }
+
+    let network = client.config().network;
+    let hash = transaction_hash(envelope, network)
+        .map(|hash| hash_hex(&hash))
+        .map_err(|error| BroadcastError::Envelope(error.to_string()))?;
+    let xdr =
+        envelope_base64(envelope).map_err(|error| BroadcastError::Envelope(error.to_string()))?;
+
+    info!(%withdrawal_id, %hash, "submitting withdrawal to Horizon");
+    let detail = match client.submit_transaction(&xdr).await {
+        Ok(submitted) if submitted.hash == hash => {
+            return accept(store, withdrawal_id, hash, submitted.ledger).await;
+        }
+        Ok(submitted) => {
+            // Horizon says it accepted something else. Do not trust either
+            // hash enough to settle or release; a human decides.
+            format!("Horizon reported hash {}", submitted.hash)
+        }
+        Err(ChainError::Rejected(detail)) => {
+            return match client.find_transaction(&hash).await {
+                Ok(Some(landed)) if landed.ledger > 0 && landed.successful => {
+                    info!(%withdrawal_id, %hash, "rejected resubmission had already landed");
+                    accept(store, withdrawal_id, hash, landed.ledger).await
+                }
+                Ok(None) => {
+                    warn!(%withdrawal_id, %hash, %detail, "Horizon rejected the withdrawal");
+                    settlement::fail_withdrawal(store, ledger, withdrawal_id, Some(hash)).await?;
+                    Err(BroadcastError::Rejected {
+                        id: withdrawal_id,
+                        detail,
+                    })
+                }
+                // In a ledger but failed, or the lookup itself failed: leave
+                // it to the finality poller or an operator.
+                Ok(Some(_)) => unknown(store, withdrawal_id, hash, detail).await,
+                Err(error) => {
+                    unknown(
+                        store,
+                        withdrawal_id,
+                        hash,
+                        format!("{detail}; then {error}"),
+                    )
+                    .await
+                }
+            };
+        }
+        Err(error) => error.to_string(),
+    };
+    unknown(store, withdrawal_id, hash, detail).await
+}
+
+async fn accept<W: WithdrawalStore>(
+    store: &W,
+    withdrawal_id: Uuid,
+    hash: String,
+    ledger: u64,
+) -> Result<Broadcast, BroadcastError> {
+    store
+        .transition(
+            withdrawal_id,
+            WithdrawalStatus::BroadcastAccepted,
+            StatusUpdate {
+                tx_hash: Some(hash.clone()),
+                confirmed_ledger: None,
+            },
+        )
+        .await?;
+    info!(%withdrawal_id, %hash, ledger, "withdrawal accepted by Horizon");
+    Ok(Broadcast { hash, ledger })
+}
+
+async fn unknown<W: WithdrawalStore>(
+    store: &W,
+    withdrawal_id: Uuid,
+    hash: String,
+    detail: String,
+) -> Result<Broadcast, BroadcastError> {
+    warn!(%withdrawal_id, %hash, %detail, "withdrawal outcome unknown; flagging for manual review");
+    store
+        .transition(
+            withdrawal_id,
+            WithdrawalStatus::PendingManualReview,
+            StatusUpdate {
+                tx_hash: Some(hash.clone()),
+                confirmed_ledger: None,
+            },
+        )
+        .await?;
+    Err(BroadcastError::Unknown {
+        id: withdrawal_id,
+        hash,
+        detail,
+    })
+}
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
@@ -314,6 +490,346 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    // ── broadcast_withdrawal ──────────────────────────────────────────────────
+
+    use engipay_core::Asset;
+    use engipay_ledger::{HoldState, SystemAccount};
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::stellar::payment::{
+        CustodySigner, LocalTestnetSigner, PaymentRequest, StellarSigner, build_payment,
+        sign_withdrawal,
+    };
+    use crate::stellar::settlement::fake::MemoryLedger;
+    use crate::stellar::{StellarConfig, StellarNetwork};
+    use crate::withdrawals::fake::{FakeWithdrawalStore, pending};
+    use crate::withdrawals::{Withdrawal, WithdrawalStatus::*};
+
+    struct Harness {
+        server: MockServer,
+        client: StellarClient,
+        store: FakeWithdrawalStore,
+        ledger: MemoryLedger,
+        withdrawal: Withdrawal,
+        envelope: TransactionEnvelope,
+        hash: String,
+    }
+
+    async fn harness() -> Harness {
+        let signer = LocalTestnetSigner::from_secret(
+            stellar_strkey::ed25519::PrivateKey([4; 32])
+                .as_unredacted()
+                .to_string()
+                .as_str(),
+            StellarNetwork::Testnet,
+        )
+        .unwrap();
+        let custody_account = signer.account();
+        let custody = CustodySigner::new(signer, &custody_account).unwrap();
+
+        let server = MockServer::start().await;
+        let config = StellarConfig::new(
+            StellarNetwork::Testnet,
+            Some(server.uri()),
+            &custody_account,
+        )
+        .unwrap();
+        let client = StellarClient::new(config).unwrap();
+
+        let withdrawal = pending(Asset::Usdc, 20_000_000, 1_000_000);
+        let ledger = MemoryLedger::with_hold(
+            withdrawal.user,
+            withdrawal.amount,
+            withdrawal.fee,
+            &withdrawal.hold_reference,
+        );
+        let destination = stellar_strkey::ed25519::PublicKey([2; 32])
+            .to_string()
+            .as_str()
+            .to_owned();
+        let tx = build_payment(
+            &custody.public_key(),
+            100,
+            &PaymentRequest {
+                destination,
+                money: withdrawal.amount,
+            },
+            StellarNetwork::Testnet,
+            1_800_000_000,
+        )
+        .unwrap();
+        let (envelope, hash) = sign_withdrawal(tx, &custody, StellarNetwork::Testnet).unwrap();
+
+        Harness {
+            server,
+            client,
+            store: FakeWithdrawalStore::with(withdrawal.clone()),
+            ledger,
+            withdrawal,
+            envelope,
+            hash: hash_hex(&hash),
+        }
+    }
+
+    impl Harness {
+        async fn broadcast(&self) -> Result<Broadcast, BroadcastError> {
+            broadcast_withdrawal(
+                &self.client,
+                &self.store,
+                &self.ledger,
+                self.withdrawal.id,
+                &self.envelope,
+            )
+            .await
+        }
+
+        async fn horizon_submit_returns(&self, response: ResponseTemplate) {
+            Mock::given(method("POST"))
+                .and(path("/transactions"))
+                .respond_with(response)
+                .mount(&self.server)
+                .await;
+        }
+
+        async fn horizon_lookup_returns(&self, response: ResponseTemplate) {
+            Mock::given(method("GET"))
+                .and(path(format!("/transactions/{}", self.hash)))
+                .respond_with(response)
+                .mount(&self.server)
+                .await;
+        }
+
+        fn status(&self) -> WithdrawalStatus {
+            self.store.snapshot(self.withdrawal.id).status
+        }
+
+        fn recorded_hash(&self) -> Option<String> {
+            self.store.snapshot(self.withdrawal.id).tx_hash
+        }
+
+        fn held(&self) -> i128 {
+            self.ledger.balance(self.withdrawal.user, Asset::Usdc).held
+        }
+    }
+
+    fn rejected(code: &str) -> ResponseTemplate {
+        ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "title": "Transaction Failed",
+            "status": 400,
+            "extras": { "result_codes": { "transaction": code } }
+        }))
+    }
+
+    #[test]
+    fn hashes_are_lower_case_hex() {
+        let mut bytes = [0u8; 32];
+        bytes[0] = 0xAB;
+        bytes[31] = 0x01;
+        let hex = hash_hex(&bytes);
+        assert_eq!(hex.len(), 64);
+        assert!(hex.starts_with("ab00"));
+        assert!(hex.ends_with("0001"));
+    }
+
+    #[tokio::test]
+    async fn an_accepted_withdrawal_stores_the_horizon_hash() {
+        let h = harness().await;
+        Mock::given(method("POST"))
+            .and(path("/transactions"))
+            // The signed envelope is sent as the form's `tx` field.
+            .and(body_string_contains("tx="))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "hash": h.hash,
+                "ledger": 51_234,
+                "successful": true
+            })))
+            .expect(1)
+            .mount(&h.server)
+            .await;
+
+        let broadcast = h.broadcast().await.unwrap();
+
+        assert_eq!(
+            broadcast,
+            Broadcast {
+                hash: h.hash.clone(),
+                ledger: 51_234
+            }
+        );
+        assert_eq!(h.status(), BroadcastAccepted);
+        assert_eq!(h.recorded_hash(), Some(h.hash.clone()));
+        assert_eq!(h.held(), 21_000_000, "money stays held until confirmed");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_withdrawal_fails_and_releases_the_hold() {
+        let h = harness().await;
+        h.horizon_submit_returns(rejected("tx_insufficient_balance"))
+            .await;
+        h.horizon_lookup_returns(ResponseTemplate::new(404)).await;
+
+        let err = h.broadcast().await.unwrap_err();
+
+        assert!(
+            matches!(&err, BroadcastError::Rejected { detail, .. } if detail.contains("tx_insufficient_balance")),
+            "{err:?}"
+        );
+        assert_eq!(h.status(), Failed);
+        assert_eq!(h.recorded_hash(), Some(h.hash.clone()));
+        assert_eq!(h.held(), 0);
+        assert_eq!(
+            h.ledger.hold_state(&h.withdrawal.hold_reference),
+            Some(HoldState::Released)
+        );
+        assert_eq!(
+            h.ledger.system(SystemAccount::ExternalOutflow, Asset::Usdc),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_resubmission_of_a_landed_transaction_is_accepted() {
+        let h = harness().await;
+        h.horizon_submit_returns(rejected("tx_bad_seq")).await;
+        h.horizon_lookup_returns(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hash": h.hash,
+            "ledger": 777,
+            "successful": true
+        })))
+        .await;
+
+        let broadcast = h.broadcast().await.unwrap();
+
+        assert_eq!(broadcast.ledger, 777);
+        assert_eq!(h.status(), BroadcastAccepted);
+        assert_eq!(h.held(), 21_000_000, "nothing is released");
+    }
+
+    #[tokio::test]
+    async fn broadcasting_again_after_acceptance_is_a_replay() {
+        let h = harness().await;
+        h.horizon_submit_returns(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hash": h.hash,
+            "ledger": 9,
+        })))
+        .await;
+        h.broadcast().await.unwrap();
+
+        h.server.reset().await;
+        h.horizon_submit_returns(rejected("tx_bad_seq")).await;
+        h.horizon_lookup_returns(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ledger": 9,
+            "successful": true
+        })))
+        .await;
+
+        let again = h.broadcast().await.unwrap();
+        assert_eq!(again.hash, h.hash);
+        assert_eq!(h.status(), BroadcastAccepted);
+    }
+
+    #[tokio::test]
+    async fn a_horizon_error_without_an_answer_needs_manual_review() {
+        let h = harness().await;
+        h.horizon_submit_returns(ResponseTemplate::new(500)).await;
+
+        let err = h.broadcast().await.unwrap_err();
+
+        assert!(matches!(&err, BroadcastError::Unknown { hash, .. } if *hash == h.hash));
+        assert_eq!(h.status(), PendingManualReview);
+        assert_eq!(h.recorded_hash(), Some(h.hash.clone()), "kept for tracing");
+        assert_eq!(
+            h.held(),
+            21_000_000,
+            "it may still land, so nothing is released"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejection_that_cannot_be_checked_needs_manual_review() {
+        let h = harness().await;
+        h.horizon_submit_returns(rejected("tx_bad_seq")).await;
+        h.horizon_lookup_returns(ResponseTemplate::new(500)).await;
+
+        let err = h.broadcast().await.unwrap_err();
+
+        assert!(matches!(err, BroadcastError::Unknown { .. }));
+        assert_eq!(h.status(), PendingManualReview);
+        assert_eq!(h.held(), 21_000_000);
+    }
+
+    #[tokio::test]
+    async fn a_hash_other_than_the_signed_one_is_not_trusted() {
+        let h = harness().await;
+        h.horizon_submit_returns(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hash": "ff".repeat(32),
+            "ledger": 9,
+        })))
+        .await;
+
+        let err = h.broadcast().await.unwrap_err();
+
+        assert!(matches!(err, BroadcastError::Unknown { .. }));
+        assert_eq!(h.status(), PendingManualReview);
+        assert_eq!(
+            h.recorded_hash(),
+            Some(h.hash.clone()),
+            "the signed hash is recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_withdrawal_is_never_resubmitted() {
+        let h = harness().await;
+        Mock::given(method("POST"))
+            .and(path("/transactions"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&h.server)
+            .await;
+        h.store
+            .transition(h.withdrawal.id, Failed, StatusUpdate::default())
+            .await
+            .unwrap();
+
+        let err = h.broadcast().await.unwrap_err();
+        assert!(matches!(
+            err,
+            BroadcastError::NotPending { status: Failed, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn broadcast_then_confirmation_settles_the_ledger() {
+        let h = harness().await;
+        h.horizon_submit_returns(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hash": h.hash,
+            "ledger": 60,
+        })))
+        .await;
+        h.horizon_lookup_returns(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ledger": 60,
+            "successful": true
+        })))
+        .await;
+
+        let broadcast = h.broadcast().await.unwrap();
+        let poller = FinalityPoller::with_config(Duration::from_millis(1), Duration::from_secs(5));
+        let outcome = poll_transaction_finality(&h.client, &broadcast.hash, &poller).await;
+        settlement::apply_finality(&h.store, &h.ledger, h.withdrawal.id, outcome)
+            .await
+            .unwrap();
+
+        assert_eq!(h.status(), Completed);
+        assert_eq!(h.held(), 0);
+        assert_eq!(
+            h.ledger.system(SystemAccount::ExternalOutflow, Asset::Usdc),
+            20_000_000
+        );
+        assert_eq!(h.ledger.system(SystemAccount::Fees, Asset::Usdc), 1_000_000);
+    }
 
     // ── TxStatus::from_horizon ────────────────────────────────────────────────
 
