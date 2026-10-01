@@ -5,11 +5,14 @@
 //! networking) so it can obtain chain-specific data — such as fee estimates —
 //! without holding any signing keys itself.
 
+pub mod balances;
 pub mod estimate_fee;
 
 use axum::Router;
 
 /// Mounts all internal routes under `/internal`.
 pub fn internal() -> Router {
-    Router::new().merge(estimate_fee::routes())
+    Router::new()
+        .merge(estimate_fee::routes())
+        .merge(balances::routes())
 }
