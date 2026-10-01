@@ -97,6 +97,49 @@ impl std::fmt::Debug for LocalTestnetSigner {
     }
 }
 
+/// The signer for the custody account that withdrawals are paid from.
+///
+/// Wraps any [`StellarSigner`] (a local key on testnet, a KMS or HSM in
+/// production) and binds it to the configured custody account, so a
+/// misconfigured key is refused at startup instead of producing transactions
+/// the network would reject, or worse, signing for the wrong account.
+pub struct CustodySigner<S> {
+    inner: S,
+}
+
+impl<S: StellarSigner> CustodySigner<S> {
+    /// Binds `inner` to `custody_account` (`G...`). Fails if the key does not
+    /// control that account.
+    pub fn new(inner: S, custody_account: &str) -> Result<Self, PaymentError> {
+        let custody = stellar_strkey::ed25519::PublicKey::from_string(custody_account)
+            .map_err(|_| PaymentError::Key("the custody account is not a G... address"))?;
+        if custody.0 != inner.public_key() {
+            return Err(PaymentError::Key(
+                "the signing key does not control the custody account",
+            ));
+        }
+        Ok(Self { inner })
+    }
+}
+
+impl<S: StellarSigner> StellarSigner for CustodySigner<S> {
+    fn public_key(&self) -> [u8; 32] {
+        self.inner.public_key()
+    }
+
+    fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.inner.sign(message)
+    }
+}
+
+impl<S: StellarSigner> std::fmt::Debug for CustodySigner<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustodySigner")
+            .field("account", &self.account())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Builds an unsigned payment transaction.
 ///
 /// `sequence` is the source account's *current* sequence number; the
@@ -157,18 +200,56 @@ pub fn sign(
     signer: &dyn StellarSigner,
     network: StellarNetwork,
 ) -> Result<(TransactionEnvelope, [u8; 32]), PaymentError> {
-    let hash = transaction
-        .hash(network.network_id())
-        .map_err(|error| PaymentError::Encoding(error.to_string()))?;
-    let public_key = signer.public_key();
-    let hint = [
-        public_key[28],
-        public_key[29],
-        public_key[30],
-        public_key[31],
-    ];
+    let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+        tx: transaction,
+        signatures: Default::default(),
+    });
+    let envelope = add_signature(envelope, signer, network)?;
+    let hash = transaction_hash(&envelope, network)?;
+    Ok((envelope, hash))
+}
+
+/// Signs a withdrawal paid from the custody account.
+///
+/// Refuses a transaction whose source is not the custody account, so the
+/// custody key can never be used to authorise someone else's transaction, and
+/// verifies the signature against the custody public key before returning it:
+/// a faulty signer (a misbehaving HSM, a key mix-up) fails here, not on the
+/// network.
+pub fn sign_withdrawal<S: StellarSigner>(
+    transaction: Transaction,
+    custody: &CustodySigner<S>,
+    network: StellarNetwork,
+) -> Result<(TransactionEnvelope, [u8; 32]), PaymentError> {
+    if transaction.source_account != MuxedAccount::Ed25519(Uint256(custody.public_key())) {
+        return Err(PaymentError::Key(
+            "the transaction is not paid from the custody account",
+        ));
+    }
+    let (envelope, hash) = sign(transaction, custody, network)?;
+    if !verify_signature(&envelope, &custody.public_key(), network)? {
+        return Err(PaymentError::Key(
+            "the signature does not verify against the custody key",
+        ));
+    }
+    Ok((envelope, hash))
+}
+
+/// Attaches `signer`'s decorated signature to `envelope`, keeping any
+/// signatures already on it (for accounts that need more than one signer).
+pub fn add_signature(
+    envelope: TransactionEnvelope,
+    signer: &dyn StellarSigner,
+    network: StellarNetwork,
+) -> Result<TransactionEnvelope, PaymentError> {
+    let hash = transaction_hash(&envelope, network)?;
+    let TransactionEnvelope::Tx(mut v1) = envelope else {
+        return Err(PaymentError::Encoding(
+            "only v1 transaction envelopes can be signed".to_owned(),
+        ));
+    };
     let signature = DecoratedSignature {
-        hint: SignatureHint(hint),
+        hint: signature_hint(&signer.public_key()),
         signature: Signature(
             signer
                 .sign(&hash)
@@ -177,13 +258,63 @@ pub fn sign(
                 .map_err(|_| PaymentError::Encoding("signature length".to_owned()))?,
         ),
     };
-    let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
-        tx: transaction,
-        signatures: vec![signature]
-            .try_into()
-            .map_err(|_| PaymentError::Encoding("too many signatures".to_owned()))?,
-    });
-    Ok((envelope, hash))
+    let mut signatures = v1.signatures.to_vec();
+    signatures.push(signature);
+    v1.signatures = signatures
+        .try_into()
+        .map_err(|_| PaymentError::Encoding("too many signatures".to_owned()))?;
+    Ok(TransactionEnvelope::Tx(v1))
+}
+
+/// Whether `envelope` carries a valid signature by `public_key` for
+/// `network`. Only signatures whose hint matches the key are checked.
+pub fn verify_signature(
+    envelope: &TransactionEnvelope,
+    public_key: &[u8; 32],
+    network: StellarNetwork,
+) -> Result<bool, PaymentError> {
+    let TransactionEnvelope::Tx(v1) = envelope else {
+        return Ok(false);
+    };
+    let hash = transaction_hash(envelope, network)?;
+    let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(public_key) else {
+        return Ok(false);
+    };
+    let hint = signature_hint(public_key);
+    Ok(v1
+        .signatures
+        .iter()
+        .filter(|decorated| decorated.hint == hint)
+        .any(|decorated| {
+            ed25519_dalek::Signature::from_slice(decorated.signature.0.as_slice())
+                .is_ok_and(|signature| key.verify_strict(&hash, &signature).is_ok())
+        }))
+}
+
+/// The hash the network signs: SHA-256 of the network ID and the transaction.
+pub fn transaction_hash(
+    envelope: &TransactionEnvelope,
+    network: StellarNetwork,
+) -> Result<[u8; 32], PaymentError> {
+    let TransactionEnvelope::Tx(v1) = envelope else {
+        return Err(PaymentError::Encoding(
+            "only v1 transaction envelopes are supported".to_owned(),
+        ));
+    };
+    v1.tx
+        .hash(network.network_id())
+        .map_err(|error| PaymentError::Encoding(error.to_string()))
+}
+
+/// The last four bytes of the public key, which tell the network which signer
+/// a signature belongs to.
+pub fn signature_hint(public_key: &[u8; 32]) -> SignatureHint {
+    SignatureHint([
+        public_key[28],
+        public_key[29],
+        public_key[30],
+        public_key[31],
+    ])
 }
 
 /// The base64 XDR Horizon accepts on `POST /transactions`.
@@ -398,5 +529,172 @@ mod tests {
         let encoded = envelope_base64(&envelope).unwrap();
         let decoded = TransactionEnvelope::from_xdr_base64(&encoded, Limits::none()).unwrap();
         assert_eq!(decoded, envelope);
+    }
+
+    fn custody() -> CustodySigner<LocalTestnetSigner> {
+        let account = signer().account();
+        CustodySigner::new(signer(), &account).unwrap()
+    }
+
+    fn withdrawal(source: &[u8; 32]) -> Transaction {
+        build_payment(
+            source,
+            10,
+            &request(account(2), Asset::Usdc, "25"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+        )
+        .unwrap()
+    }
+
+    /// A signer that returns a signature from some other key, as a faulty HSM
+    /// or a key mix-up would.
+    struct WrongKeySigner {
+        claimed: [u8; 32],
+        actual: ed25519_dalek::SigningKey,
+    }
+
+    impl StellarSigner for WrongKeySigner {
+        fn public_key(&self) -> [u8; 32] {
+            self.claimed
+        }
+
+        fn sign(&self, message: &[u8]) -> [u8; 64] {
+            use ed25519_dalek::Signer;
+            self.actual.sign(message).to_bytes()
+        }
+    }
+
+    #[test]
+    fn custody_signature_verifies_against_the_custody_public_key() {
+        let custody = custody();
+        let (envelope, hash) = sign_withdrawal(
+            withdrawal(&custody.public_key()),
+            &custody,
+            StellarNetwork::Testnet,
+        )
+        .unwrap();
+
+        let TransactionEnvelope::Tx(v1) = &envelope else {
+            panic!("not a v1 envelope");
+        };
+        assert_eq!(v1.signatures.len(), 1);
+        let decorated = &v1.signatures[0];
+        // The hint is the last four bytes of the custody public key.
+        assert_eq!(decorated.hint.0, custody.public_key()[28..]);
+
+        let custody_key = stellar_strkey::ed25519::PublicKey::from_string(&custody.account())
+            .unwrap()
+            .0;
+        let verifying = VerifyingKey::from_bytes(&custody_key).unwrap();
+        let signature =
+            ed25519_dalek::Signature::from_slice(decorated.signature.0.as_slice()).unwrap();
+        assert!(verifying.verify_strict(&hash, &signature).is_ok());
+        assert!(verify_signature(&envelope, &custody_key, StellarNetwork::Testnet).unwrap());
+    }
+
+    #[test]
+    fn custody_signature_is_bound_to_the_network_passphrase() {
+        let custody = custody();
+        let (envelope, _) = sign_withdrawal(
+            withdrawal(&custody.public_key()),
+            &custody,
+            StellarNetwork::Testnet,
+        )
+        .unwrap();
+
+        // The same bytes do not authorise the transaction on mainnet.
+        assert!(
+            !verify_signature(&envelope, &custody.public_key(), StellarNetwork::Mainnet).unwrap()
+        );
+        assert_ne!(
+            transaction_hash(&envelope, StellarNetwork::Testnet).unwrap(),
+            transaction_hash(&envelope, StellarNetwork::Mainnet).unwrap()
+        );
+    }
+
+    #[test]
+    fn signatures_from_other_keys_do_not_verify_as_custody() {
+        let custody = custody();
+        let (envelope, _) = sign_withdrawal(
+            withdrawal(&custody.public_key()),
+            &custody,
+            StellarNetwork::Testnet,
+        )
+        .unwrap();
+        assert!(!verify_signature(&envelope, &[3; 32], StellarNetwork::Testnet).unwrap());
+    }
+
+    #[test]
+    fn custody_signer_refuses_a_key_for_another_account() {
+        let refused = CustodySigner::new(signer(), &account(9));
+        assert!(matches!(refused, Err(PaymentError::Key(_))));
+
+        let not_an_account = CustodySigner::new(signer(), "SNOTANACCOUNT");
+        assert!(matches!(not_an_account, Err(PaymentError::Key(_))));
+    }
+
+    #[test]
+    fn custody_key_never_signs_for_another_source_account() {
+        let custody = custody();
+        let foreign = withdrawal(&[5; 32]);
+        let refused = sign_withdrawal(foreign, &custody, StellarNetwork::Testnet);
+        assert!(matches!(refused, Err(PaymentError::Key(_))));
+    }
+
+    #[test]
+    fn a_signer_that_produces_a_bad_signature_is_caught_before_broadcast() {
+        let real = signer();
+        let faulty = WrongKeySigner {
+            claimed: real.public_key(),
+            actual: ed25519_dalek::SigningKey::from_bytes(&[8; 32]),
+        };
+        let custody = CustodySigner::new(faulty, &real.account()).unwrap();
+        let refused = sign_withdrawal(
+            withdrawal(&real.public_key()),
+            &custody,
+            StellarNetwork::Testnet,
+        );
+        assert!(matches!(refused, Err(PaymentError::Key(_))));
+    }
+
+    #[test]
+    fn add_signature_keeps_existing_signatures() {
+        let custody = custody();
+        let (envelope, _) = sign_withdrawal(
+            withdrawal(&custody.public_key()),
+            &custody,
+            StellarNetwork::Testnet,
+        )
+        .unwrap();
+
+        let cosigner = LocalTestnetSigner::from_secret(
+            stellar_strkey::ed25519::PrivateKey([11; 32])
+                .as_unredacted()
+                .to_string()
+                .as_str(),
+            StellarNetwork::Testnet,
+        )
+        .unwrap();
+        let envelope = add_signature(envelope, &cosigner, StellarNetwork::Testnet).unwrap();
+
+        let TransactionEnvelope::Tx(v1) = &envelope else {
+            panic!("not a v1 envelope");
+        };
+        assert_eq!(v1.signatures.len(), 2);
+        assert!(
+            verify_signature(&envelope, &custody.public_key(), StellarNetwork::Testnet).unwrap()
+        );
+        assert!(
+            verify_signature(&envelope, &cosigner.public_key(), StellarNetwork::Testnet).unwrap()
+        );
+    }
+
+    #[test]
+    fn custody_debug_output_never_contains_the_secret() {
+        let secret = stellar_strkey::ed25519::PrivateKey([7; 32]);
+        let text = format!("{:?}", custody());
+        assert!(!text.contains(secret.as_unredacted().to_string().as_str()));
+        assert!(text.contains(&custody().account()));
     }
 }
