@@ -17,7 +17,9 @@ use engipay_core::Chain;
 use engipay_core::stellar::{StellarAddress, parse_address};
 use tracing::{error, warn};
 
-use self::horizon::{Account, Page, PaymentRecord, Root, Submitted, TransactionCache};
+use self::horizon::{
+    Account, Page, PaymentRecord, Root, SubmitProblem, Submitted, TransactionCache,
+};
 pub use self::network::StellarNetwork;
 use self::payment::{PaymentRequest, StellarSigner};
 use crate::{ChainClient, ChainError, EventStream, ObservedDeposit};
@@ -29,6 +31,19 @@ const PAGE_LIMIT: usize = 200;
 const MAX_PAGES: usize = 25;
 /// How long a signed payment stays valid if it does not land.
 const PAYMENT_VALIDITY: Duration = Duration::from_secs(120);
+
+/// A signed payment that has not been submitted yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedPayment {
+    /// The transaction hash, lowercase hex, as Horizon reports it.
+    pub hash: String,
+    /// The signed envelope, base64 XDR.
+    pub envelope_xdr: String,
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct StellarConfig {
@@ -148,6 +163,23 @@ impl StellarClient {
             .map_err(|_| ChainError::Unavailable("Horizon returned a bad sequence".to_owned()))
     }
 
+    /// The p90 fee charged per operation in Horizon's last ledger, in stroops,
+    /// clamped to [`payment::BASE_FEE`]..=[`payment::MAX_FEE`]. Falls back to
+    /// [`payment::BASE_FEE`] if the endpoint is unavailable or returns
+    /// unparseable data, so a momentary Horizon outage never blocks a payment.
+    pub async fn recommended_fee(&self) -> u32 {
+        use self::horizon::FeeStats;
+        match self.get::<FeeStats>("/fee_stats").await {
+            Ok(stats) => stats
+                .fee_charged
+                .p90
+                .parse::<u32>()
+                .unwrap_or(payment::BASE_FEE)
+                .clamp(payment::BASE_FEE, payment::MAX_FEE),
+            Err(_) => payment::BASE_FEE,
+        }
+    }
+
     /// Fetches the details for a single transaction, using the in-process
     /// cache to avoid redundant round-trips.
     ///
@@ -195,8 +227,24 @@ impl StellarClient {
         signer: &dyn StellarSigner,
         request: &PaymentRequest,
     ) -> Result<String, ChainError> {
+        let prepared = self.prepare_payment(signer, request).await?;
+        self.submit_prepared(&prepared).await
+    }
+
+    /// Builds and signs a payment without submitting it. Nothing has reached
+    /// the network when this returns, so any error here is safe to retry.
+    ///
+    /// Errors: [`ChainError::Unavailable`] if Horizon could not be read,
+    /// [`ChainError::Rejected`] if the request itself is invalid (bad
+    /// destination, oversized memo, ...).
+    pub async fn prepare_payment(
+        &self,
+        signer: &dyn StellarSigner,
+        request: &PaymentRequest,
+    ) -> Result<PreparedPayment, ChainError> {
         let source = signer.account();
-        let sequence = self.sequence(&source).await?;
+        let (sequence, fee) = tokio::join!(self.sequence(&source), self.recommended_fee());
+        let sequence = sequence?;
         let valid_until = SystemTime::now()
             .checked_add(PAYMENT_VALIDITY)
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
@@ -209,14 +257,29 @@ impl StellarClient {
             request,
             self.config.network,
             valid_until,
+            fee,
         )
         .map_err(|error| ChainError::Rejected(error.to_string()))?;
-        let (envelope, _) = payment::sign(transaction, signer, self.config.network)
+        let (envelope, hash) = payment::sign(transaction, signer, self.config.network)
             .map_err(|error| ChainError::Rejected(error.to_string()))?;
-        let encoded = payment::envelope_base64(&envelope)
+        let envelope_xdr = payment::envelope_base64(&envelope)
             .map_err(|error| ChainError::Rejected(error.to_string()))?;
 
-        Ok(self.submit_transaction(&encoded).await?.hash)
+        Ok(PreparedPayment {
+            hash: hex_lower(&hash),
+            envelope_xdr,
+        })
+    }
+
+    /// Submits a payment from [`prepare_payment`](Self::prepare_payment).
+    ///
+    /// An [`ChainError::Unavailable`] from here is ambiguous: Horizon may have
+    /// relayed the transaction before the connection failed. Callers must not
+    /// sign a fresh transaction for the same payment until they have checked
+    /// [`PreparedPayment::hash`] or the time bounds have passed.
+    pub async fn submit_prepared(&self, prepared: &PreparedPayment) -> Result<String, ChainError> {
+        self.submit_payment_with_retry(&prepared.envelope_xdr, 0)
+            .await
     }
 
     /// Submits a signed transaction envelope (base64 XDR) to Horizon's
@@ -688,7 +751,11 @@ mod tests {
             .await;
 
         let deposits = client(&server).await.deposits_since(58).await.unwrap();
-        assert_eq!(deposits.len(), 1, "only real Circle testnet USDC is credited");
+        assert_eq!(
+            deposits.len(),
+            1,
+            "only real Circle testnet USDC is credited"
+        );
         assert_eq!(
             deposits[0].money,
             Money::from_minor(Asset::Usdc, 50_000_000)
@@ -727,6 +794,14 @@ mod tests {
             )
             .mount(&server)
             .await;
+        // fee_stats is fetched in parallel with sequence; provide a stub
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "100", "p90": "200" }
+            })))
+            .mount(&server)
+            .await;
         Mock::given(method("POST"))
             .and(path("/transactions"))
             .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
@@ -739,6 +814,7 @@ mod tests {
         let request = PaymentRequest {
             destination: account(2),
             money: Money::parse(Asset::Xlm, "1").unwrap(),
+            memo: None,
         };
         let error = client(&server)
             .await
@@ -829,9 +905,16 @@ mod tests {
 
         let total_stroops: i128 = deposits
             .iter()
-            .map(|d| d.money.to_network_units(engipay_core::Chain::Stellar).unwrap())
+            .map(|d| {
+                d.money
+                    .to_network_units(engipay_core::Chain::Stellar)
+                    .unwrap()
+            })
             .sum();
-        assert_eq!(total_stroops, 60_000_000, "1 + 2 + 3 XLM = 6 XLM = 60_000_000 stroops");
+        assert_eq!(
+            total_stroops, 60_000_000,
+            "1 + 2 + 3 XLM = 6 XLM = 60_000_000 stroops"
+        );
 
         // Each deposit carries a unique reference (paging_token).
         let refs: std::collections::HashSet<_> = deposits.iter().map(|d| &d.reference).collect();
@@ -881,5 +964,121 @@ mod tests {
         let deposits = client(&server).await.deposits_since(48).await.unwrap();
         assert_eq!(deposits.len(), 1);
         assert_eq!(deposits[0].money, Money::from_minor(Asset::Xlm, 40_000_000));
+    }
+
+    // ── Fee stats tests ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn recommended_fee_returns_p90_from_horizon() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "100", "p90": "350" }
+            })))
+            .mount(&server)
+            .await;
+        let fee = client(&server).await.recommended_fee().await;
+        assert_eq!(fee, 350);
+    }
+
+    #[tokio::test]
+    async fn recommended_fee_falls_back_to_base_fee_when_horizon_is_down() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let fee = client(&server).await.recommended_fee().await;
+        assert_eq!(fee, payment::BASE_FEE);
+    }
+
+    #[tokio::test]
+    async fn recommended_fee_is_at_least_base_fee_even_if_p90_is_lower() {
+        let server = MockServer::start().await;
+        // Horizon returns a p90 below the minimum (shouldn't happen in practice
+        // but the code must be defensive).
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "50", "p90": "50" }
+            })))
+            .mount(&server)
+            .await;
+        let fee = client(&server).await.recommended_fee().await;
+        assert_eq!(fee, payment::BASE_FEE, "fee must never go below BASE_FEE");
+    }
+
+    #[tokio::test]
+    async fn recommended_fee_is_capped_at_max_fee() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "100", "p90": "5000000" }
+            })))
+            .mount(&server)
+            .await;
+        let fee = client(&server).await.recommended_fee().await;
+        assert_eq!(fee, payment::MAX_FEE);
+    }
+
+    #[tokio::test]
+    async fn prepare_payment_signs_without_submitting() {
+        use stellar_xdr::{Limits, ReadXdr, TransactionEnvelope};
+
+        let server = MockServer::start().await;
+        let signer = payment::LocalTestnetSigner::from_secret(
+            stellar_strkey::ed25519::PrivateKey([4; 32])
+                .as_unredacted()
+                .to_string()
+                .as_str(),
+            StellarNetwork::Testnet,
+        )
+        .unwrap();
+        Mock::given(method("GET"))
+            .and(path(format!("/accounts/{}", signer.account())))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "sequence": "100" })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "100", "p90": "300" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transactions"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let request = PaymentRequest {
+            destination: account(2),
+            money: Money::parse(Asset::Xlm, "1").unwrap(),
+            memo: Some(payment::StellarMemo::Id(7)),
+        };
+        let prepared = client(&server)
+            .await
+            .prepare_payment(&signer, &request)
+            .await
+            .unwrap();
+
+        let envelope =
+            TransactionEnvelope::from_xdr_base64(&prepared.envelope_xdr, Limits::none()).unwrap();
+        let TransactionEnvelope::Tx(v1) = envelope else {
+            panic!("not a v1 envelope");
+        };
+        assert_eq!(v1.tx.fee, 300);
+        assert_eq!(v1.tx.seq_num.0, 101);
+        assert_eq!(v1.tx.memo, stellar_xdr::Memo::Id(7));
+        let hash = v1.tx.hash(StellarNetwork::Testnet.network_id()).unwrap();
+        assert_eq!(prepared.hash, hex_lower(&hash));
+        assert_eq!(prepared.hash.len(), 64);
     }
 }

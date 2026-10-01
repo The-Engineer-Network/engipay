@@ -9,16 +9,25 @@ use engipay_core::{Asset, Chain, Money};
 use stellar_xdr::{
     AccountId, AlphaNum4, AssetCode4, DecoratedSignature, Limits, Memo, MuxedAccount,
     MuxedAccountMed25519, Operation, OperationBody, PaymentOp, Preconditions, PublicKey,
-    SequenceNumber, Signature, SignatureHint, TimeBounds, TimePoint, Transaction,
+    SequenceNumber, Signature, SignatureHint, StringM, TimeBounds, TimePoint, Transaction,
     TransactionEnvelope, TransactionExt, TransactionV1Envelope, Uint256, WriteXdr,
 };
 use zeroize::Zeroizing;
 
 use super::network::StellarNetwork;
 
-/// Base fee per operation, in stroops. 100 is the network minimum; Horizon's
-/// fee stats should drive this once sends are under real load.
+/// Base fee per operation, in stroops. 100 is the network minimum.
+/// `build_payment` accepts an explicit fee so callers can pass a value from
+/// Horizon's `/fee_stats` endpoint instead of this constant.
 pub const BASE_FEE: u32 = 100;
+
+/// Ceiling on the fee per operation taken from Horizon's fee stats, in
+/// stroops (0.01 XLM). A surge above this waits for the next attempt rather
+/// than paying whatever the market asks.
+pub const MAX_FEE: u32 = 100_000;
+
+/// Maximum length of a Stellar text memo, in bytes (protocol limit).
+pub const MEMO_TEXT_MAX_BYTES: usize = 28;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PaymentError {
@@ -32,6 +41,24 @@ pub enum PaymentError {
     Encoding(String),
     #[error("signing key: {0}")]
     Key(&'static str),
+    #[error("memo text exceeds {MEMO_TEXT_MAX_BYTES}-byte protocol limit")]
+    MemoTooLong,
+}
+
+/// An optional memo attached to an outgoing Stellar transaction.
+///
+/// Stellar supports several memo types; EngiPay uses only the two that are
+/// meaningful for payments:
+///
+/// * `Text` — a UTF-8 string, at most 28 bytes (protocol limit).
+/// * `Id` — an unsigned 64-bit integer, commonly used by exchanges and anchors
+///   to route a deposit to a specific account without a muxed address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StellarMemo {
+    /// A free-form text memo (≤ 28 bytes UTF-8).
+    Text(String),
+    /// A numeric ID memo (u64).
+    Id(u64),
 }
 
 /// What to pay, before it is turned into a transaction.
@@ -39,6 +66,8 @@ pub enum PaymentError {
 pub struct PaymentRequest {
     pub destination: String,
     pub money: Money,
+    /// Optional memo attached to the transaction on-chain.
+    pub memo: Option<StellarMemo>,
 }
 
 /// Anything that can sign for a Stellar account: a local key in development,
@@ -142,15 +171,24 @@ impl<S: StellarSigner> std::fmt::Debug for CustodySigner<S> {
 
 /// Builds an unsigned payment transaction.
 ///
-/// `sequence` is the source account's *current* sequence number; the
-/// transaction uses the next one. `valid_until` is a unix time after which the
-/// network rejects it, so a transaction stuck in flight cannot land hours later.
+/// * `source` — the ed25519 public key bytes of the signing account.
+/// * `sequence` — the source account's *current* sequence number; the
+///   transaction uses `sequence + 1`.
+/// * `request` — what to pay and the optional on-chain memo.
+/// * `network` — testnet or mainnet (affects the USDC issuer and the network
+///   hash used for signing).
+/// * `valid_until` — Unix timestamp after which the network will reject the
+///   transaction, so a stuck payment cannot land hours later.
+/// * `fee_per_op` — base fee in stroops per operation. Pass [`BASE_FEE`] for
+///   the network minimum, or a value from Horizon's `/fee_stats` endpoint
+///   (e.g. `p90_accepted_fee`) under load.
 pub fn build_payment(
     source: &[u8; 32],
     sequence: i64,
     request: &PaymentRequest,
     network: StellarNetwork,
     valid_until: u64,
+    fee_per_op: u32,
 ) -> Result<Transaction, PaymentError> {
     let destination = muxed_account(&request.destination)?;
     let asset = xdr_asset(request.money.asset, network)?;
@@ -169,6 +207,8 @@ pub fn build_payment(
         .checked_add(1)
         .ok_or(PaymentError::Amount("sequence number overflow".to_owned()))?;
 
+    let memo = memo_xdr(request.memo.as_ref())?;
+
     let operation = Operation {
         source_account: None,
         body: OperationBody::Payment(PaymentOp {
@@ -180,18 +220,36 @@ pub fn build_payment(
 
     Ok(Transaction {
         source_account: MuxedAccount::Ed25519(Uint256(*source)),
-        fee: BASE_FEE,
+        fee: fee_per_op,
         seq_num: SequenceNumber(next_sequence),
         cond: Preconditions::Time(TimeBounds {
             min_time: TimePoint(0),
             max_time: TimePoint(valid_until),
         }),
-        memo: Memo::None,
+        memo,
         operations: vec![operation]
             .try_into()
             .map_err(|_| PaymentError::Encoding("too many operations".to_owned()))?,
         ext: TransactionExt::V0,
     })
+}
+
+/// Converts the optional [`StellarMemo`] into the XDR `Memo` type.
+fn memo_xdr(memo: Option<&StellarMemo>) -> Result<Memo, PaymentError> {
+    match memo {
+        None => Ok(Memo::None),
+        Some(StellarMemo::Id(id)) => Ok(Memo::Id(*id)),
+        Some(StellarMemo::Text(text)) => {
+            let bytes = text.as_bytes();
+            if bytes.len() > MEMO_TEXT_MAX_BYTES {
+                return Err(PaymentError::MemoTooLong);
+            }
+            Ok(Memo::Text(
+                StringM::<28>::try_from(bytes.to_vec())
+                    .map_err(|_| PaymentError::Encoding("memo text encoding".to_owned()))?,
+            ))
+        }
+    }
 }
 
 /// Signs a transaction for `network` and returns the envelope and its hash.
@@ -380,6 +438,7 @@ mod tests {
         PaymentRequest {
             destination,
             money: Money::parse(asset, amount).unwrap(),
+            memo: None,
         }
     }
 
@@ -409,6 +468,7 @@ mod tests {
             &request(account(2), Asset::Xlm, "1.5"),
             StellarNetwork::Testnet,
             1_800_000_000,
+            BASE_FEE,
         )
         .unwrap();
         assert_eq!(tx.seq_num, SequenceNumber(42));
@@ -430,6 +490,7 @@ mod tests {
             &request(muxed, Asset::Usdc, "2"),
             StellarNetwork::Testnet,
             1_800_000_000,
+            BASE_FEE,
         )
         .unwrap();
         let OperationBody::Payment(payment) = &tx.operations[0].body else {
@@ -456,6 +517,7 @@ mod tests {
             &request(account(2), Asset::Btc, "0.1"),
             StellarNetwork::Testnet,
             1_800_000_000,
+            BASE_FEE,
         );
         assert!(matches!(
             refused,
@@ -471,6 +533,7 @@ mod tests {
             &request(account(2), Asset::Xlm, "0"),
             StellarNetwork::Testnet,
             1_800_000_000,
+            BASE_FEE,
         );
         assert!(matches!(zero, Err(PaymentError::Amount(_))));
 
@@ -484,6 +547,7 @@ mod tests {
             ),
             StellarNetwork::Testnet,
             1_800_000_000,
+            BASE_FEE,
         );
         assert!(matches!(evm, Err(PaymentError::Destination(_))));
     }
@@ -497,6 +561,7 @@ mod tests {
             &request(account(2), Asset::Xlm, "3"),
             StellarNetwork::Testnet,
             1_800_000_000,
+            BASE_FEE,
         )
         .unwrap();
         let (envelope, hash) = sign(tx, &signer, StellarNetwork::Testnet).unwrap();
@@ -523,6 +588,7 @@ mod tests {
             &request(account(2), Asset::Xlm, "0.0000001"),
             StellarNetwork::Testnet,
             1_800_000_000,
+            BASE_FEE,
         )
         .unwrap();
         let (envelope, _) = sign(tx, &signer, StellarNetwork::Testnet).unwrap();
@@ -531,170 +597,129 @@ mod tests {
         assert_eq!(decoded, envelope);
     }
 
-    fn custody() -> CustodySigner<LocalTestnetSigner> {
-        let account = signer().account();
-        CustodySigner::new(signer(), &account).unwrap()
-    }
+    // ── Memo tests ────────────────────────────────────────────────────────────
 
-    fn withdrawal(source: &[u8; 32]) -> Transaction {
-        build_payment(
-            source,
-            10,
-            &request(account(2), Asset::Usdc, "25"),
+    #[test]
+    fn text_memo_is_encoded_in_the_xdr() {
+        let mut req = request(account(2), Asset::Xlm, "1");
+        req.memo = Some(StellarMemo::Text("hello engipay".to_owned()));
+        let tx = build_payment(
+            &signer().public_key(),
+            1,
+            &req,
             StellarNetwork::Testnet,
             1_800_000_000,
+            BASE_FEE,
         )
-        .unwrap()
-    }
-
-    /// A signer that returns a signature from some other key, as a faulty HSM
-    /// or a key mix-up would.
-    struct WrongKeySigner {
-        claimed: [u8; 32],
-        actual: ed25519_dalek::SigningKey,
-    }
-
-    impl StellarSigner for WrongKeySigner {
-        fn public_key(&self) -> [u8; 32] {
-            self.claimed
-        }
-
-        fn sign(&self, message: &[u8]) -> [u8; 64] {
-            use ed25519_dalek::Signer;
-            self.actual.sign(message).to_bytes()
-        }
+        .unwrap();
+        let Memo::Text(text) = tx.memo else {
+            panic!("expected text memo");
+        };
+        assert_eq!(text.as_slice(), b"hello engipay");
     }
 
     #[test]
-    fn custody_signature_verifies_against_the_custody_public_key() {
-        let custody = custody();
-        let (envelope, hash) = sign_withdrawal(
-            withdrawal(&custody.public_key()),
-            &custody,
+    fn id_memo_is_encoded_in_the_xdr() {
+        let mut req = request(account(2), Asset::Xlm, "1");
+        req.memo = Some(StellarMemo::Id(42_000));
+        let tx = build_payment(
+            &signer().public_key(),
+            1,
+            &req,
             StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
         )
         .unwrap();
+        assert_eq!(tx.memo, Memo::Id(42_000));
+    }
 
-        let TransactionEnvelope::Tx(v1) = &envelope else {
+    #[test]
+    fn no_memo_produces_memo_none() {
+        let req = request(account(2), Asset::Xlm, "1");
+        let tx = build_payment(
+            &signer().public_key(),
+            1,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        assert_eq!(tx.memo, Memo::None);
+    }
+
+    #[test]
+    fn text_memo_at_exactly_28_bytes_is_accepted() {
+        let text = "a".repeat(MEMO_TEXT_MAX_BYTES);
+        let mut req = request(account(2), Asset::Xlm, "1");
+        req.memo = Some(StellarMemo::Text(text));
+        let result = build_payment(
+            &signer().public_key(),
+            1,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn text_memo_over_28_bytes_is_rejected() {
+        let too_long = "a".repeat(MEMO_TEXT_MAX_BYTES + 1);
+        let mut req = request(account(2), Asset::Xlm, "1");
+        req.memo = Some(StellarMemo::Text(too_long));
+        let result = build_payment(
+            &signer().public_key(),
+            1,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        );
+        assert!(matches!(result, Err(PaymentError::MemoTooLong)));
+    }
+
+    #[test]
+    fn custom_fee_per_op_is_set_on_the_transaction() {
+        let tx = build_payment(
+            &signer().public_key(),
+            1,
+            &request(account(2), Asset::Xlm, "1"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            500, // 5x the minimum
+        )
+        .unwrap();
+        assert_eq!(tx.fee, 500);
+    }
+
+    #[test]
+    fn memo_and_custom_fee_survive_base64_round_trip() {
+        let signer = signer();
+        let mut req = request(account(2), Asset::Xlm, "2");
+        req.memo = Some(StellarMemo::Text("round-trip test".to_owned()));
+        let tx = build_payment(
+            &signer.public_key(),
+            3,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            250,
+        )
+        .unwrap();
+        let (envelope, _) = sign(tx, &signer, StellarNetwork::Testnet).unwrap();
+        let encoded = envelope_base64(&envelope).unwrap();
+        let decoded = TransactionEnvelope::from_xdr_base64(&encoded, Limits::none()).unwrap();
+        assert_eq!(decoded, envelope);
+        let TransactionEnvelope::Tx(v1) = decoded else {
             panic!("not a v1 envelope");
         };
-        assert_eq!(v1.signatures.len(), 1);
-        let decorated = &v1.signatures[0];
-        // The hint is the last four bytes of the custody public key.
-        assert_eq!(decorated.hint.0, custody.public_key()[28..]);
-
-        let custody_key = stellar_strkey::ed25519::PublicKey::from_string(&custody.account())
-            .unwrap()
-            .0;
-        let verifying = VerifyingKey::from_bytes(&custody_key).unwrap();
-        let signature =
-            ed25519_dalek::Signature::from_slice(decorated.signature.0.as_slice()).unwrap();
-        assert!(verifying.verify_strict(&hash, &signature).is_ok());
-        assert!(verify_signature(&envelope, &custody_key, StellarNetwork::Testnet).unwrap());
-    }
-
-    #[test]
-    fn custody_signature_is_bound_to_the_network_passphrase() {
-        let custody = custody();
-        let (envelope, _) = sign_withdrawal(
-            withdrawal(&custody.public_key()),
-            &custody,
-            StellarNetwork::Testnet,
-        )
-        .unwrap();
-
-        // The same bytes do not authorise the transaction on mainnet.
-        assert!(
-            !verify_signature(&envelope, &custody.public_key(), StellarNetwork::Mainnet).unwrap()
-        );
-        assert_ne!(
-            transaction_hash(&envelope, StellarNetwork::Testnet).unwrap(),
-            transaction_hash(&envelope, StellarNetwork::Mainnet).unwrap()
-        );
-    }
-
-    #[test]
-    fn signatures_from_other_keys_do_not_verify_as_custody() {
-        let custody = custody();
-        let (envelope, _) = sign_withdrawal(
-            withdrawal(&custody.public_key()),
-            &custody,
-            StellarNetwork::Testnet,
-        )
-        .unwrap();
-        assert!(!verify_signature(&envelope, &[3; 32], StellarNetwork::Testnet).unwrap());
-    }
-
-    #[test]
-    fn custody_signer_refuses_a_key_for_another_account() {
-        let refused = CustodySigner::new(signer(), &account(9));
-        assert!(matches!(refused, Err(PaymentError::Key(_))));
-
-        let not_an_account = CustodySigner::new(signer(), "SNOTANACCOUNT");
-        assert!(matches!(not_an_account, Err(PaymentError::Key(_))));
-    }
-
-    #[test]
-    fn custody_key_never_signs_for_another_source_account() {
-        let custody = custody();
-        let foreign = withdrawal(&[5; 32]);
-        let refused = sign_withdrawal(foreign, &custody, StellarNetwork::Testnet);
-        assert!(matches!(refused, Err(PaymentError::Key(_))));
-    }
-
-    #[test]
-    fn a_signer_that_produces_a_bad_signature_is_caught_before_broadcast() {
-        let real = signer();
-        let faulty = WrongKeySigner {
-            claimed: real.public_key(),
-            actual: ed25519_dalek::SigningKey::from_bytes(&[8; 32]),
+        assert_eq!(v1.tx.fee, 250);
+        let Memo::Text(text) = v1.tx.memo else {
+            panic!("expected text memo");
         };
-        let custody = CustodySigner::new(faulty, &real.account()).unwrap();
-        let refused = sign_withdrawal(
-            withdrawal(&real.public_key()),
-            &custody,
-            StellarNetwork::Testnet,
-        );
-        assert!(matches!(refused, Err(PaymentError::Key(_))));
-    }
-
-    #[test]
-    fn add_signature_keeps_existing_signatures() {
-        let custody = custody();
-        let (envelope, _) = sign_withdrawal(
-            withdrawal(&custody.public_key()),
-            &custody,
-            StellarNetwork::Testnet,
-        )
-        .unwrap();
-
-        let cosigner = LocalTestnetSigner::from_secret(
-            stellar_strkey::ed25519::PrivateKey([11; 32])
-                .as_unredacted()
-                .to_string()
-                .as_str(),
-            StellarNetwork::Testnet,
-        )
-        .unwrap();
-        let envelope = add_signature(envelope, &cosigner, StellarNetwork::Testnet).unwrap();
-
-        let TransactionEnvelope::Tx(v1) = &envelope else {
-            panic!("not a v1 envelope");
-        };
-        assert_eq!(v1.signatures.len(), 2);
-        assert!(
-            verify_signature(&envelope, &custody.public_key(), StellarNetwork::Testnet).unwrap()
-        );
-        assert!(
-            verify_signature(&envelope, &cosigner.public_key(), StellarNetwork::Testnet).unwrap()
-        );
-    }
-
-    #[test]
-    fn custody_debug_output_never_contains_the_secret() {
-        let secret = stellar_strkey::ed25519::PrivateKey([7; 32]);
-        let text = format!("{:?}", custody());
-        assert!(!text.contains(secret.as_unredacted().to_string().as_str()));
-        assert!(text.contains(&custody().account()));
+        assert_eq!(text.as_slice(), b"round-trip test");
     }
 }

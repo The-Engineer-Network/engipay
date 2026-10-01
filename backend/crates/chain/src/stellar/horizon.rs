@@ -25,6 +25,25 @@ pub struct Root {
     pub history_latest_ledger: u64,
 }
 
+/// `GET /fee_stats` — the fee distribution from the last ledger Horizon saw.
+///
+/// All fee values are in stroops per operation as strings (Horizon returns them
+/// as JSON strings to avoid precision loss in some parsers).
+#[derive(Debug, Deserialize)]
+pub struct FeeStats {
+    /// The distribution of fees actually charged in the last ledger.
+    pub fee_charged: FeeDistribution,
+}
+
+/// Sub-object under [`FeeStats`] for the `fee_charged` distribution.
+#[derive(Debug, Deserialize)]
+pub struct FeeDistribution {
+    /// Median fee charged in the last ledger, in stroops (as a decimal string).
+    pub p50: String,
+    /// 90th-percentile fee charged in the last ledger, in stroops (string).
+    pub p90: String,
+}
+
 /// `GET /accounts/{id}`.
 #[derive(Debug, Deserialize)]
 pub struct Account {
