@@ -9,8 +9,14 @@
 //! implemented ([`stellar`]); Base (via `alloy`) and Bitcoin (via `bdk`) come
 //! next.
 
+pub mod creditor;
+pub mod deposit_creditor;
+pub mod dlq;
 pub mod evm;
+pub mod routes;
+pub mod services;
 pub mod stellar;
+pub mod workers;
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -127,6 +133,7 @@ where
     use std::task::{Context, Poll};
 
     // All state lives in a single struct so the stream is `Send`.
+    #[allow(clippy::type_complexity)]
     struct Poller<C> {
         client: Arc<C>,
         next_height: u64,
@@ -176,7 +183,10 @@ where
                 self.pending = Some(Box::pin(async move {
                     let tip = client.latest_height().await?;
                     let deposits = client.deposits_since(height).await?;
-                    Ok(LedgerEvent { height: tip, deposits })
+                    Ok(LedgerEvent {
+                        height: tip,
+                        deposits,
+                    })
                 }));
                 // Loop back to drive the newly created future immediately.
             }
@@ -215,7 +225,11 @@ mod tests {
             from_height: u64,
             poll_interval: Duration,
         ) -> Result<EventStream, ChainError> {
-            Ok(polling_stream(Arc::new(FakeBase), from_height, poll_interval))
+            Ok(polling_stream(
+                Arc::new(FakeBase),
+                from_height,
+                poll_interval,
+            ))
         }
     }
 
@@ -242,8 +256,6 @@ mod tests {
     /// Verifies that `stream_events` starts and produces at least one event.
     #[tokio::test]
     async fn stream_events_produces_ledger_events() {
-        use futures_util::StreamExt;
-
         let stream = FakeBase
             .stream_events(90, Duration::from_millis(10))
             .await
@@ -268,8 +280,6 @@ mod tests {
     /// than panicking.
     #[tokio::test]
     async fn stream_events_propagates_errors() {
-        use futures_util::StreamExt;
-
         struct ErrorClient;
         impl ChainClient for ErrorClient {
             fn chain(&self) -> Chain {
