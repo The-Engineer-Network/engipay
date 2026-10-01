@@ -4,4 +4,5 @@
 //! the latest finalized block on Base. Deposit watching and transaction signing
 //! will follow once the finalized-height plumbing is in place.
 
+pub mod reorg;
 pub mod watcher;
