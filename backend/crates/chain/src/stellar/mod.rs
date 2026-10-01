@@ -8,6 +8,7 @@ pub mod cursor;
 pub mod horizon;
 pub mod network;
 pub mod payment;
+pub mod settlement;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -281,11 +282,51 @@ impl StellarClient {
             .await
     }
 
-    async fn submit_payment_with_retry(
+    /// Submits a signed transaction envelope (base64 XDR) to Horizon's
+    /// `POST /transactions` and returns the hash and ledger Horizon reports.
+    ///
+    /// Errors say whether the transaction can still land:
+    ///
+    /// * [`ChainError::Rejected`] — Horizon answered `400`: the network
+    ///   refused it, with the result codes in the message. It did not land.
+    /// * [`ChainError::Unavailable`] — no definitive answer (unreachable,
+    ///   timeouts, `5xx` after retries). It may still land, so callers must not
+    ///   release funds on this error.
+    pub async fn submit_transaction(&self, envelope_xdr: &str) -> Result<Submitted, ChainError> {
+        self.submit_with_retry(envelope_xdr, 0).await
+    }
+
+    /// Looks a transaction up by hash, bypassing the cache. `Ok(None)` when
+    /// Horizon has never seen it.
+    pub async fn find_transaction(
+        &self,
+        tx_hash: &str,
+    ) -> Result<Option<horizon::JoinedTransaction>, ChainError> {
+        let response = self
+            .http
+            .get(format!(
+                "{}/transactions/{tx_hash}",
+                self.config.horizon_url
+            ))
+            .send()
+            .await
+            .map_err(|error| ChainError::Unavailable(error.to_string()))?;
+        match response.status() {
+            status if status.is_success() => response.json().await.map(Some).map_err(|error| {
+                ChainError::Unavailable(format!("unexpected Horizon response: {error}"))
+            }),
+            reqwest::StatusCode::NOT_FOUND => Ok(None),
+            status => Err(ChainError::Unavailable(format!(
+                "Horizon returned {status} for transaction {tx_hash}"
+            ))),
+        }
+    }
+
+    async fn submit_with_retry(
         &self,
         encoded: &str,
         attempt: u32,
-    ) -> Result<String, ChainError> {
+    ) -> Result<Submitted, ChainError> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 500;
         const MAX_DELAY_MS: u64 = 30_000;
@@ -300,25 +341,30 @@ impl StellarClient {
 
         let status = response.status();
         if status.is_success() {
-            let submitted: Submitted = response
-                .json()
+            // Accepted, but an unreadable body leaves the hash unknown: report
+            // it as unknown rather than rejected, because it did land.
+            let body = response
+                .bytes()
                 .await
                 .map_err(|error| ChainError::Unavailable(error.to_string()))?;
+            let submitted = horizon::parse_submitted(&body)?;
             tracing::info!(hash = %submitted.hash, ledger = submitted.ledger, "stellar payment landed");
-            return Ok(submitted.hash);
+            return Ok(submitted);
+        }
+
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let body = response.bytes().await.unwrap_or_default();
+            return Err(ChainError::Rejected(horizon::submit_problem_detail(
+                status.as_u16(),
+                &body,
+            )));
         }
 
         let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
         if !is_retryable || attempt >= MAX_RETRIES {
-            let problem: Option<SubmitProblem> = response.json().await.ok();
-            let detail = problem.map_or_else(
-                || status.to_string(),
-                |problem| match problem.extras.and_then(|extras| extras.result_codes) {
-                    Some(codes) => format!("{}: {codes}", problem.title),
-                    None => problem.title,
-                },
-            );
-            return Err(ChainError::Rejected(detail));
+            return Err(ChainError::Unavailable(format!(
+                "Horizon returned {status} on submission; the outcome is unknown"
+            )));
         }
 
         let jittered_delay = backoff_delay_ms(attempt, INITIAL_DELAY_MS, MAX_DELAY_MS);
@@ -332,7 +378,7 @@ impl StellarClient {
         );
 
         tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        Box::pin(self.submit_payment_with_retry(encoded, attempt.saturating_add(1))).await
+        Box::pin(self.submit_with_retry(encoded, attempt.saturating_add(1))).await
     }
 }
 

@@ -74,7 +74,7 @@ impl DlqEntry {
         // Serialise the deposit to JSON so it can be inspected without
         // deserialising Rust types.
         let raw_payload = serde_json::to_value(DlqDepositPayload::from(deposit))
-            .unwrap_or_else(|_| serde_json::Value::Null);
+            .unwrap_or(serde_json::Value::Null);
 
         Self {
             reason: reason.as_str(),
@@ -139,15 +139,15 @@ pub async fn push_to_dlq(
 ) -> Result<(), DlqError> {
     let entry = DlqEntry::new(deposit, reason);
 
-    sqlx::query!(
+    sqlx::query(
         r#"
         INSERT INTO uncredited_deposits (reason, raw_payload, status)
-        VALUES ($1, $2, $3)
+        VALUES ($1, $2::jsonb, $3)
         "#,
-        entry.reason,
-        entry.raw_payload,
-        entry.status,
     )
+    .bind(&entry.reason)
+    .bind(entry.raw_payload.to_string())
+    .bind(&entry.status)
     .execute(pool)
     .await?;
 
