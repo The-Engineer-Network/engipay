@@ -2,6 +2,7 @@
 //!
 //!   engipay-chain                                   watch for deposits
 //!   engipay-chain stellar-send <to> <amount> <asset>  testnet payment
+//!   engipay-chain withdrawals                       broadcast pending withdrawals (testnet signer)
 //!
 //! Configuration comes from the environment; see backend/.env.example.
 
@@ -17,9 +18,13 @@ use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY};
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
 use engipay_chain::stellar::{StellarClient, StellarConfig, StellarNetwork};
+use engipay_chain::workers::withdrawal::{
+    DEFAULT_POLL_INTERVAL, StellarWithdrawalSender, WithdrawalWorker,
+};
 use engipay_chain::{ChainClient, is_creditable};
 use engipay_core::{Asset, Money};
 use sqlx::postgres::PgPoolOptions;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 /// References remembered to avoid reporting a deposit twice when polls overlap.
@@ -38,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
     match args.first().map(String::as_str) {
         None => watch().await,
         Some("stellar-send") => stellar_send(&args[1..]).await,
+        Some("withdrawals") => withdrawals().await,
         Some(other) => bail!("unknown command {other:?}; see the top of crates/chain/src/main.rs"),
     }
 }
@@ -72,8 +78,8 @@ async fn db_pool() -> anyhow::Result<Option<sqlx::PgPool>> {
 async fn watch() -> anyhow::Result<()> {
     // Always start the internal HTTP server so the API can reach fee estimates
     // even when no Stellar custody account is configured.
-    let internal_addr = env::var("CHAIN_INTERNAL_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
+    let internal_addr =
+        env::var("CHAIN_INTERNAL_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
     let app = routes::internal();
     let listener = tokio::net::TcpListener::bind(&internal_addr)
         .await
@@ -97,8 +103,9 @@ async fn watch() -> anyhow::Result<()> {
     // Build the creditor when we have a database pool. Without a pool the
     // watcher falls back to logging-only mode (useful for smoke tests and
     // local development without Postgres).
-    let creditor: Option<Arc<DepositCreditor>> =
-        pool.as_ref().map(|p| Arc::new(DepositCreditor::new(p.clone())));
+    let creditor: Option<Arc<DepositCreditor>> = pool
+        .as_ref()
+        .map(|p| Arc::new(DepositCreditor::new(p.clone())));
 
     let poll = Duration::from_secs(
         env::var("STELLAR_POLL_SECONDS")
@@ -234,9 +241,38 @@ async fn stellar_send(args: &[String]) -> anyhow::Result<()> {
     let request = PaymentRequest {
         destination: destination.clone(),
         money: Money::parse(asset, amount)?,
+        memo: None,
     };
     info!(from = %signer.account(), to = %request.destination, amount = %request.money, "sending");
     let hash = client.send_payment(&signer, &request).await?;
     println!("{hash}");
+    Ok(())
+}
+
+/// Broadcasts `pending_broadcast` withdrawals until interrupted. Signs with
+/// `STELLAR_TESTNET_SECRET`, which [`LocalTestnetSigner`] refuses on mainnet.
+async fn withdrawals() -> anyhow::Result<()> {
+    let pool = db_pool()
+        .await?
+        .context("set DATABASE_URL to run the withdrawal worker")?;
+    let client = stellar_client()?
+        .context("set STELLAR_CUSTODY_ACCOUNT (and STELLAR_NETWORK=testnet) first")?;
+    let secret = env::var("STELLAR_TESTNET_SECRET")
+        .context("set STELLAR_TESTNET_SECRET to the testnet account that pays")?;
+    let signer = LocalTestnetSigner::from_secret(&secret, client.config().network)?;
+    drop(secret);
+    info!(from = %signer.account(), "withdrawal worker starting");
+
+    let worker = WithdrawalWorker::new(pool).with_sender(Arc::new(StellarWithdrawalSender::new(
+        client,
+        Arc::new(signer),
+    )));
+    let shutdown = CancellationToken::new();
+    let on_signal = shutdown.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        on_signal.cancel();
+    });
+    worker.run(DEFAULT_POLL_INTERVAL, shutdown).await;
     Ok(())
 }
