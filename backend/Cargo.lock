@@ -522,6 +522,7 @@ dependencies = [
  "axum",
  "ed25519-dalek",
  "engipay-core",
+ "engipay-ledger",
  "futures-core",
  "futures-util",
  "lru",
