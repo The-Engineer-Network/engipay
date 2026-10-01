@@ -9,11 +9,46 @@ use sqlx::PgPool;
 /// The chain identifier used for Bitcoin cursor rows in `chain_cursors`.
 pub const BITCOIN_CHAIN: &str = "bitcoin";
 
+/// Alias for [`BITCOIN_CHAIN`], used in public API exports.
+pub const BITCOIN_CHAIN_ID: &str = BITCOIN_CHAIN;
+
 /// Errors that can occur while reading or writing the Bitcoin cursor.
 #[derive(Debug, thiserror::Error)]
 pub enum CursorError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+}
+
+/// Public alias for [`CursorError`] used in re-exports.
+pub type BitcoinCursorError = CursorError;
+
+/// A handle for reading and writing the Bitcoin block cursor in the database.
+///
+/// Wraps the cursor persistence functions ([`get_last_scanned_height`] and
+/// [`set_last_scanned_height`]) behind a struct so callers receive a single
+/// value rather than free functions.
+#[derive(Debug, Clone)]
+pub struct BitcoinCursor {
+    pool: PgPool,
+}
+
+impl BitcoinCursor {
+    /// Creates a new [`BitcoinCursor`] bound to `pool`.
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Reads the last scanned block height from the database.
+    ///
+    /// Returns `Ok(None)` when no cursor has been written yet.
+    pub async fn get(&self) -> Result<Option<i64>, BitcoinCursorError> {
+        get_last_scanned_height(&self.pool).await
+    }
+
+    /// Persists the latest scanned block height to the database.
+    pub async fn set(&self, height: i64) -> Result<(), BitcoinCursorError> {
+        set_last_scanned_height(&self.pool, height).await
+    }
 }
 
 /// Reads the last scanned Bitcoin block height from `chain_cursors`.
