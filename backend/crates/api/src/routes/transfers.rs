@@ -155,7 +155,7 @@ async fn create_transfer(
             reference: transfer.reference,
             recipient_tag: transfer.recipient_tag,
             asset: transfer.money.asset,
-            amount: transfer.money.to_string(),
+            amount: transfer.money.decimal(),
             replayed: receipt.replayed,
             status: TransferStatus::Completed,
         }),

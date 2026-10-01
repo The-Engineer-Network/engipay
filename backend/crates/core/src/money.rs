@@ -165,6 +165,25 @@ impl Money {
 
     /// Converts on-chain units from a network into ledger money. Always exact,
     /// because the ledger is never less precise than any network.
+    /// The amount alone as an exact decimal, trailing zeros removed: "1.5",
+    /// "0", "-2". For JSON fields and URIs, where the asset is said elsewhere.
+    pub fn decimal(&self) -> String {
+        let decimals = self.asset.decimals() as usize;
+        let sign = if self.minor < 0 { "-" } else { "" };
+        let digits = self.minor.unsigned_abs().to_string();
+        // Padding to decimals + 1 guarantees at least one whole digit, so the
+        // split point can never underflow; saturating keeps that explicit.
+        let padded = format!("{digits:0>width$}", width = decimals.saturating_add(1));
+        let split = padded.len().saturating_sub(decimals);
+        let (whole, fraction) = padded.split_at(split);
+        let fraction = fraction.trim_end_matches('0');
+        if fraction.is_empty() {
+            format!("{sign}{whole}")
+        } else {
+            format!("{sign}{whole}.{fraction}")
+        }
+    }
+
     pub fn from_network_units(
         asset: Asset,
         chain: Chain,
@@ -203,20 +222,7 @@ fn network_factor(asset: Asset, chain: Chain) -> Result<i128, MoneyError> {
 impl fmt::Display for Money {
     /// Human form with trailing zeros removed: "1.5 ETH", "0 USDC", "-2 BTC".
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let decimals = self.asset.decimals() as usize;
-        let sign = if self.minor < 0 { "-" } else { "" };
-        let digits = self.minor.unsigned_abs().to_string();
-        // Padding to decimals + 1 guarantees at least one whole digit, so the
-        // split point can never underflow; saturating keeps that explicit.
-        let padded = format!("{digits:0>width$}", width = decimals.saturating_add(1));
-        let split = padded.len().saturating_sub(decimals);
-        let (whole, fraction) = padded.split_at(split);
-        let fraction = fraction.trim_end_matches('0');
-        if fraction.is_empty() {
-            write!(f, "{sign}{whole} {}", self.asset)
-        } else {
-            write!(f, "{sign}{whole}.{fraction} {}", self.asset)
-        }
+        write!(f, "{} {}", self.decimal(), self.asset)
     }
 }
 
@@ -227,6 +233,15 @@ mod tests {
 
     fn usdc(text: &str) -> Result<Money, MoneyError> {
         Money::parse(Asset::Usdc, text)
+    }
+
+    #[test]
+    fn decimal_is_the_exact_amount_without_the_symbol() {
+        assert_eq!(usdc("1.50").unwrap().decimal(), "1.5");
+        assert_eq!(usdc("0").unwrap().decimal(), "0");
+        assert_eq!(usdc("0.0000001").unwrap().decimal(), "0.0000001");
+        assert_eq!(Money::from_minor(Asset::Btc, -200_000_000).decimal(), "-2");
+        assert_eq!(usdc("1.5").unwrap().to_string(), "1.5 USDC");
     }
 
     #[test]

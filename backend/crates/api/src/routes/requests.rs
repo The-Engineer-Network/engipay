@@ -61,7 +61,11 @@ pub fn validate(payload: &CreatePaymentRequest) -> Result<(Money, Duration), Api
 
 /// The shareable link a payer opens to settle the request.
 pub fn payment_uri(id: Uuid, money: Money) -> String {
-    format!("engipay:{id}?asset={}&amount={money}", money.asset.symbol())
+    format!(
+        "engipay:{id}?asset={}&amount={}",
+        money.asset.symbol(),
+        money.decimal()
+    )
 }
 
 async fn create_payment_request(
@@ -152,7 +156,7 @@ mod tests {
         let money = Money::parse(Asset::Usdc, "25").unwrap();
         assert_eq!(
             payment_uri(id, money),
-            format!("engipay:{id}?asset=USDC&amount={money}")
+            format!("engipay:{id}?asset=USDC&amount=25")
         );
     }
 }
