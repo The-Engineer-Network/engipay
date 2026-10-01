@@ -220,14 +220,12 @@ pub fn deposit_from_record(
 
     let asset = match record.asset_type.as_deref() {
         Some("native") => Asset::Xlm,
-        Some("credit_alphanum4") | Some("credit_alphanum12") => {
+        Some("credit_alphanum4") => {
             let code = record.asset_code.clone().unwrap_or_default();
             let issuer = record.asset_issuer.clone().unwrap_or_default();
             if code == "USDC" && issuer == network.usdc_issuer() {
                 Asset::Usdc
             } else {
-                // Flag tokens named "USDC" from the wrong issuer separately so
-                // operators can distinguish counterfeit USDC from unknown assets.
                 let counterfeit_usdc = code == "USDC";
                 return Err(Skipped::UnsupportedAsset {
                     code,
@@ -235,6 +233,16 @@ pub fn deposit_from_record(
                     counterfeit_usdc,
                 });
             }
+        }
+        Some("credit_alphanum12") => {
+            let code = record.asset_code.clone().unwrap_or_default();
+            let issuer = record.asset_issuer.clone().unwrap_or_default();
+            let counterfeit_usdc = code.trim() == "USDC";
+            return Err(Skipped::UnsupportedAsset {
+                code,
+                issuer,
+                counterfeit_usdc,
+            });
         }
         _ => return Err(Skipped::Malformed("unknown asset_type")),
     };
@@ -624,6 +632,7 @@ mod tests {
         let unsupported = Skipped::UnsupportedAsset {
             code: "FAKE".to_owned(),
             issuer: "GXXXX".to_owned(),
+            counterfeit_usdc: false,
         };
         assert!(unsupported.is_security_sensitive());
 
