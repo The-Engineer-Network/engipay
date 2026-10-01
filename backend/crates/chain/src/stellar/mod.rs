@@ -16,7 +16,9 @@ use engipay_core::Chain;
 use engipay_core::stellar::{StellarAddress, parse_address};
 use tracing::{error, warn};
 
-use self::horizon::{Account, Page, PaymentRecord, Root, SubmitProblem, Submitted, TransactionCache};
+use self::horizon::{
+    Account, Page, PaymentRecord, Root, SubmitProblem, Submitted, TransactionCache,
+};
 pub use self::network::StellarNetwork;
 use self::payment::{PaymentRequest, StellarSigner};
 use crate::{ChainClient, ChainError, EventStream, ObservedDeposit};
@@ -642,7 +644,11 @@ mod tests {
             .await;
 
         let deposits = client(&server).await.deposits_since(58).await.unwrap();
-        assert_eq!(deposits.len(), 1, "only real Circle testnet USDC is credited");
+        assert_eq!(
+            deposits.len(),
+            1,
+            "only real Circle testnet USDC is credited"
+        );
         assert_eq!(
             deposits[0].money,
             Money::from_minor(Asset::Usdc, 50_000_000)
@@ -783,9 +789,16 @@ mod tests {
 
         let total_stroops: i128 = deposits
             .iter()
-            .map(|d| d.money.to_network_units(engipay_core::Chain::Stellar).unwrap())
+            .map(|d| {
+                d.money
+                    .to_network_units(engipay_core::Chain::Stellar)
+                    .unwrap()
+            })
             .sum();
-        assert_eq!(total_stroops, 60_000_000, "1 + 2 + 3 XLM = 6 XLM = 60_000_000 stroops");
+        assert_eq!(
+            total_stroops, 60_000_000,
+            "1 + 2 + 3 XLM = 6 XLM = 60_000_000 stroops"
+        );
 
         // Each deposit carries a unique reference (paging_token).
         let refs: std::collections::HashSet<_> = deposits.iter().map(|d| &d.reference).collect();

@@ -2,7 +2,7 @@
 -- Includes user profiles, deposit addresses, bank accounts, token conversions,
 -- ramp orders, and deduplicated partner webhook events.
 
--- user_profiles is created in 0003_auth.sql, keyed by `id` with a `tier`
+-- user_profiles is created in 0004_auth.sql, keyed by `id` with a `tier`
 -- column, which is what the API writes on first sign-in. This migration adds
 -- the profile fields the rest of the product needs, rather than declaring a
 -- second, conflicting table.

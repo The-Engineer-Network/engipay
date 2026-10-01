@@ -72,8 +72,8 @@ async fn db_pool() -> anyhow::Result<Option<sqlx::PgPool>> {
 async fn watch() -> anyhow::Result<()> {
     // Always start the internal HTTP server so the API can reach fee estimates
     // even when no Stellar custody account is configured.
-    let internal_addr = env::var("CHAIN_INTERNAL_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
+    let internal_addr =
+        env::var("CHAIN_INTERNAL_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
     let app = routes::internal();
     let listener = tokio::net::TcpListener::bind(&internal_addr)
         .await

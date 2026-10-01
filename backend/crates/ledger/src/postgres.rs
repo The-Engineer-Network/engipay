@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
-use crate::{ActiveHold, Balance, HoldState, LedgerError, Receipt};
+use crate::{Balance, HoldState, LedgerError, Receipt};
 
 /// One active (open) hold belonging to a user, returned by [`PostgresLedgerStore::get_active_holds`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,9 +96,6 @@ impl PostgresLedgerStore {
             .collect())
     }
 
-    /// Returns all open (in-flight) holds for `user`, ordered by creation
-    /// time ascending.  Only holds in the `open` state are returned; released
-    /// and settled holds are not included.
     /// All open (active) holds for `user`, ordered by creation time ascending.
     ///
     /// Returns an empty `Vec` when the user has no open holds.  Each entry
@@ -117,31 +114,6 @@ impl PostgresLedgerStore {
         .await
         .map_err(db_err)?;
 
-        rows.into_iter()
-            .map(|row| {
-                let reference: String = row.get("reference");
-                let asset_str: String = row.get("asset");
-                let amount_str: String = row.get("amount");
-                let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
-
-                let asset = asset_str
-                    .parse::<Asset>()
-                    .map_err(|_| LedgerError::Database {
-                        code: None,
-                        message: format!("unknown asset in hold: {asset_str}"),
-                    })?;
-                let amount = amount_str
-                    .parse::<i128>()
-                    .map_err(|_| LedgerError::Overflow)?;
-
-                Ok(ActiveHold {
-                    reference,
-                    asset,
-                    amount,
-                    created_at,
-                })
-            })
-            .collect()
         let mut holds = Vec::with_capacity(rows.len());
         for row in rows {
             let reference: String = row.get("reference");
@@ -150,11 +122,15 @@ impl PostgresLedgerStore {
             let created_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
                 row.get("created_at");
 
-            let asset = asset_str.parse::<Asset>().map_err(|_| LedgerError::Database {
-                code: None,
-                message: format!("unknown asset in ledger_holds: {asset_str}"),
-            })?;
-            let amount = amount_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            let asset = asset_str
+                .parse::<Asset>()
+                .map_err(|_| LedgerError::Database {
+                    code: None,
+                    message: format!("unknown asset in ledger_holds: {asset_str}"),
+                })?;
+            let amount = amount_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
 
             holds.push(ActiveHold {
                 reference,
@@ -590,7 +566,9 @@ async fn get_hold(
     reference: &str,
 ) -> Result<Hold, LedgerError> {
     let row =
-        sqlx::query("SELECT user_id, asset, amount, state FROM ledger_holds WHERE reference = $1")
+        sqlx::query(
+            "SELECT user_id, asset, amount::text AS amount, state FROM ledger_holds WHERE reference = $1",
+        )
             .bind(reference)
             .fetch_optional(&mut **tx)
             .await
@@ -1058,7 +1036,10 @@ mod tests {
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
 
-        store.deposit(alice, usdc(300), "seed-ah-excl").await.unwrap();
+        store
+            .deposit(alice, usdc(300), "seed-ah-excl")
+            .await
+            .unwrap();
         store
             .create_hold(alice, usdc(100), "hold-excl-open")
             .await
@@ -1165,12 +1146,27 @@ mod tests {
             .create_hold(alice, usdc(60), "hold-closed")
             .await
             .unwrap();
-        store.release_hold("hold-closed").await.unwrap();
+        // Settle it the way a completed withdrawal does. Releasing the same
+        // hold twice is an idempotent replay (see
+        // `release_hold_replay_returns_same_receipt`), so a closed hold is
+        // one that was settled instead.
+        sqlx::query(
+            "UPDATE ledger_holds SET state = 'settled', closed_at = now() WHERE reference = $1",
+        )
+        .bind("hold-closed")
+        .execute(&pool)
+        .await
+        .unwrap();
 
-        // Try to release again
         let result = store.release_hold("hold-closed").await;
 
-        assert!(matches!(result, Err(LedgerError::HoldClosed { .. })));
+        assert!(matches!(
+            result,
+            Err(LedgerError::HoldClosed {
+                state: HoldState::Settled,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

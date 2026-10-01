@@ -51,10 +51,10 @@
 //! unavailable we fall back to 10 sat/vB.
 
 use axum::Json;
+use axum::Router;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::Router;
 use serde::{Deserialize, Serialize};
 
 use engipay_core::{Asset, Chain, Money};
@@ -225,10 +225,7 @@ async fn fetch_stellar_base_fee(http: &reqwest::Client) -> (i128, bool) {
         last_ledger_base_fee: Option<u32>,
     }
 
-    let result = http
-        .get(format!("{horizon_url}/"))
-        .send()
-        .await;
+    let result = http.get(format!("{horizon_url}/")).send().await;
 
     let response = match result {
         Ok(r) => r.error_for_status(),
@@ -275,9 +272,7 @@ async fn estimate_base(
 
     let (fee_per_gas, estimated) = fetch_base_fee_per_gas(http).await;
     // fee = (base_fee + priority_fee) × gas_limit
-    let fee_minor = fee_per_gas
-        .checked_mul(gas_limit)
-        .unwrap_or(fee_per_gas);
+    let fee_minor = fee_per_gas.checked_mul(gas_limit).unwrap_or(fee_per_gas);
 
     Ok(EstimateFeeResponse {
         chain: Chain::Base,
@@ -421,7 +416,10 @@ fn format_money(money: Money) -> String {
     let scale: i128 = 10_i128.pow(decimals);
     let integer_part = minor / scale;
     let frac_part = (minor % scale).abs();
-    format!("{integer_part}.{frac_part:0>width$}", width = decimals as usize)
+    format!(
+        "{integer_part}.{frac_part:0>width$}",
+        width = decimals as usize
+    )
 }
 
 /// Parses a `0x`-prefixed hex string into a `u128`. Returns `None` on any
@@ -465,10 +463,7 @@ mod tests {
     #[test]
     fn format_btc_satoshi_amounts() {
         // 1 sat = 0.00000001 BTC (8 decimals)
-        assert_eq!(
-            format_money(Money::from_minor(Asset::Btc, 1)),
-            "0.00000001"
-        );
+        assert_eq!(format_money(Money::from_minor(Asset::Btc, 1)), "0.00000001");
         // 1410 sats (141 vbytes × 10 sat/vB fallback)
         assert_eq!(
             format_money(Money::from_minor(Asset::Btc, 1410)),
@@ -508,7 +503,10 @@ mod tests {
         // XLM transfer: 1 operation at 100 stroops floor → 100 stroops.
         let fee_minor: i128 = 100; // base_fee × 1 op
         assert_eq!(fee_minor, 100);
-        assert_eq!(format_money(Money::from_minor(Asset::Xlm, fee_minor)), "0.0000100");
+        assert_eq!(
+            format_money(Money::from_minor(Asset::Xlm, fee_minor)),
+            "0.0000100"
+        );
     }
 
     #[test]
@@ -516,7 +514,10 @@ mod tests {
         // USDC on Stellar: 2 operations at 100 stroops each → 200 stroops.
         let fee_minor: i128 = 100 * 2;
         assert_eq!(fee_minor, 200);
-        assert_eq!(format_money(Money::from_minor(Asset::Xlm, fee_minor)), "0.0000200");
+        assert_eq!(
+            format_money(Money::from_minor(Asset::Xlm, fee_minor)),
+            "0.0000200"
+        );
     }
 
     #[test]

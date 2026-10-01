@@ -301,7 +301,10 @@ impl Ledger {
         }
         let required = Money {
             asset: money.asset,
-            minor: money.minor.checked_add(fee.minor).ok_or(LedgerError::Overflow)?,
+            minor: money
+                .minor
+                .checked_add(fee.minor)
+                .ok_or(LedgerError::Overflow)?,
         };
         self.require_available(user, required)?;
         let postings = vec![
@@ -340,11 +343,7 @@ impl Ledger {
     /// Settles a hold: the held money leaves EngiPay, and an optional fee is
     /// booked as revenue. The fee must be in the same asset and no larger than
     /// the held amount.
-    pub fn settle(
-        &mut self,
-        reference: &str,
-        fee: Option<Money>,
-    ) -> Result<Receipt, LedgerError> {
+    pub fn settle(&mut self, reference: &str, fee: Option<Money>) -> Result<Receipt, LedgerError> {
         let hold = self.open_hold(reference)?;
         if let Some(fee) = fee {
             if fee.asset != hold.money.asset || fee.minor > hold.money.minor {
@@ -502,6 +501,7 @@ fn posting(account: AccountKey, amount: i128) -> Posting {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
