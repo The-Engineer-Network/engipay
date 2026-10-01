@@ -9,6 +9,7 @@
 //! implemented ([`stellar`]); Base (via `alloy`) and Bitcoin (via `bdk`) come
 //! next.
 
+pub mod bitcoin;
 pub mod creditor;
 pub mod deposit_creditor;
 pub mod dlq;

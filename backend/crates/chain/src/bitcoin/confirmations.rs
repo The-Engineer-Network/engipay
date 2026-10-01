@@ -9,6 +9,9 @@
 /// Number of confirmations required before a Bitcoin deposit is credited.
 pub const REQUIRED_CONFIRMATIONS: u64 = 2;
 
+/// Alias for [`REQUIRED_CONFIRMATIONS`], used in public API exports.
+pub const MIN_BITCOIN_CONFIRMATIONS: u64 = REQUIRED_CONFIRMATIONS;
+
 /// Whether a Bitcoin transaction is confirmed enough to be credited.
 ///
 /// `tx_height` is the block height the transaction was included in and
