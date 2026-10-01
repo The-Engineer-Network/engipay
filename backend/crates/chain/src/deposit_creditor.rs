@@ -44,8 +44,8 @@
 //! behaviour: a transient database outage should not permanently lose a
 //! deposit. Operators monitoring the DLQ will investigate any entries there.
 
-use engipay_core::stellar::{StellarAddress, parse_address};
 use engipay_core::UserId;
+use engipay_core::stellar::{StellarAddress, parse_address};
 use engipay_ledger::LedgerError;
 use engipay_ledger::postgres::PostgresLedgerStore;
 use sqlx::PgPool;
@@ -498,8 +498,8 @@ mod tests {
 
     #[test]
     fn database_error_maps_to_database_constraint() {
-        use engipay_ledger::LedgerError;
         use super::ledger_error_to_dlq_reason;
+        use engipay_ledger::LedgerError;
         let err = LedgerError::Database {
             code: Some("23505".into()),
             message: "unique".into(),
@@ -512,8 +512,8 @@ mod tests {
 
     #[test]
     fn invariant_violated_maps_to_database_constraint() {
-        use engipay_ledger::LedgerError;
         use super::ledger_error_to_dlq_reason;
+        use engipay_ledger::LedgerError;
         let err = LedgerError::InvariantViolated("negative balance");
         assert_eq!(
             ledger_error_to_dlq_reason(&err),
@@ -523,8 +523,8 @@ mod tests {
 
     #[test]
     fn non_positive_amount_maps_to_other() {
-        use engipay_ledger::LedgerError;
         use super::ledger_error_to_dlq_reason;
+        use engipay_ledger::LedgerError;
         assert!(matches!(
             ledger_error_to_dlq_reason(&LedgerError::NonPositiveAmount),
             DlqReason::Other(_)

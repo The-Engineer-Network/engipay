@@ -97,8 +97,9 @@ async fn watch() -> anyhow::Result<()> {
     // Build the creditor when we have a database pool. Without a pool the
     // watcher falls back to logging-only mode (useful for smoke tests and
     // local development without Postgres).
-    let creditor: Option<Arc<DepositCreditor>> =
-        pool.as_ref().map(|p| Arc::new(DepositCreditor::new(p.clone())));
+    let creditor: Option<Arc<DepositCreditor>> = pool
+        .as_ref()
+        .map(|p| Arc::new(DepositCreditor::new(p.clone())));
 
     let poll = Duration::from_secs(
         env::var("STELLAR_POLL_SECONDS")
