@@ -64,7 +64,7 @@ pub struct UserId(pub String);
 ///
 /// Logs exactly one JSON object per request after the response is produced.
 /// Only metadata is emitted; request bodies and headers are never logged.
-pub async fn log_requests(req: Request<Body>, next: Next) -> Response<Body> {
+pub async fn log_requests(mut req: Request<Body>, next: Next) -> Response<Body> {
     let start = Instant::now();
     let correlation_id = resolve_correlation_id(&req);
     let method = req.method().clone();
@@ -72,7 +72,8 @@ pub async fn log_requests(req: Request<Body>, next: Next) -> Response<Body> {
     let ip = client_ip(&req);
     let user = user_id(&req);
 
-    req.extensions_mut().insert(CorrelationId(correlation_id.clone()));
+    req.extensions_mut()
+        .insert(CorrelationId(correlation_id.clone()));
 
     let mut response = next.run(req).await;
 

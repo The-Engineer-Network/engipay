@@ -10,10 +10,6 @@ pub struct Config {
     pub stellar_server_secret: Option<String>,
     /// HMAC-SHA256 signing key for session JWTs (see `auth::jwt`).
     pub jwt_secret: String,
-    /// The custody account on Stellar (`G...`). Users get a unique muxed `M...`
-    /// address derived from it. When unset the Stellar deposit-address endpoint
-    /// returns 503.
-    pub stellar_custody_account: Option<String>,
     /// Shared Base (EVM) custody address (`0x...`). When unset the Base
     /// deposit-address endpoint returns 503.
     pub base_custody_address: Option<String>,
@@ -60,9 +56,6 @@ impl Config {
                 name: "JWT_SECRET",
                 reason: "must be set to a random secret used to sign session tokens".to_owned(),
             })?,
-            stellar_custody_account: env::var("STELLAR_CUSTODY_ACCOUNT")
-                .ok()
-                .filter(|s| !s.trim().is_empty()),
             base_custody_address: env::var("BASE_CUSTODY_ADDRESS")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
@@ -82,7 +75,6 @@ impl Config {
             json_logs: false,
             stellar_server_secret: None,
             jwt_secret: "test-secret-do-not-use-in-production".to_owned(),
-            stellar_custody_account: None,
             base_custody_address: None,
             bitcoin_custody_address: None,
         }

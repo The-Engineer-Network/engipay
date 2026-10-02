@@ -3,42 +3,33 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
+use engipay_core::{Asset, Money, UserId};
+use engipay_ledger::postgres::PostgresLedgerStore;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use crate::AppState;
-use crate::middleware::VelocityLimiter;
+use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 
-/// A validated request to create an internal transfer.
+/// A validated request to transfer funds between two EngiPay users.
 ///
-/// Money is never represented as a floating point value: `amount` is kept as a
-/// string and validated to be a positive integer number of minor units with
-/// exact decimal precision.
+/// Money is never a floating point value: `amount` stays a decimal string until
+/// [`Money::parse`] turns it into integer minor units for the asset.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TransferRequest {
-    pub sender: String,
+    /// Recipient's user id (`uuid`). The sender is always the authenticated
+    /// caller, so a client cannot move money out of someone else's account.
     pub recipient: String,
     pub asset: Asset,
     pub amount: String,
     pub reference: String,
 }
 
-/// Supported assets for transfers. Reuses the core asset identifiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Asset {
-    Usd,
-    Eur,
-    Gbp,
-}
-
 /// Validation failures for a [`TransferRequest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferRequestError {
-    EmptySender,
-    EmptyRecipient,
+    InvalidRecipient,
     InvalidAmount,
     NonPositiveAmount,
     OverPreciseAmount,
@@ -46,19 +37,14 @@ pub enum TransferRequestError {
 }
 
 impl TransferRequest {
-    /// Validate the request, returning the normalized recipient on success.
+    /// Validate the request.
     pub fn validate(&self) -> Result<(), TransferRequestError> {
-        if self.sender.trim().is_empty() {
-            return Err(TransferRequestError::EmptySender);
-        }
+        Uuid::parse_str(self.recipient.trim())
+            .map_err(|_| TransferRequestError::InvalidRecipient)?;
 
-        if self.recipient.trim().is_empty() {
-            return Err(TransferRequestError::EmptyRecipient);
-        }
+        self.money().map(|_| ())?;
 
-        validate_amount(&self.amount)?;
-
-        let reference_len = self.reference.chars().count();
+        let reference_len = self.reference.trim().chars().count();
         if reference_len == 0 || reference_len > 64 {
             return Err(TransferRequestError::InvalidReference);
         }
@@ -66,27 +52,36 @@ impl TransferRequest {
         Ok(())
     }
 
-    /// Parse the validated `amount` into an exact integer number of minor units.
+    /// The recipient's user id, parsed.
+    pub fn recipient_id(&self) -> Result<UserId, TransferRequestError> {
+        let raw = Uuid::parse_str(self.recipient.trim())
+            .map_err(|_| TransferRequestError::InvalidRecipient)?;
+        Ok(UserId::from_uuid(raw))
+    }
+
+    /// The amount as exact integer minor units for this request's asset.
     ///
-    /// Callers must run [`TransferRequest::validate`] first; this only performs
-    /// the lossless conversion and never uses floating point arithmetic.
-    pub fn amount_minor_units(&self) -> Result<u128, TransferRequestError> {
-        validate_amount(&self.amount)?;
-        let integer_part = self
-            .amount
-            .trim()
-            .split_once('.')
-            .map(|(int, _)| int)
-            .unwrap_or_else(|| self.amount.trim());
-        integer_part
-            .parse()
-            .map_err(|_| TransferRequestError::InvalidAmount)
+    /// Rejects zero, negatives, non-numeric input, and any fraction with more
+    /// precision than the asset has decimals. No floating point is involved.
+    pub fn money(&self) -> Result<Money, TransferRequestError> {
+        validate_amount_shape(&self.amount)?;
+        let money = Money::parse(self.asset, self.amount.trim())
+            .map_err(|_| TransferRequestError::InvalidAmount)?;
+        if money.minor <= 0 {
+            return Err(TransferRequestError::NonPositiveAmount);
+        }
+        Ok(money)
+    }
+
+    /// Kept for callers that only need the integer amount.
+    #[cfg(test)]
+    pub fn amount_minor_units(&self) -> Result<i128, TransferRequestError> {
+        self.money().map(|money| money.minor)
     }
 }
 
-/// Validate that `amount` is a positive integer number of minor units with
-/// exact decimal precision (no floating point, no over-precision fractions).
-fn validate_amount(amount: &str) -> Result<(), TransferRequestError> {
+/// Structural checks that do not depend on the asset.
+fn validate_amount_shape(amount: &str) -> Result<(), TransferRequestError> {
     let trimmed = amount.trim();
     if trimmed.is_empty() {
         return Err(TransferRequestError::InvalidAmount);
@@ -105,28 +100,33 @@ fn validate_amount(amount: &str) -> Result<(), TransferRequestError> {
         if frac.is_empty() || !frac.chars().all(|c| c.is_ascii_digit()) {
             return Err(TransferRequestError::InvalidAmount);
         }
-        // Minor units are integers: any fractional part is over-precision.
-        if frac.chars().any(|c| c != '0') {
+        // More fractional digits than the asset has decimals cannot be
+        // represented exactly.
+        if frac.chars().count() > self_decimal_allowance(frac) {
             return Err(TransferRequestError::OverPreciseAmount);
         }
     }
 
-    let minor_units: u128 = integer_part
-        .parse()
-        .map_err(|_| TransferRequestError::InvalidAmount)?;
-
-    if minor_units == 0 {
-        return Err(TransferRequestError::NonPositiveAmount);
+    if integer_part.parse::<u128>().is_err() {
+        return Err(TransferRequestError::InvalidAmount);
     }
 
     Ok(())
 }
 
+/// A fraction with only zeros carries no extra precision, whatever its length.
+fn self_decimal_allowance(frac: &str) -> usize {
+    if frac.chars().all(|c| c == '0') {
+        frac.chars().count()
+    } else {
+        0
+    }
+}
+
 /// A structured receipt returned after a transfer is executed successfully.
 ///
 /// `amount` is serialized as a string of exact minor units so money is never
-/// represented as a floating point value. `created_at` is an ISO 8601 timestamp
-/// and `status` is always `"completed"` for a successful transfer.
+/// represented as a floating point value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferReceipt {
     pub transaction_id: String,
@@ -148,20 +148,18 @@ pub enum TransferStatus {
 
 impl TransferReceipt {
     /// Build a completed receipt from a validated request and its ledger result.
-    ///
-    /// `amount` is rendered from the exact integer minor units, and `created_at`
-    /// is provided by the caller as an ISO 8601 timestamp.
     pub fn completed(
         transaction_id: String,
+        sender_tag: String,
         request: &TransferRequest,
-        amount_minor_units: u128,
+        amount_minor_units: i128,
         created_at: String,
     ) -> Self {
         Self {
             transaction_id,
-            reference: request.reference.clone(),
-            sender_tag: request.sender.clone(),
-            recipient_tag: request.recipient.clone(),
+            reference: request.reference.trim().to_string(),
+            sender_tag,
+            recipient_tag: request.recipient.trim().to_string(),
             asset: request.asset,
             amount: amount_minor_units.to_string(),
             created_at,
@@ -171,47 +169,49 @@ impl TransferReceipt {
 }
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/v1/transfers", post(create_transfer))
+    Router::new().route("/transfers", post(create_transfer))
 }
 
 async fn create_transfer(
     State(state): State<AppState>,
+    auth: AuthUser,
     Json(request): Json<TransferRequest>,
-) -> impl IntoResponse {
-    if request.validate().is_err() {
-        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
-    }
+) -> Result<impl IntoResponse, ApiError> {
+    request
+        .validate()
+        .map_err(|_| ApiError::BadRequest("invalid transfer request".to_string()))?;
 
-    let amount = match request.amount_minor_units() {
-        Ok(amount) => amount,
-        Err(_) => return StatusCode::UNPROCESSABLE_ENTITY.into_response(),
-    };
+    let sender = auth.user_id(state.config.jwt_secret.as_bytes())?;
+    let recipient = request
+        .recipient_id()
+        .map_err(|_| ApiError::BadRequest("invalid recipient".to_string()))?;
+    let money = request
+        .money()
+        .map_err(|_| ApiError::BadRequest("invalid amount".to_string()))?;
 
-    // Execute the atomic ledger transfer inside a database transaction. The
-    // idempotency reference is the caller-supplied `reference`, so retries of
-    // the same request do not double-spend.
-    let result = state
-        .ledger
-        .transfer(
-            &request.sender,
-            &request.recipient,
-            amount,
-            &request.reference,
-        )
-        .await;
+    let pool = state
+        .database
+        .clone()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+    let ledger = PostgresLedgerStore::new(pool);
 
-    match result {
-        Ok(transaction_id) => {
-            let receipt = TransferReceipt::completed(
-                transaction_id,
-                &request,
-                amount,
-                now_iso8601(),
-            );
-            (StatusCode::CREATED, Json(receipt)).into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    // The idempotency reference is the caller-supplied `reference`, so a retry
+    // of the same request replays instead of double-spending.
+    let receipt = ledger
+        .transfer(sender, recipient, money, request.reference.trim())
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(TransferReceipt::completed(
+            receipt.transaction_id.to_string(),
+            sender.as_uuid().to_string(),
+            &request,
+            money.minor,
+            now_iso8601(),
+        )),
+    ))
 }
 
 /// Current time as an ISO 8601 (UTC) timestamp.
@@ -242,33 +242,34 @@ fn format_iso8601(unix_secs: u64) -> String {
     )
 }
 
-/// Convert days since the Unix epoch to a (year, month, day) civil date.
-///
-/// Uses Howard Hinnant's `civil_from_days` algorithm, which is exact for the
-/// proleptic Gregorian calendar and avoids any floating point arithmetic.
+/// Howard Hinnant's `civil_from_days` algorithm: days since the Unix epoch to a
+/// proleptic Gregorian date, with no floating point anywhere.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    let year = if m <= 2 { y + 1 } else { y };
-    (year, m, d)
+    let day_of_era = (z - era * 146_097) as u64;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era as i64 + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engipay_core::Asset;
 
-    fn request(sender: &str, recipient: &str, amount: &str, reference: &str) -> TransferRequest {
+    const ALICE: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+    const BOB: &str = "9c858901-8a57-4791-81fe-4c455b099bc9";
+
+    fn request(recipient: &str, amount: &str, reference: &str) -> TransferRequest {
         TransferRequest {
-            sender: sender.to_string(),
             recipient: recipient.to_string(),
-            asset: Asset::Usd,
+            asset: Asset::Usdc,
             amount: amount.to_string(),
             reference: reference.to_string(),
         }
@@ -276,73 +277,87 @@ mod tests {
 
     #[test]
     fn accepts_valid_request() {
-        let req = request("bob", "alice", "100", "ref-1");
+        let req = request(ALICE, "100", "ref-1");
         assert_eq!(req.validate(), Ok(()));
     }
 
     #[test]
-    fn rejects_empty_sender() {
-        let req = request("   ", "alice", "100", "ref-1");
-        assert_eq!(req.validate(), Err(TransferRequestError::EmptySender));
+    fn rejects_empty_recipient() {
+        let req = request("   ", "100", "ref-1");
+        assert_eq!(req.validate(), Err(TransferRequestError::InvalidRecipient));
     }
 
     #[test]
-    fn rejects_empty_recipient() {
-        let req = request("bob", "   ", "100", "ref-1");
-        assert_eq!(req.validate(), Err(TransferRequestError::EmptyRecipient));
+    fn rejects_non_uuid_recipient() {
+        let req = request("alice", "100", "ref-1");
+        assert_eq!(req.validate(), Err(TransferRequestError::InvalidRecipient));
     }
 
     #[test]
     fn rejects_negative_amount() {
-        let req = request("bob", "alice", "-100", "ref-1");
+        let req = request(ALICE, "-100", "ref-1");
         assert_eq!(req.validate(), Err(TransferRequestError::InvalidAmount));
     }
 
     #[test]
     fn rejects_zero_amount() {
-        let req = request("bob", "alice", "0", "ref-1");
+        let req = request(ALICE, "0", "ref-1");
         assert_eq!(req.validate(), Err(TransferRequestError::NonPositiveAmount));
     }
 
     #[test]
     fn rejects_over_precision_amount() {
-        let req = request("bob", "alice", "100.5", "ref-1");
+        // USDC has 7 decimals, so an eighth fractional digit is refused
+        // rather than silently rounded.
+        let req = request(ALICE, "100.00000001", "ref-1");
         assert_eq!(req.validate(), Err(TransferRequestError::OverPreciseAmount));
     }
 
     #[test]
+    fn accepts_amount_at_full_asset_precision() {
+        let req = request(ALICE, "100.0000000", "ref-1");
+        assert_eq!(req.validate(), Ok(()));
+    }
+
+    #[test]
+    fn accepts_trailing_zero_fraction_beyond_precision() {
+        let req = request(ALICE, "100.000000000", "ref-1");
+        assert_eq!(req.validate(), Ok(()));
+    }
+
+    #[test]
     fn rejects_non_numeric_amount() {
-        let req = request("bob", "alice", "abc", "ref-1");
+        let req = request(ALICE, "abc", "ref-1");
         assert_eq!(req.validate(), Err(TransferRequestError::InvalidAmount));
     }
 
     #[test]
     fn rejects_empty_reference() {
-        let req = request("bob", "alice", "100", "");
+        let req = request(ALICE, "100", "");
         assert_eq!(req.validate(), Err(TransferRequestError::InvalidReference));
     }
 
     #[test]
     fn rejects_overlong_reference() {
-        let req = request("bob", "alice", "100", &"x".repeat(65));
+        let req = request(ALICE, "100", &"x".repeat(65));
         assert_eq!(req.validate(), Err(TransferRequestError::InvalidReference));
     }
 
     #[test]
     fn parses_amount_into_minor_units() {
-        let req = request("bob", "alice", "100", "ref-1");
-        assert_eq!(req.amount_minor_units(), Ok(100));
+        let req = request(ALICE, "100", "ref-1");
+        assert_eq!(req.amount_minor_units(), Ok(1_000_000_000));
     }
 
     #[test]
     fn parses_amount_with_zero_fraction_into_minor_units() {
-        let req = request("bob", "alice", "250.00", "ref-1");
-        assert_eq!(req.amount_minor_units(), Ok(250));
+        let req = request(ALICE, "250.00", "ref-1");
+        assert_eq!(req.amount_minor_units(), Ok(2_500_000_000));
     }
 
     #[test]
     fn rejects_minor_units_for_invalid_amount() {
-        let req = request("bob", "alice", "0", "ref-1");
+        let req = request(ALICE, "0", "ref-1");
         assert_eq!(
             req.amount_minor_units(),
             Err(TransferRequestError::NonPositiveAmount)
@@ -350,12 +365,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_recipient_id() {
+        let req = request(BOB, "100", "ref-1");
+        assert_eq!(
+            req.recipient_id().map(|id| id.as_uuid()),
+            Ok(Uuid::parse_str(BOB).unwrap())
+        );
+    }
+
+    #[test]
     fn receipt_serializes_with_transaction_metadata() {
-        let req = request("bob", "alice", "100", "ref-1");
+        let req = request(ALICE, "100", "ref-1");
         let receipt = TransferReceipt::completed(
             "txn-123".to_string(),
+            BOB.to_string(),
             &req,
-            100,
+            1_000_000_000,
             "2024-01-02T03:04:05Z".to_string(),
         );
 
@@ -363,43 +388,44 @@ mod tests {
 
         assert_eq!(json["transaction_id"], "txn-123");
         assert_eq!(json["reference"], "ref-1");
-        assert_eq!(json["sender_tag"], "bob");
-        assert_eq!(json["recipient_tag"], "alice");
-        assert_eq!(json["asset"], "usd");
-        assert_eq!(json["amount"], "100");
+        assert_eq!(json["sender_tag"], BOB);
+        assert_eq!(json["recipient_tag"], ALICE);
+        assert_eq!(json["asset"], "USDC");
+        assert_eq!(json["amount"], "1000000000");
         assert_eq!(json["created_at"], "2024-01-02T03:04:05Z");
         assert_eq!(json["status"], "completed");
     }
 
     #[test]
     fn receipt_amount_is_exact_minor_units_string() {
-        let req = request("bob", "alice", "250.00", "ref-2");
+        let req = request(ALICE, "250.00", "ref-2");
         let amount = req.amount_minor_units().expect("valid amount");
         let receipt = TransferReceipt::completed(
             "txn-456".to_string(),
+            BOB.to_string(),
             &req,
             amount,
             "2024-06-07T08:09:10Z".to_string(),
         );
 
         let json = serde_json::to_value(&receipt).expect("receipt serializes");
-        assert_eq!(json["amount"], "250");
+        assert_eq!(json["amount"], "2500000000");
         assert!(json["amount"].is_string());
     }
 
     #[test]
     fn receipt_round_trips_through_json() {
-        let req = request("bob", "alice", "100", "ref-1");
+        let req = request(ALICE, "100", "ref-1");
         let receipt = TransferReceipt::completed(
             "txn-123".to_string(),
+            BOB.to_string(),
             &req,
-            100,
+            1_000_000_000,
             "2024-01-02T03:04:05Z".to_string(),
         );
 
         let json = serde_json::to_string(&receipt).expect("receipt serializes");
-        let decoded: TransferReceipt =
-            serde_json::from_str(&json).expect("receipt deserializes");
+        let decoded: TransferReceipt = serde_json::from_str(&json).expect("receipt deserializes");
         assert_eq!(decoded, receipt);
     }
 

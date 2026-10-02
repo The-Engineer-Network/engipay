@@ -163,6 +163,12 @@ impl TransactionCache {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Whether the cache holds no entries at all.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// `400` from `POST /transactions`.
@@ -271,9 +277,14 @@ pub fn deposit_from_record(
     let asset = match record.asset_type.as_deref() {
         Some("native") => Asset::Xlm,
         Some("credit_alphanum4") | Some("credit_alphanum12") => {
+            let asset_type = record.asset_type.as_deref().unwrap_or_default();
             let code = record.asset_code.clone().unwrap_or_default();
             let issuer = record.asset_issuer.clone().unwrap_or_default();
-            if code == "USDC" && issuer == network.usdc_issuer() {
+            // Circle issues USDC as alphanum4 only. A 12-character asset named
+            // "USDC" is a different token that borrows the ticker, so it is
+            // counterfeit even when it names Circle's issuer.
+            let usdc_shape_ok = asset_type == "credit_alphanum4";
+            if code == "USDC" && issuer == network.usdc_issuer() && usdc_shape_ok {
                 Asset::Usdc
             } else {
                 // Flag tokens named "USDC" from the wrong issuer separately so

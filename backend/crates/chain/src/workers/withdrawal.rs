@@ -678,12 +678,14 @@ mod tests {
     async fn stellar_sender_reports_the_accepted_hash() {
         let server = MockServer::start().await;
         mount_account_and_fees(&server).await;
+        // A Stellar transaction hash is 32 bytes, i.e. 64 hex characters.
+        const TX_HASH: &str = "167ce3abe1973e68a5a4d1b64128e8d45f18740113eea89632470ca2aafb6c01";
         Mock::given(method("POST"))
             .and(path("/transactions"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "hash": "deadbeef", "ledger": 7 })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "hash": TX_HASH,
+                "ledger": 7
+            })))
             .mount(&server)
             .await;
 
@@ -692,7 +694,7 @@ mod tests {
         assert_eq!(
             outcome,
             DispatchOutcome::Accepted {
-                tx_hash: "deadbeef".to_owned()
+                tx_hash: TX_HASH.to_owned()
             }
         );
     }

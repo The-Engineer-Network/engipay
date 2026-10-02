@@ -185,7 +185,10 @@ mod tests {
     #[test]
     fn reason_as_str_returns_stable_codes() {
         assert_eq!(DlqReason::UnknownRecipient.as_str(), "unknown_recipient");
-        assert_eq!(DlqReason::DatabaseConstraint.as_str(), "database_constraint");
+        assert_eq!(
+            DlqReason::DatabaseConstraint.as_str(),
+            "database_constraint"
+        );
         assert_eq!(DlqReason::MalformedPayload.as_str(), "malformed_payload");
         assert_eq!(
             DlqReason::Other("custom reason".to_owned()).as_str(),
@@ -239,10 +242,7 @@ mod tests {
     fn entry_raw_payload_contains_address() {
         let d = deposit("stellar:tx_addr:1");
         let entry = DlqEntry::new(&d, DlqReason::DatabaseConstraint);
-        assert_eq!(
-            entry.raw_payload["address"].as_str().unwrap(),
-            "MABC123"
-        );
+        assert_eq!(entry.raw_payload["address"].as_str().unwrap(), "MABC123");
     }
 
     // ── Round-trip serialisation ──────────────────────────────────────────────
@@ -278,6 +278,9 @@ mod tests {
             "stellar:hash_x:op_y"
         );
         // Money is exact integer, no float.
-        assert_eq!(entry.raw_payload["amount_minor"].as_i64().unwrap(), 100_000_001);
+        assert_eq!(
+            entry.raw_payload["amount_minor"].as_i64().unwrap(),
+            100_000_001
+        );
     }
 }

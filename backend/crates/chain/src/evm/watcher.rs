@@ -17,8 +17,8 @@
 //! `serde_json` (already in the workspace) to make raw JSON-RPC 2.0 calls.
 //! This avoids a large dependency for what is currently a single RPC method.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -76,9 +76,7 @@ pub struct RpcResponse {
 /// values to `None`. For JSON-RPC, `"result": null` means "no block yet" while
 /// an absent `result` field means a malformed response. We need to tell these
 /// apart, so `null` → `Some(Value::Null)` and absent → `None`.
-fn deserialize_result_field<'de, D>(
-    deserializer: D,
-) -> Result<Option<serde_json::Value>, D::Error>
+fn deserialize_result_field<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -131,10 +129,7 @@ pub enum ParsedBlock {
 /// [`ParsedBlock::Invalid`] for any other error condition.
 pub fn parse_block_response(response: &RpcResponse) -> ParsedBlock {
     if let Some(error) = &response.error {
-        return ParsedBlock::Invalid(format!(
-            "JSON-RPC error {}: {}",
-            error.code, error.message
-        ));
+        return ParsedBlock::Invalid(format!("JSON-RPC error {}: {}", error.code, error.message));
     }
 
     let result = match &response.result {
@@ -629,7 +624,11 @@ mod tests {
 
         watcher.poll_once(2).await.unwrap();
         // Height must still be 500, not 499
-        assert_eq!(height.get(), 500, "height must not decrease on delayed block");
+        assert_eq!(
+            height.get(),
+            500,
+            "height must not decrease on delayed block"
+        );
     }
 
     /// When the node returns `null` (block production delayed), the stored

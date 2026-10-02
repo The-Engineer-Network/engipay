@@ -12,7 +12,10 @@ engipay-core.workspace = true
 engipay-ledger = { workspace = true, features = ["postgres"] }
 anyhow.workspace = true
 axum.workspace = true
+# Standard base64, used to encode the pagination cursor.
+base64.workspace = true
 futures-core.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

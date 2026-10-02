@@ -16,7 +16,10 @@ use engipay_core::{Asset, Money, UserId};
 
 use crate::{Balance, HoldState, LedgerError, Receipt};
 
-/// One active (open) hold belonging to a user, returned by [`PostgresLedgerStore::get_active_holds`].
+// ── Public row types ──────────────────────────────────────────────────
+
+/// A single open (in-flight) hold on a user's funds, as returned by
+/// [`PostgresLedgerStore::get_active_holds`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveHold {
     pub reference: String,

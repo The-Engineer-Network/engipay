@@ -4,17 +4,23 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
-use rust_decimal::Decimal;
+use engipay_core::{Asset, Money};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::error::ApiError;
+use crate::routes::auth::AuthUser;
 
 /// Request body for creating a payment request (invoice).
+///
+/// `amount` is a decimal **string**, never a JSON number: the value is parsed
+/// into [`Money`] (integer minor units) so no floating-point rounding can ever
+/// reach the ledger.
 #[derive(Debug, Deserialize)]
 pub struct CreatePaymentRequest {
     pub asset: String,
-    pub amount: Decimal,
+    pub amount: String,
     #[serde(default)]
     pub note: Option<String>,
     #[serde(default = "default_expiry_minutes")]
@@ -25,6 +31,17 @@ fn default_expiry_minutes() -> i64 {
     60
 }
 
+/// An invoice must be valid for at least a minute and at most a year, so a
+/// typo cannot mint an already-expired or effectively permanent request.
+fn validate_expiry_minutes(minutes: i64) -> Result<(), ApiError> {
+    if !(1..=525_600).contains(&minutes) {
+        return Err(ApiError::BadRequest(
+            "expiry_minutes must be between 1 and 525600".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Response returned after a payment request is created.
 #[derive(Debug, Serialize)]
 pub struct PaymentRequestResponse {
@@ -33,93 +50,80 @@ pub struct PaymentRequestResponse {
     pub expires_at: DateTime<Utc>,
 }
 
-/// Validation error returned when the request body is not acceptable.
-#[derive(Debug, Serialize)]
-pub struct ValidationError {
-    pub error: String,
-}
-
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/v1/payment-requests", post(create_payment_request))
+    Router::new().route("/payment-requests", post(create_payment_request))
 }
 
 /// POST /v1/payment-requests
 ///
 /// Creates a merchant/peer payment request with a fixed amount, asset, and memo.
-/// Money is handled as `Decimal` (never floating point) and all inputs are
-/// validated before a record is persisted.
+/// Money is handled as integer minor units (never floating point) and all inputs
+/// are validated before a record is persisted.
 pub async fn create_payment_request(
     State(state): State<AppState>,
+    auth: AuthUser,
     Json(payload): Json<CreatePaymentRequest>,
-) -> impl IntoResponse {
-    let asset = payload.asset.trim().to_uppercase();
-    if asset.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ValidationError {
-                error: "asset must not be empty".to_string(),
-            }),
-        )
-            .into_response();
-    }
+) -> Result<impl IntoResponse, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
+    let pool = state
+        .database
+        .clone()
+        .ok_or(ApiError::DatabaseUnavailable)?;
 
-    if payload.amount <= Decimal::ZERO {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ValidationError {
-                error: "amount must be greater than zero".to_string(),
-            }),
-        )
-            .into_response();
+    let asset_str = payload.asset.trim().to_uppercase();
+    let asset: Asset = asset_str
+        .parse()
+        .map_err(|_| ApiError::BadRequest("unsupported asset".to_string()))?;
+
+    // Exact decimal parse into minor units; rejects zero, negatives and more
+    // fractional digits than the asset has.
+    let money = Money::parse(asset, payload.amount.trim())
+        .map_err(|_| ApiError::BadRequest("amount must be a positive value".to_string()))?;
+    if money.minor <= 0 {
+        return Err(ApiError::BadRequest(
+            "amount must be greater than zero".to_string(),
+        ));
     }
 
     if payload.expiry_minutes <= 0 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ValidationError {
-                error: "expiry_minutes must be greater than zero".to_string(),
-            }),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest(
+            "expiry_minutes must be greater than zero".to_string(),
+        ));
     }
+    validate_expiry_minutes(payload.expiry_minutes)?;
 
     let id = Uuid::new_v4();
     let expires_at = Utc::now() + Duration::minutes(payload.expiry_minutes);
-    let uri = format!("engipay:{}?asset={}&amount={}", id, asset, payload.amount);
+    let uri = format!(
+        "engipay:{}?asset={}&amount={}",
+        id,
+        asset.symbol(),
+        money.minor
+    );
 
-    let result = sqlx::query(
-        "INSERT INTO payment_requests (id, asset, amount, note, uri, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+    sqlx::query(
+        "INSERT INTO payment_requests (id, user_id, asset, amount, note, uri, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(id)
-    .bind(&asset)
-    .bind(payload.amount)
+    .bind(user_id.as_uuid())
+    .bind(asset.symbol())
+    .bind(money.minor.to_string())
     .bind(payload.note.as_deref())
     .bind(&uri)
     .bind(expires_at)
-    .execute(&state.db)
-    .await;
+    .execute(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
 
-    if let Err(err) = result {
-        tracing::error!(error = %err, "failed to persist payment request");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ValidationError {
-                error: "failed to create payment request".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    (
+    Ok((
         StatusCode::CREATED,
         Json(PaymentRequestResponse {
             id: id.to_string(),
             uri,
             expires_at,
         }),
-    )
-        .into_response()
+    ))
 }
 
 #[cfg(test)]
@@ -133,21 +137,29 @@ mod tests {
 
     #[test]
     fn rejects_non_positive_amount() {
-        let amount = Decimal::new(0, 2);
-        assert!(amount <= Decimal::ZERO);
+        assert!(Money::parse(Asset::Usdc, "0").unwrap().minor <= 0);
+        assert!(Money::parse(Asset::Usdc, "-1").is_err());
     }
 
     #[test]
     fn accepts_positive_amount() {
-        let amount = Decimal::new(2500, 2);
-        assert!(amount > Decimal::ZERO);
-        assert_eq!(amount.to_string(), "25.00");
+        let money = Money::parse(Asset::Usdc, "25.00").unwrap();
+        assert!(money.minor > 0);
+        assert_eq!(money.minor, 250_000_000);
     }
 
     #[test]
     fn rejects_non_positive_expiry() {
-        assert!(0_i64 <= 0);
-        assert!(-5_i64 <= 0);
+        assert!(validate_expiry_minutes(0).is_err());
+        assert!(validate_expiry_minutes(-5).is_err());
+    }
+
+    #[test]
+    fn accepts_expiry_within_bounds() {
+        assert!(validate_expiry_minutes(1).is_ok());
+        assert!(validate_expiry_minutes(60).is_ok());
+        assert!(validate_expiry_minutes(525_600).is_ok());
+        assert!(validate_expiry_minutes(525_601).is_err());
     }
 
     #[test]
