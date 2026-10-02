@@ -8,8 +8,12 @@
 //! deposit watcher never care which network they are talking to. Stellar is
 //! implemented ([`stellar`]); Base (via `alloy`) and Bitcoin (via `bdk`) come
 //! next.
+//!
+//! The [`routes`] module is the internal HTTP surface the API service calls,
+//! starting with `POST /internal/estimate-fee` ([`routes::estimate_fee`]).
 
 pub mod evm;
+pub mod routes;
 pub mod stellar;
 
 use std::pin::Pin;
@@ -96,11 +100,19 @@ pub trait ChainClient: Send + Sync {
     /// per tick. This default has the same semantics as the original `watch()`
     /// loop in `main.rs`, so every chain gets correct behaviour without needing
     /// a WebSocket endpoint.
+    ///
+    /// It takes `self` by `Arc` because the returned stream outlives this call
+    /// and must keep the client alive while it polls.
     fn stream_events(
-        &self,
+        self: std::sync::Arc<Self>,
         from_height: u64,
         poll_interval: Duration,
-    ) -> impl std::future::Future<Output = Result<EventStream, ChainError>> + Send;
+    ) -> impl std::future::Future<Output = Result<EventStream, ChainError>> + Send
+    where
+        Self: Sized + 'static,
+    {
+        async move { Ok(polling_stream(self, from_height, poll_interval)) }
+    }
 }
 
 /// Whether an observed deposit may be credited yet.
@@ -126,21 +138,17 @@ where
     use futures_core::Stream;
     use std::task::{Context, Poll};
 
+    /// The fetch a poller is currently waiting on.
+    type PendingFetch =
+        Pin<Box<dyn std::future::Future<Output = Result<LedgerEvent, ChainError>> + Send>>;
+
     // All state lives in a single struct so the stream is `Send`.
     struct Poller<C> {
         client: Arc<C>,
         next_height: u64,
         interval: tokio::time::Interval,
         /// Currently in-flight future (if any).
-        pending: Option<
-            Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<LedgerEvent, ChainError>>
-                        + Send
-                        + 'static,
-                >,
-            >,
-        >,
+        pending: Option<PendingFetch>,
     }
 
     // SAFETY: All fields are Send, so Poller<C: Send> is Send.
@@ -176,7 +184,10 @@ where
                 self.pending = Some(Box::pin(async move {
                     let tip = client.latest_height().await?;
                     let deposits = client.deposits_since(height).await?;
-                    Ok(LedgerEvent { height: tip, deposits })
+                    Ok(LedgerEvent {
+                        height: tip,
+                        deposits,
+                    })
                 }));
                 // Loop back to drive the newly created future immediately.
             }
@@ -210,13 +221,8 @@ mod tests {
         async fn deposits_since(&self, _height: u64) -> Result<Vec<ObservedDeposit>, ChainError> {
             Ok(Vec::new())
         }
-        async fn stream_events(
-            &self,
-            from_height: u64,
-            poll_interval: Duration,
-        ) -> Result<EventStream, ChainError> {
-            Ok(polling_stream(Arc::new(FakeBase), from_height, poll_interval))
-        }
+        // `stream_events` is not implemented here: the test exercises the
+        // trait's default polling fallback.
     }
 
     fn deposit(confirmations: u32, minor: i128) -> ObservedDeposit {
@@ -242,9 +248,7 @@ mod tests {
     /// Verifies that `stream_events` starts and produces at least one event.
     #[tokio::test]
     async fn stream_events_produces_ledger_events() {
-        use futures_util::StreamExt;
-
-        let stream = FakeBase
+        let stream = Arc::new(FakeBase)
             .stream_events(90, Duration::from_millis(10))
             .await
             .expect("stream_events failed");
@@ -268,8 +272,6 @@ mod tests {
     /// than panicking.
     #[tokio::test]
     async fn stream_events_propagates_errors() {
-        use futures_util::StreamExt;
-
         struct ErrorClient;
         impl ChainClient for ErrorClient {
             fn chain(&self) -> Chain {
@@ -281,20 +283,9 @@ mod tests {
             async fn deposits_since(&self, _: u64) -> Result<Vec<ObservedDeposit>, ChainError> {
                 Ok(Vec::new())
             }
-            async fn stream_events(
-                &self,
-                from_height: u64,
-                poll_interval: Duration,
-            ) -> Result<EventStream, ChainError> {
-                Ok(polling_stream(
-                    Arc::new(ErrorClient),
-                    from_height,
-                    poll_interval,
-                ))
-            }
         }
 
-        let stream = ErrorClient
+        let stream = Arc::new(ErrorClient)
             .stream_events(0, Duration::from_millis(10))
             .await
             .expect("stream creation should not fail");

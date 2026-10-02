@@ -143,6 +143,12 @@ impl TransactionCache {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Whether the cache holds no entries at all.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// `400` from `POST /transactions`.
@@ -636,7 +642,10 @@ mod tests {
             },
         );
 
-        assert!(cache.get("stale").is_none(), "expired entry must not be returned");
+        assert!(
+            cache.get("stale").is_none(),
+            "expired entry must not be returned"
+        );
     }
 
     #[test]

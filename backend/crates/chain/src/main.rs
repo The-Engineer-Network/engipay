@@ -1,15 +1,19 @@
 //! engipay-chain
 //!
 //!   engipay-chain                                   watch for deposits
+//!   engipay-chain serve                            internal HTTP API
 //!   engipay-chain stellar-send <to> <amount> <asset>  testnet payment
 //!
 //! Configuration comes from the environment; see backend/.env.example.
 
 use std::collections::{HashSet, VecDeque};
 use std::env;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use engipay_chain::routes::estimate_fee::FeeQuotes;
+use engipay_chain::routes::router;
 use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY};
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
@@ -35,9 +39,48 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => watch().await,
+        Some("serve") => serve().await,
         Some("stellar-send") => stellar_send(&args[1..]).await,
         Some(other) => bail!("unknown command {other:?}; see the top of crates/chain/src/main.rs"),
     }
+}
+
+/// Serves the internal HTTP API the api service calls.
+///
+/// Bound to loopback by default: nothing here is authenticated, so it must not
+/// be reachable from outside the deployment. Stellar quotes come from network
+/// constants; `BASE_RPC_URL` and `BITCOIN_ESPLORA_URL` turn on the live Base
+/// and Bitcoin quotes, and a chain without an endpoint answers `503`.
+async fn serve() -> anyhow::Result<()> {
+    let address = env::var("CHAIN_HTTP_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:8081".to_owned())
+        .parse::<std::net::SocketAddr>()
+        .context("CHAIN_HTTP_ADDR must be a host:port address, e.g. 127.0.0.1:8081")?;
+    let fees = FeeQuotes::new(
+        env::var("BASE_RPC_URL").ok(),
+        env::var("BITCOIN_ESPLORA_URL").ok(),
+    )
+    .context("invalid fee source configuration")?;
+
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .with_context(|| format!("could not bind {address}"))?;
+    info!(
+        %address,
+        base_rpc = env::var("BASE_RPC_URL").is_ok(),
+        bitcoin_esplora = env::var("BITCOIN_ESPLORA_URL").is_ok(),
+        "chain service internal API listening"
+    );
+
+    axum::serve(listener, router(Arc::new(fees)))
+        .with_graceful_shutdown(async {
+            if tokio::signal::ctrl_c().await.is_err() {
+                warn!("could not listen for shutdown signal");
+            }
+        })
+        .await
+        .context("the internal API server stopped unexpectedly")?;
+    Ok(())
 }
 
 fn stellar_client() -> anyhow::Result<Option<StellarClient>> {
