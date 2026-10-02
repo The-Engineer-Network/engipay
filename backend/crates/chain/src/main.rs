@@ -13,10 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use engipay_chain::routes::estimate_fee::FeeQuotes;
-use engipay_chain::routes::router;
 use engipay_chain::deposit_creditor::DepositCreditor;
 use engipay_chain::routes;
+use engipay_chain::routes::estimate_fee::FeeQuotes;
+use engipay_chain::routes::router;
 use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY};
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
@@ -122,7 +122,12 @@ async fn watch() -> anyhow::Result<()> {
     // even when no Stellar custody account is configured.
     let internal_addr =
         env::var("CHAIN_INTERNAL_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
-    let app = routes::internal();
+    let fees = routes::estimate_fee::FeeQuotes::new(
+        env::var("BASE_RPC_URL").ok(),
+        env::var("BITCOIN_ESPLORA_URL").ok(),
+    )
+    .map_err(|error| anyhow::anyhow!("could not configure the fee oracle: {error}"))?;
+    let app = routes::router(Arc::new(fees));
     let listener = tokio::net::TcpListener::bind(&internal_addr)
         .await
         .with_context(|| format!("could not bind internal server to {internal_addr}"))?;

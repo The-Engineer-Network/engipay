@@ -18,12 +18,14 @@
 
 use std::any::Any;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
+use futures_util::FutureExt;
 use serde_json::json;
 use tower::{Layer, Service};
 
@@ -71,24 +73,16 @@ where
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        // `AssertUnwindSafe` lets us call `catch_unwind` on the future. Any
-        // async panic that propagates through `.await` is caught here and
-        // converted to a clean 500 response.
+        // `catch_unwind` must wrap the future itself, not its construction:
+        // a handler that panics does so when its future is *polled*, so
+        // wrapping `|| future` would only catch panics raised eagerly by the
+        // service. `AssertUnwindSafe` lets us poll an arbitrary service future
+        // inside the unwind boundary.
         let future = self.inner.call(req);
 
         Box::pin(async move {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future))
-                    .map_err(|payload| payload);
-
-            match result {
-                Ok(inner_future) => {
-                    // The future itself runs; panics *inside* the async fn body
-                    // are caught by tokio's task machinery and surface as
-                    // JoinError — the watcher layer above handles those.
-                    // Here we just drive the normal future.
-                    inner_future.await
-                }
+            match AssertUnwindSafe(future).catch_unwind().await {
+                Ok(response) => response,
                 Err(panic_payload) => Ok(panic_response(panic_payload)),
             }
         })
@@ -122,10 +116,7 @@ fn panic_response(panic: Box<dyn Any + Send>) -> Response {
 
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/problem+json",
-        )],
+        [(axum::http::header::CONTENT_TYPE, "application/problem+json")],
         axum::Json(body),
     )
         .into_response()
@@ -196,12 +187,7 @@ mod tests {
     #[tokio::test]
     async fn normal_handler_is_not_affected() {
         let response = app()
-            .oneshot(
-                Request::builder()
-                    .uri("/ok")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/ok").body(Body::empty()).unwrap())
             .await
             .unwrap();
 

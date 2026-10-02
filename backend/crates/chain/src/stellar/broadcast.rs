@@ -499,7 +499,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::stellar::payment::{
-        CustodySigner, LocalTestnetSigner, PaymentRequest, StellarSigner, build_payment,
+        BASE_FEE, CustodySigner, LocalTestnetSigner, PaymentRequest, StellarSigner, build_payment,
         sign_withdrawal,
     };
     use crate::stellar::settlement::fake::MemoryLedger;
@@ -555,9 +555,11 @@ mod tests {
             &PaymentRequest {
                 destination,
                 money: withdrawal.amount,
+                memo: None,
             },
             StellarNetwork::Testnet,
             1_800_000_000,
+            BASE_FEE,
         )
         .unwrap();
         let (envelope, hash) = sign_withdrawal(tx, &custody, StellarNetwork::Testnet).unwrap();

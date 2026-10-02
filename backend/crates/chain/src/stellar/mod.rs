@@ -17,9 +17,7 @@ use engipay_core::Chain;
 use engipay_core::stellar::{StellarAddress, parse_address};
 use tracing::{error, warn};
 
-use self::horizon::{
-    Account, Page, PaymentRecord, Root, SubmitProblem, Submitted, TransactionCache,
-};
+use self::horizon::{Account, Page, PaymentRecord, Root, Submitted, TransactionCache};
 pub use self::network::StellarNetwork;
 use self::payment::{PaymentRequest, StellarSigner};
 use crate::{ChainClient, ChainError, EventStream, ObservedDeposit};
@@ -278,8 +276,9 @@ impl StellarClient {
     /// sign a fresh transaction for the same payment until they have checked
     /// [`PreparedPayment::hash`] or the time bounds have passed.
     pub async fn submit_prepared(&self, prepared: &PreparedPayment) -> Result<String, ChainError> {
-        self.submit_payment_with_retry(&prepared.envelope_xdr, 0)
+        self.submit_with_retry(&prepared.envelope_xdr, 0)
             .await
+            .map(|submitted| submitted.hash)
     }
 
     /// Submits a signed transaction envelope (base64 XDR) to Horizon's
@@ -481,17 +480,13 @@ impl ChainClient for StellarClient {
     }
 
     async fn stream_events(
-        &self,
+        self: Arc<Self>,
         from_height: u64,
         poll_interval: Duration,
     ) -> Result<EventStream, ChainError> {
         // Stellar finality is deterministic and Horizon does not offer a push
         // stream, so we use the polling fallback provided by the crate.
-        Ok(crate::polling_stream(
-            Arc::new(StellarClient::new(self.config.clone())?),
-            from_height,
-            poll_interval,
-        ))
+        Ok(crate::polling_stream(self, from_height, poll_interval))
     }
 }
 

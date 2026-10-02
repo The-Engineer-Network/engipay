@@ -19,6 +19,7 @@ pub mod evm;
 pub mod routes;
 pub mod services;
 pub mod stellar;
+pub mod withdrawals;
 pub mod workers;
 
 use std::pin::Pin;
@@ -227,19 +228,8 @@ mod tests {
         async fn deposits_since(&self, _height: u64) -> Result<Vec<ObservedDeposit>, ChainError> {
             Ok(Vec::new())
         }
-        // `stream_events` is not implemented here: the test exercises the
-        // trait's default polling fallback.
-        async fn stream_events(
-            &self,
-            from_height: u64,
-            poll_interval: Duration,
-        ) -> Result<EventStream, ChainError> {
-            Ok(polling_stream(
-                Arc::new(FakeBase),
-                from_height,
-                poll_interval,
-            ))
-        }
+        // `stream_events` is not implemented here: the test below exercises
+        // the trait's default polling fallback.
     }
 
     fn deposit(confirmations: u32, minor: i128) -> ObservedDeposit {
@@ -266,7 +256,6 @@ mod tests {
     #[tokio::test]
     async fn stream_events_produces_ledger_events() {
         let stream = Arc::new(FakeBase)
-        let stream = FakeBase
             .stream_events(90, Duration::from_millis(10))
             .await
             .expect("stream_events failed");

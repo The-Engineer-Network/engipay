@@ -294,7 +294,10 @@ impl Ledger {
         }
         let required = Money {
             asset: money.asset,
-            minor: money.minor.checked_add(fee.minor).ok_or(LedgerError::Overflow)?,
+            minor: money
+                .minor
+                .checked_add(fee.minor)
+                .ok_or(LedgerError::Overflow)?,
         };
         self.require_available(user, required)?;
         let postings = vec![
@@ -644,7 +647,13 @@ mod tests {
 
         // A settled hold cannot be released afterwards.
         let err = ledger.release("wd-1").unwrap_err();
-        assert!(matches!(err, LedgerError::HoldClosed { state: HoldState::Settled, .. }));
+        assert!(matches!(
+            err,
+            LedgerError::HoldClosed {
+                state: HoldState::Settled,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -659,7 +668,13 @@ mod tests {
         assert_eq!(ledger.hold_state("wd-1"), Some(HoldState::Released));
 
         let err = ledger.settle("wd-1", None).unwrap_err();
-        assert!(matches!(err, LedgerError::HoldClosed { state: HoldState::Released, .. }));
+        assert!(matches!(
+            err,
+            LedgerError::HoldClosed {
+                state: HoldState::Released,
+                ..
+            }
+        ));
         assert_eq!(system(&ledger, SystemAccount::ExternalOutflow), 0);
     }
 

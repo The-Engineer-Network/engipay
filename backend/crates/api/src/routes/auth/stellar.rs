@@ -4,6 +4,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use stellar_xdr::TransactionEnvelope;
 use uuid::Uuid;
 
@@ -150,31 +151,29 @@ async fn verify(
 
     let wallet_address = claimed_address.base_account().to_string();
 
-    let existing_user = sqlx::query!("SELECT id FROM users WHERE wallet_address = $1", wallet_address)
+    let existing_user = sqlx::query("SELECT id FROM users WHERE wallet_address = $1")
+        .bind(&wallet_address)
         .fetch_optional(db)
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
 
     let user_id = if let Some(user) = existing_user {
-        Uuid::from_bytes(user.id.into())
+        let id: Uuid = user.try_get("id").map_err(|e| ApiError::Internal(e.into()))?;
+        id
     } else {
         let new_user_id = Uuid::new_v4();
-        sqlx::query!(
-            "INSERT INTO users (id, wallet_address) VALUES ($1, $2)",
-            new_user_id,
-            wallet_address
-        )
-        .execute(db)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+        sqlx::query("INSERT INTO users (id, wallet_address) VALUES ($1, $2)")
+            .bind(new_user_id)
+            .bind(&wallet_address)
+            .execute(db)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
 
-        sqlx::query!(
-            "INSERT INTO user_profiles (id, tier) VALUES ($1, 0)",
-            new_user_id
-        )
-        .execute(db)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+        sqlx::query("INSERT INTO user_profiles (id, tier) VALUES ($1, 0)")
+            .bind(new_user_id)
+            .execute(db)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
 
         new_user_id
     };

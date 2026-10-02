@@ -76,9 +76,7 @@ pub struct RpcResponse {
 /// values to `None`. For JSON-RPC, `"result": null` means "no block yet" while
 /// an absent `result` field means a malformed response. We need to tell these
 /// apart, so `null` → `Some(Value::Null)` and absent → `None`.
-fn deserialize_result_field<'de, D>(
-    deserializer: D,
-) -> Result<Option<serde_json::Value>, D::Error>
+fn deserialize_result_field<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

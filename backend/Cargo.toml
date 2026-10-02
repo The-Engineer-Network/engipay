@@ -17,6 +17,7 @@ engipay-ledger = { path = "crates/ledger" }
 
 anyhow = "1"
 axum = "0.8"
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 elliptic-curve = "0.13"
@@ -40,20 +41,10 @@ stellar-strkey = "0.0"
 stellar-xdr = { version = "28", default-features = false, features = ["std", "base64"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
-tokio-util = "0.7"
-tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-k256 = { version = "0.13", features = ["ecdsa"] }
-elliptic-curve = "0.13"
-rand = "0.8"
-sha3 = "0.10"
-hex = "0.4"
-jsonwebtoken = "9"
-lru = "0.12"
 zeroize = "1"
 
 [workspace.lints.rust]
