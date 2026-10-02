@@ -44,7 +44,7 @@ impl PostgresLedgerStore {
     }
 
     /// Live custodial balances for `user`, across every asset EngiPay
-    /// supports (`Asset::ALL`), read directly from the ledger postings —
+    /// supports (`Asset::ALL`), read from the `account_balances` view —
     /// the same source of truth every other method here writes to.
     ///
     /// A read-only query, so it runs against the plain pool rather than a
@@ -54,10 +54,9 @@ impl PostgresLedgerStore {
     /// never touched, rather than omitting it.
     pub async fn get_user_balances(&self, user: UserId) -> Result<Vec<Balance>, LedgerError> {
         let rows = sqlx::query(
-            "SELECT asset, bucket, COALESCE(SUM(amount), 0)::text AS total \
-             FROM ledger_postings \
-             WHERE owner_kind = 'user' AND user_id = $1 \
-             GROUP BY asset, bucket",
+            "SELECT asset, bucket, amount::text AS total \
+             FROM account_balances \
+             WHERE owner_kind = 'user' AND user_id = $1",
         )
         .bind(user.as_uuid())
         .fetch_all(&self.pool)
@@ -951,6 +950,30 @@ mod tests {
         let eth_balance = balances.iter().find(|b| b.asset == Asset::Eth).unwrap();
         assert_eq!(eth_balance.available, 0);
         assert_eq!(eth_balance.held, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn get_user_balances_fresh_user_returns_zero_for_all_assets() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        let balances = store.get_user_balances(alice).await.unwrap();
+        assert_eq!(balances.len(), Asset::ALL.len());
+
+        for asset in Asset::ALL {
+            let balance = balances.iter().find(|b| b.asset == asset).unwrap();
+            assert_eq!(
+                balance.available, 0,
+                "{asset}: available should be 0 for fresh user"
+            );
+            assert_eq!(
+                balance.held, 0,
+                "{asset}: held should be 0 for fresh user"
+            );
+        }
     }
 
     #[tokio::test]
