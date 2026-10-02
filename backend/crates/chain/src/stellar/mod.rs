@@ -3,12 +3,14 @@
 //! Talks to Horizon over HTTPS. Horizon only reads the chain and relays signed
 //! transactions; it never sees a key.
 
+pub mod broadcast;
 pub mod cursor;
 pub mod horizon;
 pub mod network;
 pub mod payment;
+pub mod settlement;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use engipay_core::Chain;
@@ -20,7 +22,7 @@ use self::horizon::{
 };
 pub use self::network::StellarNetwork;
 use self::payment::{PaymentRequest, StellarSigner};
-use crate::{ChainClient, ChainError, ObservedDeposit};
+use crate::{ChainClient, ChainError, EventStream, ObservedDeposit};
 
 /// Records per Horizon page, the maximum it allows.
 const PAGE_LIMIT: usize = 200;
@@ -29,6 +31,19 @@ const PAGE_LIMIT: usize = 200;
 const MAX_PAGES: usize = 25;
 /// How long a signed payment stays valid if it does not land.
 const PAYMENT_VALIDITY: Duration = Duration::from_secs(120);
+
+/// A signed payment that has not been submitted yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedPayment {
+    /// The transaction hash, lowercase hex, as Horizon reports it.
+    pub hash: String,
+    /// The signed envelope, base64 XDR.
+    pub envelope_xdr: String,
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct StellarConfig {
@@ -148,6 +163,23 @@ impl StellarClient {
             .map_err(|_| ChainError::Unavailable("Horizon returned a bad sequence".to_owned()))
     }
 
+    /// The p90 fee charged per operation in Horizon's last ledger, in stroops,
+    /// clamped to [`payment::BASE_FEE`]..=[`payment::MAX_FEE`]. Falls back to
+    /// [`payment::BASE_FEE`] if the endpoint is unavailable or returns
+    /// unparseable data, so a momentary Horizon outage never blocks a payment.
+    pub async fn recommended_fee(&self) -> u32 {
+        use self::horizon::FeeStats;
+        match self.get::<FeeStats>("/fee_stats").await {
+            Ok(stats) => stats
+                .fee_charged
+                .p90
+                .parse::<u32>()
+                .unwrap_or(payment::BASE_FEE)
+                .clamp(payment::BASE_FEE, payment::MAX_FEE),
+            Err(_) => payment::BASE_FEE,
+        }
+    }
+
     /// Fetches the details for a single transaction, using the in-process
     /// cache to avoid redundant round-trips.
     ///
@@ -195,8 +227,24 @@ impl StellarClient {
         signer: &dyn StellarSigner,
         request: &PaymentRequest,
     ) -> Result<String, ChainError> {
+        let prepared = self.prepare_payment(signer, request).await?;
+        self.submit_prepared(&prepared).await
+    }
+
+    /// Builds and signs a payment without submitting it. Nothing has reached
+    /// the network when this returns, so any error here is safe to retry.
+    ///
+    /// Errors: [`ChainError::Unavailable`] if Horizon could not be read,
+    /// [`ChainError::Rejected`] if the request itself is invalid (bad
+    /// destination, oversized memo, ...).
+    pub async fn prepare_payment(
+        &self,
+        signer: &dyn StellarSigner,
+        request: &PaymentRequest,
+    ) -> Result<PreparedPayment, ChainError> {
         let source = signer.account();
-        let sequence = self.sequence(&source).await?;
+        let (sequence, fee) = tokio::join!(self.sequence(&source), self.recommended_fee());
+        let sequence = sequence?;
         let valid_until = SystemTime::now()
             .checked_add(PAYMENT_VALIDITY)
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
@@ -209,21 +257,76 @@ impl StellarClient {
             request,
             self.config.network,
             valid_until,
+            fee,
         )
         .map_err(|error| ChainError::Rejected(error.to_string()))?;
-        let (envelope, _) = payment::sign(transaction, signer, self.config.network)
+        let (envelope, hash) = payment::sign(transaction, signer, self.config.network)
             .map_err(|error| ChainError::Rejected(error.to_string()))?;
-        let encoded = payment::envelope_base64(&envelope)
+        let envelope_xdr = payment::envelope_base64(&envelope)
             .map_err(|error| ChainError::Rejected(error.to_string()))?;
 
-        self.submit_payment_with_retry(&encoded, 0).await
+        Ok(PreparedPayment {
+            hash: hex_lower(&hash),
+            envelope_xdr,
+        })
     }
 
-    async fn submit_payment_with_retry(
+    /// Submits a payment from [`prepare_payment`](Self::prepare_payment).
+    ///
+    /// An [`ChainError::Unavailable`] from here is ambiguous: Horizon may have
+    /// relayed the transaction before the connection failed. Callers must not
+    /// sign a fresh transaction for the same payment until they have checked
+    /// [`PreparedPayment::hash`] or the time bounds have passed.
+    pub async fn submit_prepared(&self, prepared: &PreparedPayment) -> Result<String, ChainError> {
+        self.submit_payment_with_retry(&prepared.envelope_xdr, 0)
+            .await
+    }
+
+    /// Submits a signed transaction envelope (base64 XDR) to Horizon's
+    /// `POST /transactions` and returns the hash and ledger Horizon reports.
+    ///
+    /// Errors say whether the transaction can still land:
+    ///
+    /// * [`ChainError::Rejected`] — Horizon answered `400`: the network
+    ///   refused it, with the result codes in the message. It did not land.
+    /// * [`ChainError::Unavailable`] — no definitive answer (unreachable,
+    ///   timeouts, `5xx` after retries). It may still land, so callers must not
+    ///   release funds on this error.
+    pub async fn submit_transaction(&self, envelope_xdr: &str) -> Result<Submitted, ChainError> {
+        self.submit_with_retry(envelope_xdr, 0).await
+    }
+
+    /// Looks a transaction up by hash, bypassing the cache. `Ok(None)` when
+    /// Horizon has never seen it.
+    pub async fn find_transaction(
+        &self,
+        tx_hash: &str,
+    ) -> Result<Option<horizon::JoinedTransaction>, ChainError> {
+        let response = self
+            .http
+            .get(format!(
+                "{}/transactions/{tx_hash}",
+                self.config.horizon_url
+            ))
+            .send()
+            .await
+            .map_err(|error| ChainError::Unavailable(error.to_string()))?;
+        match response.status() {
+            status if status.is_success() => response.json().await.map(Some).map_err(|error| {
+                ChainError::Unavailable(format!("unexpected Horizon response: {error}"))
+            }),
+            reqwest::StatusCode::NOT_FOUND => Ok(None),
+            status => Err(ChainError::Unavailable(format!(
+                "Horizon returned {status} for transaction {tx_hash}"
+            ))),
+        }
+    }
+
+    async fn submit_with_retry(
         &self,
         encoded: &str,
         attempt: u32,
-    ) -> Result<String, ChainError> {
+    ) -> Result<Submitted, ChainError> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 500;
         const MAX_DELAY_MS: u64 = 30_000;
@@ -238,25 +341,30 @@ impl StellarClient {
 
         let status = response.status();
         if status.is_success() {
-            let submitted: Submitted = response
-                .json()
+            // Accepted, but an unreadable body leaves the hash unknown: report
+            // it as unknown rather than rejected, because it did land.
+            let body = response
+                .bytes()
                 .await
                 .map_err(|error| ChainError::Unavailable(error.to_string()))?;
+            let submitted = horizon::parse_submitted(&body)?;
             tracing::info!(hash = %submitted.hash, ledger = submitted.ledger, "stellar payment landed");
-            return Ok(submitted.hash);
+            return Ok(submitted);
+        }
+
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let body = response.bytes().await.unwrap_or_default();
+            return Err(ChainError::Rejected(horizon::submit_problem_detail(
+                status.as_u16(),
+                &body,
+            )));
         }
 
         let is_retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
         if !is_retryable || attempt >= MAX_RETRIES {
-            let problem: Option<SubmitProblem> = response.json().await.ok();
-            let detail = problem.map_or_else(
-                || status.to_string(),
-                |problem| match problem.extras.and_then(|extras| extras.result_codes) {
-                    Some(codes) => format!("{}: {codes}", problem.title),
-                    None => problem.title,
-                },
-            );
-            return Err(ChainError::Rejected(detail));
+            return Err(ChainError::Unavailable(format!(
+                "Horizon returned {status} on submission; the outcome is unknown"
+            )));
         }
 
         let jittered_delay = backoff_delay_ms(attempt, INITIAL_DELAY_MS, MAX_DELAY_MS);
@@ -270,7 +378,7 @@ impl StellarClient {
         );
 
         tokio::time::sleep(Duration::from_millis(jittered_delay)).await;
-        Box::pin(self.submit_payment_with_retry(encoded, attempt.saturating_add(1))).await
+        Box::pin(self.submit_with_retry(encoded, attempt.saturating_add(1))).await
     }
 }
 
@@ -370,6 +478,20 @@ impl ChainClient for StellarClient {
             }
         }
         Ok(deposits)
+    }
+
+    async fn stream_events(
+        &self,
+        from_height: u64,
+        poll_interval: Duration,
+    ) -> Result<EventStream, ChainError> {
+        // Stellar finality is deterministic and Horizon does not offer a push
+        // stream, so we use the polling fallback provided by the crate.
+        Ok(crate::polling_stream(
+            Arc::new(StellarClient::new(self.config.clone())?),
+            from_height,
+            poll_interval,
+        ))
     }
 }
 
@@ -502,6 +624,145 @@ mod tests {
         assert_eq!(deposits[0].confirmations, 3);
     }
 
+    /// Counterfeit USDC (USDC from any issuer other than Circle) must never be
+    /// credited, regardless of how many counterfeit tokens are sent in a batch.
+    /// Each refused record triggers the dedicated "counterfeit USDC" warn log.
+    #[tokio::test]
+    async fn counterfeit_usdc_is_never_credited() {
+        let server = MockServer::start().await;
+        let custody = account(1);
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "history_latest_ledger": 50 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/accounts/{custody}/payments")))
+            .and(query_param("join", "transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_embedded": { "records": [
+                    // Counterfeit USDC alphanum4 from a random issuer.
+                    {
+                        "paging_token": "1",
+                        "type": "payment",
+                        "transaction_hash": "aaa",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "asset_type": "credit_alphanum4",
+                        "asset_code": "USDC",
+                        "asset_issuer": account(5),
+                        "amount": "100.0000000",
+                        "transaction": { "ledger": 48, "successful": true }
+                    },
+                    // Counterfeit USDC alphanum12 (padded code) — still counterfeit.
+                    {
+                        "paging_token": "2",
+                        "type": "payment",
+                        "transaction_hash": "bbb",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "asset_type": "credit_alphanum12",
+                        "asset_code": "USDC",
+                        "asset_issuer": account(6),
+                        "amount": "50.0000000",
+                        "transaction": { "ledger": 48, "successful": true }
+                    },
+                    // Mainnet Circle USDC is not valid on testnet.
+                    {
+                        "paging_token": "3",
+                        "type": "payment",
+                        "transaction_hash": "ccc",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "asset_type": "credit_alphanum4",
+                        "asset_code": "USDC",
+                        "asset_issuer": StellarNetwork::Mainnet.usdc_issuer(),
+                        "amount": "25.0000000",
+                        "transaction": { "ledger": 48, "successful": true }
+                    }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let deposits = client(&server).await.deposits_since(48).await.unwrap();
+        assert_eq!(
+            deposits.len(),
+            0,
+            "no counterfeit USDC variant must ever be credited"
+        );
+    }
+
+    /// Real Circle USDC on testnet is accepted; a USDC token from the mainnet
+    /// Circle issuer is rejected even though the address is a known Circle key.
+    #[tokio::test]
+    async fn only_circle_testnet_usdc_is_credited() {
+        let server = MockServer::start().await;
+        let custody = account(1);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 7).unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "history_latest_ledger": 60 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/accounts/{custody}/payments")))
+            .and(query_param("join", "transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_embedded": { "records": [
+                    // Legitimate Circle USDC on testnet — must be credited.
+                    {
+                        "paging_token": "10",
+                        "type": "payment",
+                        "transaction_hash": "good",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "to_muxed": muxed,
+                        "asset_type": "credit_alphanum4",
+                        "asset_code": "USDC",
+                        "asset_issuer": StellarNetwork::Testnet.usdc_issuer(),
+                        "amount": "5.0000000",
+                        "transaction": { "ledger": 58, "successful": true }
+                    },
+                    // Mainnet Circle issuer on testnet — different network, must be refused.
+                    {
+                        "paging_token": "11",
+                        "type": "payment",
+                        "transaction_hash": "bad",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "asset_type": "credit_alphanum4",
+                        "asset_code": "USDC",
+                        "asset_issuer": StellarNetwork::Mainnet.usdc_issuer(),
+                        "amount": "5.0000000",
+                        "transaction": { "ledger": 58, "successful": true }
+                    }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let deposits = client(&server).await.deposits_since(58).await.unwrap();
+        assert_eq!(
+            deposits.len(),
+            1,
+            "only real Circle testnet USDC is credited"
+        );
+        assert_eq!(
+            deposits[0].money,
+            Money::from_minor(Asset::Usdc, 50_000_000)
+        );
+        assert_eq!(deposits[0].address, muxed);
+    }
+
     #[tokio::test]
     async fn horizon_errors_surface_as_unavailable() {
         let server = MockServer::start().await;
@@ -533,6 +794,14 @@ mod tests {
             )
             .mount(&server)
             .await;
+        // fee_stats is fetched in parallel with sequence; provide a stub
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "100", "p90": "200" }
+            })))
+            .mount(&server)
+            .await;
         Mock::given(method("POST"))
             .and(path("/transactions"))
             .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
@@ -545,6 +814,7 @@ mod tests {
         let request = PaymentRequest {
             destination: account(2),
             money: Money::parse(Asset::Xlm, "1").unwrap(),
+            memo: None,
         };
         let error = client(&server)
             .await
@@ -694,5 +964,121 @@ mod tests {
         let deposits = client(&server).await.deposits_since(48).await.unwrap();
         assert_eq!(deposits.len(), 1);
         assert_eq!(deposits[0].money, Money::from_minor(Asset::Xlm, 40_000_000));
+    }
+
+    // ── Fee stats tests ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn recommended_fee_returns_p90_from_horizon() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "100", "p90": "350" }
+            })))
+            .mount(&server)
+            .await;
+        let fee = client(&server).await.recommended_fee().await;
+        assert_eq!(fee, 350);
+    }
+
+    #[tokio::test]
+    async fn recommended_fee_falls_back_to_base_fee_when_horizon_is_down() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let fee = client(&server).await.recommended_fee().await;
+        assert_eq!(fee, payment::BASE_FEE);
+    }
+
+    #[tokio::test]
+    async fn recommended_fee_is_at_least_base_fee_even_if_p90_is_lower() {
+        let server = MockServer::start().await;
+        // Horizon returns a p90 below the minimum (shouldn't happen in practice
+        // but the code must be defensive).
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "50", "p90": "50" }
+            })))
+            .mount(&server)
+            .await;
+        let fee = client(&server).await.recommended_fee().await;
+        assert_eq!(fee, payment::BASE_FEE, "fee must never go below BASE_FEE");
+    }
+
+    #[tokio::test]
+    async fn recommended_fee_is_capped_at_max_fee() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "100", "p90": "5000000" }
+            })))
+            .mount(&server)
+            .await;
+        let fee = client(&server).await.recommended_fee().await;
+        assert_eq!(fee, payment::MAX_FEE);
+    }
+
+    #[tokio::test]
+    async fn prepare_payment_signs_without_submitting() {
+        use stellar_xdr::{Limits, ReadXdr, TransactionEnvelope};
+
+        let server = MockServer::start().await;
+        let signer = payment::LocalTestnetSigner::from_secret(
+            stellar_strkey::ed25519::PrivateKey([4; 32])
+                .as_unredacted()
+                .to_string()
+                .as_str(),
+            StellarNetwork::Testnet,
+        )
+        .unwrap();
+        Mock::given(method("GET"))
+            .and(path(format!("/accounts/{}", signer.account())))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "sequence": "100" })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "100", "p90": "300" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transactions"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let request = PaymentRequest {
+            destination: account(2),
+            money: Money::parse(Asset::Xlm, "1").unwrap(),
+            memo: Some(payment::StellarMemo::Id(7)),
+        };
+        let prepared = client(&server)
+            .await
+            .prepare_payment(&signer, &request)
+            .await
+            .unwrap();
+
+        let envelope =
+            TransactionEnvelope::from_xdr_base64(&prepared.envelope_xdr, Limits::none()).unwrap();
+        let TransactionEnvelope::Tx(v1) = envelope else {
+            panic!("not a v1 envelope");
+        };
+        assert_eq!(v1.tx.fee, 300);
+        assert_eq!(v1.tx.seq_num.0, 101);
+        assert_eq!(v1.tx.memo, stellar_xdr::Memo::Id(7));
+        let hash = v1.tx.hash(StellarNetwork::Testnet.network_id()).unwrap();
+        assert_eq!(prepared.hash, hex_lower(&hash));
+        assert_eq!(prepared.hash.len(), 64);
     }
 }

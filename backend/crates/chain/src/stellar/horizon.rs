@@ -25,6 +25,25 @@ pub struct Root {
     pub history_latest_ledger: u64,
 }
 
+/// `GET /fee_stats` — the fee distribution from the last ledger Horizon saw.
+///
+/// All fee values are in stroops per operation as strings (Horizon returns them
+/// as JSON strings to avoid precision loss in some parsers).
+#[derive(Debug, Deserialize)]
+pub struct FeeStats {
+    /// The distribution of fees actually charged in the last ledger.
+    pub fee_charged: FeeDistribution,
+}
+
+/// Sub-object under [`FeeStats`] for the `fee_charged` distribution.
+#[derive(Debug, Deserialize)]
+pub struct FeeDistribution {
+    /// Median fee charged in the last ledger, in stroops (as a decimal string).
+    pub p50: String,
+    /// 90th-percentile fee charged in the last ledger, in stroops (string).
+    pub p90: String,
+}
+
 /// `GET /accounts/{id}`.
 #[derive(Debug, Deserialize)]
 pub struct Account {
@@ -140,6 +159,7 @@ impl TransactionCache {
     /// Number of entries currently in the cache (including possibly-stale ones
     /// that have not been read since they expired).
     #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -165,10 +185,41 @@ pub struct SubmitExtras {
 }
 
 /// `200` from `POST /transactions`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Submitted {
     pub hash: String,
     pub ledger: u64,
+}
+
+/// Parses Horizon's `200` body from `POST /transactions`.
+///
+/// The transaction was accepted, so a body that cannot be read is reported as
+/// [`ChainError::Unavailable`] (outcome unknown), never as a rejection.
+pub fn parse_submitted(body: &[u8]) -> Result<Submitted, crate::ChainError> {
+    let submitted: Submitted = serde_json::from_slice(body).map_err(|error| {
+        crate::ChainError::Unavailable(format!("unreadable Horizon submission response: {error}"))
+    })?;
+    let is_hash =
+        submitted.hash.len() == 64 && submitted.hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !is_hash || submitted.ledger == 0 {
+        return Err(crate::ChainError::Unavailable(format!(
+            "Horizon accepted the transaction but reported hash {:?} in ledger {}",
+            submitted.hash, submitted.ledger
+        )));
+    }
+    Ok(submitted)
+}
+
+/// A readable reason for a failed `POST /transactions`, including Horizon's
+/// result codes (e.g. `tx_bad_seq`, `op_underfunded`) when it sent them.
+pub fn submit_problem_detail(status: u16, body: &[u8]) -> String {
+    match serde_json::from_slice::<SubmitProblem>(body) {
+        Ok(problem) => match problem.extras.and_then(|extras| extras.result_codes) {
+            Some(codes) => format!("{}: {codes}", problem.title),
+            None => problem.title,
+        },
+        Err(_) => format!("Horizon returned {status}"),
+    }
 }
 
 /// Why a payment into the custody account was not turned into a deposit. Each
@@ -183,6 +234,8 @@ pub enum Skipped {
     UnsupportedAsset {
         code: String,
         issuer: String,
+        /// `true` when `code == "USDC"` but the issuer is not Circle's.
+        counterfeit_usdc: bool,
     },
     Malformed(&'static str),
 }
@@ -229,7 +282,14 @@ pub fn deposit_from_record(
             if code == "USDC" && issuer == network.usdc_issuer() {
                 Asset::Usdc
             } else {
-                return Err(Skipped::UnsupportedAsset { code, issuer });
+                // Flag tokens named "USDC" from the wrong issuer separately so
+                // operators can distinguish counterfeit USDC from unknown assets.
+                let counterfeit_usdc = code == "USDC";
+                return Err(Skipped::UnsupportedAsset {
+                    code,
+                    issuer,
+                    counterfeit_usdc,
+                });
             }
         }
         _ => return Err(Skipped::Malformed("unknown asset_type")),
@@ -311,6 +371,80 @@ pub fn extract_muxed_id(destination: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
+    const HASH: &str = "3389e9f0f1a65f19736cacf544c2e825313e8447f569233bb8db39aa607c8889";
+
+    #[test]
+    fn a_submission_response_yields_hash_and_ledger() {
+        let body = serde_json::json!({
+            "hash": HASH,
+            "ledger": 47_123_456,
+            "envelope_xdr": "AAAA",
+            "successful": true
+        });
+        let submitted = parse_submitted(body.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            submitted,
+            Submitted {
+                hash: HASH.to_owned(),
+                ledger: 47_123_456
+            }
+        );
+    }
+
+    #[test]
+    fn an_unreadable_submission_response_is_unknown_not_rejected() {
+        let cases = [
+            b"not json".to_vec(),
+            serde_json::json!({ "ledger": 5 }).to_string().into_bytes(),
+            serde_json::json!({ "hash": "zz", "ledger": 5 })
+                .to_string()
+                .into_bytes(),
+            serde_json::json!({ "hash": HASH, "ledger": 0 })
+                .to_string()
+                .into_bytes(),
+        ];
+        for body in cases {
+            assert!(
+                matches!(
+                    parse_submitted(&body),
+                    Err(crate::ChainError::Unavailable(_))
+                ),
+                "{}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+    }
+
+    #[test]
+    fn rejection_details_carry_horizon_result_codes() {
+        let body = serde_json::json!({
+            "type": "https://stellar.org/horizon-errors/transaction_failed",
+            "title": "Transaction Failed",
+            "status": 400,
+            "extras": {
+                "envelope_xdr": "AAAA",
+                "result_codes": { "transaction": "tx_failed", "operations": ["op_no_destination"] }
+            }
+        });
+        let detail = submit_problem_detail(400, body.to_string().as_bytes());
+        assert!(detail.starts_with("Transaction Failed"), "{detail}");
+        assert!(detail.contains("tx_failed"), "{detail}");
+        assert!(detail.contains("op_no_destination"), "{detail}");
+    }
+
+    #[test]
+    fn rejection_details_fall_back_to_title_or_status() {
+        let titled = serde_json::json!({ "title": "Transaction Malformed" });
+        assert_eq!(
+            submit_problem_detail(400, titled.to_string().as_bytes()),
+            "Transaction Malformed"
+        );
+        assert_eq!(
+            submit_problem_detail(400, b"<html>"),
+            "Horizon returned 400"
+        );
+    }
+
     fn account(seed: u8) -> String {
         stellar_strkey::ed25519::PublicKey([seed; 32])
             .to_string()
@@ -390,7 +524,13 @@ mod tests {
             "asset_code": "USDC",
             "asset_issuer": sender(),
         }));
-        assert!(matches!(skipped, Err(Skipped::UnsupportedAsset { .. })));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -400,7 +540,91 @@ mod tests {
             "asset_code": "USDC",
             "asset_issuer": StellarNetwork::Mainnet.usdc_issuer(),
         }));
-        assert!(matches!(skipped, Err(Skipped::UnsupportedAsset { .. })));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
+    }
+
+    /// alphanum12 assets named "USDC" (e.g. "USDC        " padded) are treated
+    /// as counterfeit — the official Circle USDC is always alphanum4.
+    #[test]
+    fn alphanum12_usdc_from_any_issuer_is_counterfeit() {
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum12",
+            "asset_code": "USDC",
+            "asset_issuer": sender(),
+        }));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
+    }
+
+    /// alphanum12 assets named "USDC" using Circle's testnet issuer still fail:
+    /// the real Circle USDC is alphanum4, not alphanum12.
+    #[test]
+    fn alphanum12_usdc_from_circle_issuer_is_still_counterfeit() {
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum12",
+            "asset_code": "USDC",
+            "asset_issuer": StellarNetwork::Testnet.usdc_issuer(),
+        }));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
+    }
+
+    /// A completely different token (not named USDC) is unsupported but is NOT
+    /// flagged as counterfeit_usdc.
+    #[test]
+    fn unknown_asset_is_unsupported_but_not_counterfeit() {
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum4",
+            "asset_code": "FAKE",
+            "asset_issuer": sender(),
+        }));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: false,
+                ..
+            })
+        ));
+    }
+
+    /// The UnsupportedAsset error carries the issuer so operators can trace
+    /// which account issued the counterfeit token.
+    #[test]
+    fn unsupported_asset_error_carries_issuer() {
+        let fake_issuer = sender();
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum4",
+            "asset_code": "USDC",
+            "asset_issuer": fake_issuer,
+        }));
+        match skipped {
+            Err(Skipped::UnsupportedAsset {
+                code,
+                issuer,
+                counterfeit_usdc,
+            }) => {
+                assert_eq!(code, "USDC");
+                assert_eq!(issuer, fake_issuer);
+                assert!(counterfeit_usdc);
+            }
+            other => panic!("expected UnsupportedAsset, got {other:?}"),
+        }
     }
 
     #[test]
@@ -530,6 +754,7 @@ mod tests {
         let unsupported = Skipped::UnsupportedAsset {
             code: "FAKE".to_owned(),
             issuer: "GXXXX".to_owned(),
+            counterfeit_usdc: false,
         };
         assert!(unsupported.is_security_sensitive());
 

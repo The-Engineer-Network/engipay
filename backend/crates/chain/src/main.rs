@@ -3,6 +3,7 @@
 //!   engipay-chain                                   watch for deposits
 //!   engipay-chain serve                            internal HTTP API
 //!   engipay-chain stellar-send <to> <amount> <asset>  testnet payment
+//!   engipay-chain withdrawals                       broadcast pending withdrawals (testnet signer)
 //!
 //! Configuration comes from the environment; see backend/.env.example.
 
@@ -14,14 +15,19 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use engipay_chain::routes::estimate_fee::FeeQuotes;
 use engipay_chain::routes::router;
+use engipay_chain::deposit_creditor::DepositCreditor;
+use engipay_chain::routes;
 use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY};
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
 use engipay_chain::stellar::{StellarClient, StellarConfig, StellarNetwork};
+use engipay_chain::workers::withdrawal::{
+    DEFAULT_POLL_INTERVAL, StellarWithdrawalSender, WithdrawalWorker,
+};
 use engipay_chain::{ChainClient, is_creditable};
-use engipay_core::stellar::{StellarAddress, parse_address};
 use engipay_core::{Asset, Money};
 use sqlx::postgres::PgPoolOptions;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 /// References remembered to avoid reporting a deposit twice when polls overlap.
@@ -41,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
         None => watch().await,
         Some("serve") => serve().await,
         Some("stellar-send") => stellar_send(&args[1..]).await,
+        Some("withdrawals") => withdrawals().await,
         Some(other) => bail!("unknown command {other:?}; see the top of crates/chain/src/main.rs"),
     }
 }
@@ -111,6 +118,21 @@ async fn db_pool() -> anyhow::Result<Option<sqlx::PgPool>> {
 }
 
 async fn watch() -> anyhow::Result<()> {
+    // Always start the internal HTTP server so the API can reach fee estimates
+    // even when no Stellar custody account is configured.
+    let internal_addr =
+        env::var("CHAIN_INTERNAL_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
+    let app = routes::internal();
+    let listener = tokio::net::TcpListener::bind(&internal_addr)
+        .await
+        .with_context(|| format!("could not bind internal server to {internal_addr}"))?;
+    info!(address = %internal_addr, "engipay-chain internal server listening");
+    tokio::spawn(async move {
+        if let Err(error) = axum::serve(listener, app).await {
+            tracing::error!(%error, "internal HTTP server error");
+        }
+    });
+
     let Some(stellar) = stellar_client()? else {
         info!("no networks configured; set STELLAR_CUSTODY_ACCOUNT to watch Stellar deposits");
         tokio::signal::ctrl_c().await?;
@@ -119,6 +141,13 @@ async fn watch() -> anyhow::Result<()> {
 
     let pool = db_pool().await?;
     let cursor_store: Option<CursorStore> = pool.as_ref().map(|p| CursorStore::new(p.clone()));
+
+    // Build the creditor when we have a database pool. Without a pool the
+    // watcher falls back to logging-only mode (useful for smoke tests and
+    // local development without Postgres).
+    let creditor: Option<Arc<DepositCreditor>> = pool
+        .as_ref()
+        .map(|p| Arc::new(DepositCreditor::new(p.clone())));
 
     let poll = Duration::from_secs(
         env::var("STELLAR_POLL_SECONDS")
@@ -158,6 +187,7 @@ async fn watch() -> anyhow::Result<()> {
         custody = %stellar.config().custody_account,
         from_ledger = next_ledger,
         db_cursor = cursor_store.is_some(),
+        creditor_enabled = creditor.is_some(),
         "watching stellar deposits"
     );
 
@@ -195,30 +225,32 @@ async fn watch() -> anyhow::Result<()> {
             if !is_creditable(&stellar, &deposit) || seen.contains(&deposit.reference) {
                 continue;
             }
-            let user_deposit_id = match parse_address(&deposit.address) {
-                Ok(StellarAddress::Muxed { id, .. }) => Some(id),
-                _ => None,
-            };
-            match user_deposit_id {
-                // Crediting the Postgres ledger lands with the ledger store;
-                // until then the watcher reports what it would credit.
-                Some(id) => info!(
-                    deposit_id = id,
-                    amount = %deposit.money,
-                    reference = %deposit.reference,
-                    "stellar deposit ready to credit"
-                ),
-                None => warn!(
-                    amount = %deposit.money,
-                    reference = %deposit.reference,
-                    "stellar deposit to the bare custody account; needs manual review"
-                ),
-            }
+
+            // Deduplicate before calling the creditor so the in-memory `seen`
+            // set short-circuits the overlap-by-one without a database round-trip.
             seen.insert(deposit.reference.clone());
-            seen_order.push_back(deposit.reference);
+            seen_order.push_back(deposit.reference.clone());
             while seen_order.len() > SEEN_CAPACITY {
                 if let Some(oldest) = seen_order.pop_front() {
                     seen.remove(&oldest);
+                }
+            }
+
+            match &creditor {
+                Some(c) => {
+                    // Credit the ledger. The creditor handles DLQ routing for
+                    // unresolvable addresses and ledger errors; it never panics
+                    // or returns an error that would crash this loop.
+                    c.process(deposit).await;
+                }
+                None => {
+                    // No database: log what would have been credited.
+                    info!(
+                        amount    = %deposit.money,
+                        reference = %deposit.reference,
+                        address   = %deposit.address,
+                        "stellar deposit creditable (no database configured — not credited)"
+                    );
                 }
             }
         }
@@ -251,9 +283,38 @@ async fn stellar_send(args: &[String]) -> anyhow::Result<()> {
     let request = PaymentRequest {
         destination: destination.clone(),
         money: Money::parse(asset, amount)?,
+        memo: None,
     };
     info!(from = %signer.account(), to = %request.destination, amount = %request.money, "sending");
     let hash = client.send_payment(&signer, &request).await?;
     println!("{hash}");
+    Ok(())
+}
+
+/// Broadcasts `pending_broadcast` withdrawals until interrupted. Signs with
+/// `STELLAR_TESTNET_SECRET`, which [`LocalTestnetSigner`] refuses on mainnet.
+async fn withdrawals() -> anyhow::Result<()> {
+    let pool = db_pool()
+        .await?
+        .context("set DATABASE_URL to run the withdrawal worker")?;
+    let client = stellar_client()?
+        .context("set STELLAR_CUSTODY_ACCOUNT (and STELLAR_NETWORK=testnet) first")?;
+    let secret = env::var("STELLAR_TESTNET_SECRET")
+        .context("set STELLAR_TESTNET_SECRET to the testnet account that pays")?;
+    let signer = LocalTestnetSigner::from_secret(&secret, client.config().network)?;
+    drop(secret);
+    info!(from = %signer.account(), "withdrawal worker starting");
+
+    let worker = WithdrawalWorker::new(pool).with_sender(Arc::new(StellarWithdrawalSender::new(
+        client,
+        Arc::new(signer),
+    )));
+    let shutdown = CancellationToken::new();
+    let on_signal = shutdown.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        on_signal.cancel();
+    });
+    worker.run(DEFAULT_POLL_INTERVAL, shutdown).await;
     Ok(())
 }

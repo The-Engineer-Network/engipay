@@ -122,18 +122,11 @@ pub struct Balance {
 /// Returned when `?include_holds=true` is passed to `GET /v1/balances`.
 /// Amounts are in the asset's smallest unit (the same representation as
 /// [`Balance::held`]).
+///
+/// The concrete definition lives in [`crate::postgres::ActiveHold`] and
+/// is re-exported from there; the `postgres` feature must be enabled.
 #[cfg(feature = "postgres")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActiveHold {
-    /// The idempotency reference that created this hold.
-    pub reference: String,
-    /// The asset being held.
-    pub asset: Asset,
-    /// The held amount in the asset's smallest unit.
-    pub amount: i128,
-    /// When the hold was created.
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
+pub use postgres::ActiveHold;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -314,16 +307,28 @@ impl Ledger {
                 money.minor,
             ),
         ];
-        self.commit(TransactionKind::Hold, reference, request, postings)
+        let receipt = self.commit(TransactionKind::Hold, reference, request, postings)?;
+        self.holds.insert(
+            reference.to_owned(),
+            Hold {
+                user,
+                money,
+                state: HoldState::Open,
+            },
+        );
+        Ok(receipt)
     }
 
     /// Returns held money to the user's available balance.
-    pub fn release(&mut self, reference: &str) -> Result<Receipt, LedgerError> {
-        let hold = self.open_hold(reference)?;
+    pub fn release(&mut self, hold_reference: &str) -> Result<Receipt, LedgerError> {
+        // A distinct sub-reference, so the release can coexist with the hold
+        // it closes and a retry replays instead of failing.
+        let reference = format!("{hold_reference}:release");
         let request = Request::Release;
-        if let Some(receipt) = self.replay(reference, &request)? {
+        if let Some(receipt) = self.replay(&reference, &request)? {
             return Ok(receipt);
         }
+        let hold = self.open_hold(hold_reference)?;
         let postings = vec![
             posting(
                 AccountKey::user(hold.user, hold.money.asset, Bucket::Held),
@@ -334,7 +339,9 @@ impl Ledger {
                 hold.money.minor,
             ),
         ];
-        self.commit(TransactionKind::ReleaseHold, reference, request, postings)
+        let receipt = self.commit(TransactionKind::ReleaseHold, &reference, request, postings)?;
+        self.close_hold(hold_reference, HoldState::Released);
+        Ok(receipt)
     }
 
     /// Settles a hold: the held money leaves EngiPay, and an optional fee is
@@ -342,36 +349,47 @@ impl Ledger {
     /// the held amount.
     pub fn settle(
         &mut self,
-        reference: &str,
+        hold_reference: &str,
         fee: Option<Money>,
     ) -> Result<Receipt, LedgerError> {
-        let hold = self.open_hold(reference)?;
+        let reference = format!("{hold_reference}:settle");
+        let request = Request::Settle { fee };
+        if let Some(receipt) = self.replay(&reference, &request)? {
+            return Ok(receipt);
+        }
+        let hold = self.open_hold(hold_reference)?;
         if let Some(fee) = fee {
-            if fee.asset != hold.money.asset || fee.minor > hold.money.minor {
+            if fee.asset != hold.money.asset || fee.minor <= 0 || fee.minor > hold.money.minor {
                 return Err(LedgerError::InvalidFee);
             }
         }
-        let request = Request::Settle { fee };
-        if let Some(receipt) = self.replay(reference, &request)? {
-            return Ok(receipt);
-        }
-        let mut postings = vec![
-            posting(
-                AccountKey::user(hold.user, hold.money.asset, Bucket::Held),
-                negate(hold.money.minor)?,
-            ),
-            posting(
-                AccountKey::system(SystemAccount::ExternalOutflow, hold.money.asset),
-                hold.money.minor,
-            ),
-        ];
-        if let Some(fee) = fee {
+        // The principal leaves to ExternalOutflow and the fee is booked as
+        // revenue, so the transaction balances.
+        let fee_minor = fee.map_or(0, |fee| fee.minor);
+        let principal = hold
+            .money
+            .minor
+            .checked_sub(fee_minor)
+            .ok_or(LedgerError::Overflow)?;
+        let mut postings = vec![posting(
+            AccountKey::user(hold.user, hold.money.asset, Bucket::Held),
+            negate(hold.money.minor)?,
+        )];
+        if principal > 0 {
             postings.push(posting(
-                AccountKey::system(SystemAccount::Fees, fee.asset),
-                negate(fee.minor)?,
+                AccountKey::system(SystemAccount::ExternalOutflow, hold.money.asset),
+                principal,
             ));
         }
-        self.commit(TransactionKind::SettleHold, reference, request, postings)
+        if fee_minor > 0 {
+            postings.push(posting(
+                AccountKey::system(SystemAccount::Fees, hold.money.asset),
+                fee_minor,
+            ));
+        }
+        let receipt = self.commit(TransactionKind::SettleHold, &reference, request, postings)?;
+        self.close_hold(hold_reference, HoldState::Settled);
+        Ok(receipt)
     }
 
     /// The user's current balance in both buckets.
@@ -399,6 +417,22 @@ impl Ledger {
             });
         }
         Ok(())
+    }
+
+    /// The balance of a system account, e.g. what has left via
+    /// [`SystemAccount::ExternalOutflow`] or been earned as [`SystemAccount::Fees`].
+    pub fn system_balance(&self, account: SystemAccount, asset: Asset) -> i128 {
+        self.amount(AccountKey::system(account, asset))
+    }
+
+    pub fn hold_state(&self, reference: &str) -> Option<HoldState> {
+        self.holds.get(reference).map(|hold| hold.state)
+    }
+
+    fn close_hold(&mut self, reference: &str, state: HoldState) {
+        if let Some(hold) = self.holds.get_mut(reference) {
+            hold.state = state;
+        }
     }
 
     fn open_hold(&self, reference: &str) -> Result<Hold, LedgerError> {
@@ -502,6 +536,7 @@ fn posting(account: AccountKey, amount: i128) -> Posting {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -572,5 +607,85 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err, LedgerError::InvalidFee);
+    }
+
+    fn system(ledger: &Ledger, account: SystemAccount) -> i128 {
+        ledger.system_balance(account, Asset::Usdc)
+    }
+
+    #[test]
+    fn settle_books_principal_to_outflow_and_fee_to_fees() {
+        let mut ledger = Ledger::new();
+        let alice = user();
+        ledger.deposit(alice, usdc(1_000), "dep-1").unwrap();
+        // The withdrawal holds principal (900) + fee (50).
+        ledger.hold(alice, usdc(950), usdc(50), "wd-1").unwrap();
+
+        let receipt = ledger.settle("wd-1", Some(usdc(50))).unwrap();
+        assert!(!receipt.replayed);
+
+        let balance = ledger.balance(alice, Asset::Usdc);
+        assert_eq!(balance.available, 50);
+        assert_eq!(balance.held, 0);
+        assert_eq!(system(&ledger, SystemAccount::ExternalOutflow), 900);
+        assert_eq!(system(&ledger, SystemAccount::Fees), 50);
+
+        let settle = ledger.transactions.last().unwrap();
+        assert_eq!(settle.kind, TransactionKind::SettleHold);
+        let sum: i128 = settle.postings.iter().map(|p| p.amount).sum();
+        assert_eq!(sum, 0, "settlement must balance");
+        assert_eq!(ledger.hold_state("wd-1"), Some(HoldState::Settled));
+
+        // A retried settlement replays and moves nothing.
+        let replay = ledger.settle("wd-1", Some(usdc(50))).unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.transaction_id, receipt.transaction_id);
+        assert_eq!(system(&ledger, SystemAccount::ExternalOutflow), 900);
+
+        // A settled hold cannot be released afterwards.
+        let err = ledger.release("wd-1").unwrap_err();
+        assert!(matches!(err, LedgerError::HoldClosed { state: HoldState::Settled, .. }));
+    }
+
+    #[test]
+    fn release_returns_held_money_and_blocks_settlement() {
+        let mut ledger = Ledger::new();
+        let alice = user();
+        ledger.deposit(alice, usdc(1_000), "dep-1").unwrap();
+        ledger.hold(alice, usdc(300), usdc(1), "wd-1").unwrap();
+
+        ledger.release("wd-1").unwrap();
+        assert_eq!(ledger.balance(alice, Asset::Usdc).available, 1_000);
+        assert_eq!(ledger.hold_state("wd-1"), Some(HoldState::Released));
+
+        let err = ledger.settle("wd-1", None).unwrap_err();
+        assert!(matches!(err, LedgerError::HoldClosed { state: HoldState::Released, .. }));
+        assert_eq!(system(&ledger, SystemAccount::ExternalOutflow), 0);
+    }
+
+    #[test]
+    fn settle_without_a_fee_sends_everything_to_outflow() {
+        let mut ledger = Ledger::new();
+        let alice = user();
+        ledger.deposit(alice, usdc(1_000), "dep-1").unwrap();
+        ledger.hold(alice, usdc(400), usdc(1), "wd-1").unwrap();
+
+        ledger.settle("wd-1", None).unwrap();
+
+        assert_eq!(ledger.balance(alice, Asset::Usdc).held, 0);
+        assert_eq!(system(&ledger, SystemAccount::ExternalOutflow), 400);
+        assert_eq!(system(&ledger, SystemAccount::Fees), 0);
+    }
+
+    #[test]
+    fn settle_rejects_a_fee_larger_than_the_hold() {
+        let mut ledger = Ledger::new();
+        let alice = user();
+        ledger.deposit(alice, usdc(1_000), "dep-1").unwrap();
+        ledger.hold(alice, usdc(100), usdc(1), "wd-1").unwrap();
+
+        let err = ledger.settle("wd-1", Some(usdc(101))).unwrap_err();
+        assert_eq!(err, LedgerError::InvalidFee);
+        assert_eq!(ledger.balance(alice, Asset::Usdc).held, 100);
     }
 }

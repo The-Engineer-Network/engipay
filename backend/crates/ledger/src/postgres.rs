@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
-use crate::{ActiveHold, Balance, HoldState, LedgerError, Receipt};
+use crate::{Balance, HoldState, LedgerError, Receipt};
 
 /// One active (open) hold belonging to a user, returned by [`PostgresLedgerStore::get_active_holds`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,9 +96,6 @@ impl PostgresLedgerStore {
             .collect())
     }
 
-    /// Returns all open (in-flight) holds for `user`, ordered by creation
-    /// time ascending.  Only holds in the `open` state are returned; released
-    /// and settled holds are not included.
     /// All open (active) holds for `user`, ordered by creation time ascending.
     ///
     /// Returns an empty `Vec` when the user has no open holds.  Each entry
@@ -117,31 +114,6 @@ impl PostgresLedgerStore {
         .await
         .map_err(db_err)?;
 
-        rows.into_iter()
-            .map(|row| {
-                let reference: String = row.get("reference");
-                let asset_str: String = row.get("asset");
-                let amount_str: String = row.get("amount");
-                let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
-
-                let asset = asset_str
-                    .parse::<Asset>()
-                    .map_err(|_| LedgerError::Database {
-                        code: None,
-                        message: format!("unknown asset in hold: {asset_str}"),
-                    })?;
-                let amount = amount_str
-                    .parse::<i128>()
-                    .map_err(|_| LedgerError::Overflow)?;
-
-                Ok(ActiveHold {
-                    reference,
-                    asset,
-                    amount,
-                    created_at,
-                })
-            })
-            .collect()
         let mut holds = Vec::with_capacity(rows.len());
         for row in rows {
             let reference: String = row.get("reference");
@@ -150,11 +122,15 @@ impl PostgresLedgerStore {
             let created_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
                 row.get("created_at");
 
-            let asset = asset_str.parse::<Asset>().map_err(|_| LedgerError::Database {
-                code: None,
-                message: format!("unknown asset in ledger_holds: {asset_str}"),
-            })?;
-            let amount = amount_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            let asset = asset_str
+                .parse::<Asset>()
+                .map_err(|_| LedgerError::Database {
+                    code: None,
+                    message: format!("unknown asset in ledger_holds: {asset_str}"),
+                })?;
+            let amount = amount_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
 
             holds.push(ActiveHold {
                 reference,
@@ -377,6 +353,102 @@ impl PostgresLedgerStore {
             replayed: false,
         })
     }
+
+    /// Settles a hold: the held money leaves EngiPay to an external destination,
+    /// and an optional platform fee is booked as revenue.
+    ///
+    /// Postings:
+    ///   - Debit  user held bucket      (held amount)
+    ///   - Credit ExternalOutflow       (held amount − fee, i.e. the principal)
+    ///   - Credit Fees                  (fee, when `fee` is `Some`)
+    ///
+    /// The fee, when provided, must be in the same asset as the hold and must
+    /// not exceed the held amount.  If the hold is not in the `open` state,
+    /// returns [`LedgerError::HoldClosed`].
+    ///
+    /// Idempotent: settling the same hold again with the same fee returns the
+    /// original receipt with `replayed: true` and moves nothing.
+    pub async fn settle_hold(
+        &self,
+        hold_reference: &str,
+        fee: Option<Money>,
+    ) -> Result<Receipt, LedgerError> {
+        require_non_empty(hold_reference)?;
+        if let Some(f) = fee {
+            crate::require_positive(f)?;
+        }
+
+        with_serializable_retry(|| self.settle_hold_inner(hold_reference, fee)).await
+    }
+
+    async fn settle_hold_inner(
+        &self,
+        hold_reference: &str,
+        fee: Option<Money>,
+    ) -> Result<Receipt, LedgerError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        set_serializable(&mut tx).await?;
+
+        // Idempotency: settle uses a distinct sub-reference so it can coexist
+        // with the hold's own reference in ledger_transactions.
+        let reference = format!("{hold_reference}:settle");
+        let fee_str = fee.map_or_else(|| "none".to_owned(), |f| format!("{}:{}", f.asset, f.minor));
+        let fingerprint = format!("settle|{fee_str}");
+
+        if let Some(receipt) = check_idempotency(&mut tx, &reference, &fingerprint).await? {
+            return Ok(receipt);
+        }
+
+        let hold = get_hold(&mut tx, hold_reference).await?;
+        if hold.state != "open" {
+            return Err(LedgerError::HoldClosed {
+                reference: hold_reference.to_owned(),
+                state: match hold.state.as_str() {
+                    "released" => HoldState::Released,
+                    "settled" => HoldState::Settled,
+                    _ => HoldState::Open,
+                },
+            });
+        }
+
+        // Validate fee constraints.
+        if let Some(f) = fee {
+            if f.asset != hold.asset || f.minor > hold.amount {
+                return Err(LedgerError::InvalidFee);
+            }
+        }
+
+        let tx_id = Uuid::new_v4();
+        insert_transaction(&mut tx, tx_id, "settle_hold", &reference, &fingerprint).await?;
+
+        // Debit the user's held bucket.
+        let neg_held = negate(hold.amount)?;
+        insert_posting_user(&mut tx, tx_id, hold.user, hold.asset, "held", neg_held).await?;
+
+        // Credit ExternalOutflow for the principal and Fees for the fee. A
+        // posting can never be zero, so a fee equal to the whole hold books
+        // nothing to ExternalOutflow.
+        let fee_minor = fee.map_or(0, |f| f.minor);
+        let principal = hold
+            .amount
+            .checked_sub(fee_minor)
+            .ok_or(LedgerError::Overflow)?;
+        if principal > 0 {
+            insert_posting_system(&mut tx, tx_id, "external_outflow", hold.asset, principal)
+                .await?;
+        }
+        if fee_minor > 0 {
+            insert_posting_system(&mut tx, tx_id, "fees", hold.asset, fee_minor).await?;
+        }
+
+        update_hold_state(&mut tx, hold_reference, "settled").await?;
+
+        tx.commit().await.map_err(db_err)?;
+        Ok(Receipt {
+            transaction_id: tx_id,
+            replayed: false,
+        })
+    }
 }
 
 // ── Retry with exponential backoff + jitter ────────────────────────────
@@ -590,7 +662,9 @@ async fn get_hold(
     reference: &str,
 ) -> Result<Hold, LedgerError> {
     let row =
-        sqlx::query("SELECT user_id, asset, amount, state FROM ledger_holds WHERE reference = $1")
+        sqlx::query(
+            "SELECT user_id, asset, amount::text AS amount, state FROM ledger_holds WHERE reference = $1",
+        )
             .bind(reference)
             .fetch_optional(&mut **tx)
             .await
@@ -1058,7 +1132,10 @@ mod tests {
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
 
-        store.deposit(alice, usdc(300), "seed-ah-excl").await.unwrap();
+        store
+            .deposit(alice, usdc(300), "seed-ah-excl")
+            .await
+            .unwrap();
         store
             .create_hold(alice, usdc(100), "hold-excl-open")
             .await
@@ -1254,6 +1331,170 @@ mod tests {
     }
 
     // Helper to read balance from the pool directly (outside the store).
+    // ── settle_hold tests ──────────────────────────────────────────────
+
+    /// The settlement transaction's postings to `system_account`, so the
+    /// assertion is not disturbed by other tests sharing the system accounts.
+    async fn system_posting(pool: &PgPool, transaction_id: Uuid, system_account: &str) -> i128 {
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(amount), 0)::text AS amount FROM ledger_postings \
+             WHERE transaction_id = $1 AND owner_kind = 'system' AND system_account = $2",
+        )
+        .bind(transaction_id)
+        .bind(system_account)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        row.get::<String, _>("amount").parse().unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn settle_hold_books_principal_to_outflow_and_fee_to_fees() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let hold_ref = format!("settle-hold-{}", Uuid::new_v4());
+
+        store
+            .deposit(
+                alice,
+                usdc(1_000),
+                &format!("settle-dep-{}", Uuid::new_v4()),
+            )
+            .await
+            .unwrap();
+        // Principal 900 + fee 100 locked by the withdrawal.
+        store
+            .create_hold(alice, usdc(1_000), &hold_ref)
+            .await
+            .unwrap();
+
+        let receipt = store.settle_hold(&hold_ref, Some(usdc(100))).await.unwrap();
+        assert!(!receipt.replayed);
+
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "held").await,
+            0
+        );
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "available").await,
+            0
+        );
+        assert_eq!(
+            system_posting(&pool, receipt.transaction_id, "external_outflow").await,
+            900
+        );
+        assert_eq!(
+            system_posting(&pool, receipt.transaction_id, "fees").await,
+            100
+        );
+        assert!(store.get_active_holds(alice).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn settle_hold_without_fee_sends_everything_to_outflow() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let hold_ref = format!("settle-hold-{}", Uuid::new_v4());
+
+        store
+            .deposit(alice, usdc(500), &format!("settle-dep-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+        store
+            .create_hold(alice, usdc(200), &hold_ref)
+            .await
+            .unwrap();
+
+        let receipt = store.settle_hold(&hold_ref, None).await.unwrap();
+
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "available").await,
+            300
+        );
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "held").await,
+            0
+        );
+        assert_eq!(
+            system_posting(&pool, receipt.transaction_id, "external_outflow").await,
+            200
+        );
+        assert_eq!(
+            system_posting(&pool, receipt.transaction_id, "fees").await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn settle_hold_replay_returns_same_receipt() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let hold_ref = format!("settle-hold-{}", Uuid::new_v4());
+
+        store
+            .deposit(alice, usdc(100), &format!("settle-dep-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+        store
+            .create_hold(alice, usdc(100), &hold_ref)
+            .await
+            .unwrap();
+
+        let first = store.settle_hold(&hold_ref, Some(usdc(5))).await.unwrap();
+        let second = store.settle_hold(&hold_ref, Some(usdc(5))).await.unwrap();
+        assert_eq!(first.transaction_id, second.transaction_id);
+        assert!(second.replayed);
+
+        // A different fee for the same settlement is a conflict, not a replay.
+        let conflict = store.settle_hold(&hold_ref, Some(usdc(6))).await;
+        assert!(matches!(
+            conflict,
+            Err(LedgerError::IdempotencyConflict { .. })
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn settle_hold_rejects_released_holds_and_oversized_fees() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let hold_ref = format!("settle-hold-{}", Uuid::new_v4());
+
+        store
+            .deposit(alice, usdc(100), &format!("settle-dep-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+        store.create_hold(alice, usdc(50), &hold_ref).await.unwrap();
+
+        let too_big = store.settle_hold(&hold_ref, Some(usdc(51))).await;
+        assert_eq!(too_big, Err(LedgerError::InvalidFee));
+
+        store.release_hold(&hold_ref).await.unwrap();
+        let closed = store.settle_hold(&hold_ref, None).await;
+        assert!(matches!(
+            closed,
+            Err(LedgerError::HoldClosed {
+                state: HoldState::Released,
+                ..
+            })
+        ));
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "available").await,
+            100
+        );
+    }
+
     async fn get_user_balance_from_pool(
         pool: &PgPool,
         user: UserId,

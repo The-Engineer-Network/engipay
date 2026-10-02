@@ -12,9 +12,14 @@
 //! The [`routes`] module is the internal HTTP surface the API service calls,
 //! starting with `POST /internal/estimate-fee` ([`routes::estimate_fee`]).
 
+pub mod creditor;
+pub mod deposit_creditor;
+pub mod dlq;
 pub mod evm;
 pub mod routes;
+pub mod services;
 pub mod stellar;
+pub mod workers;
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -143,6 +148,7 @@ where
         Pin<Box<dyn std::future::Future<Output = Result<LedgerEvent, ChainError>> + Send>>;
 
     // All state lives in a single struct so the stream is `Send`.
+    #[allow(clippy::type_complexity)]
     struct Poller<C> {
         client: Arc<C>,
         next_height: u64,
@@ -223,6 +229,17 @@ mod tests {
         }
         // `stream_events` is not implemented here: the test exercises the
         // trait's default polling fallback.
+        async fn stream_events(
+            &self,
+            from_height: u64,
+            poll_interval: Duration,
+        ) -> Result<EventStream, ChainError> {
+            Ok(polling_stream(
+                Arc::new(FakeBase),
+                from_height,
+                poll_interval,
+            ))
+        }
     }
 
     fn deposit(confirmations: u32, minor: i128) -> ObservedDeposit {
@@ -249,6 +266,7 @@ mod tests {
     #[tokio::test]
     async fn stream_events_produces_ledger_events() {
         let stream = Arc::new(FakeBase)
+        let stream = FakeBase
             .stream_events(90, Duration::from_millis(10))
             .await
             .expect("stream_events failed");
