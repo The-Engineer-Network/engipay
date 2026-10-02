@@ -12,6 +12,7 @@
 //! The [`routes`] module is the internal HTTP surface the API service calls,
 //! starting with `POST /internal/estimate-fee` ([`routes::estimate_fee`]).
 
+pub mod bitcoin;
 pub mod creditor;
 pub mod deposit_creditor;
 pub mod dlq;

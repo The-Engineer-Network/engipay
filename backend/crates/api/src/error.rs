@@ -40,6 +40,14 @@ pub enum LedgerError {
         amount: i64,
         network_fee: i64,
     },
+    /// The supplied amount or fee is not a positive integer.
+    #[error("amount must be a positive integer")]
+    InvalidAmount,
+    /// The withdrawal destination is one of EngiPay's own custody addresses.
+    /// Sending funds to a custody address would loop money on-chain and incur
+    /// unnecessary network fees without crediting any user.
+    #[error("destination address is an EngiPay custody account and cannot be used for withdrawals")]
+    InvalidDestination,
 }
 
 impl ApiError {
@@ -61,6 +69,8 @@ impl From<LedgerError> for ApiError {
     fn from(error: LedgerError) -> Self {
         match error {
             LedgerError::InsufficientFunds { .. } => ApiError::BadRequest(error.to_string()),
+            LedgerError::InvalidAmount => ApiError::BadRequest(error.to_string()),
+            LedgerError::InvalidDestination => ApiError::BadRequest(error.to_string()),
         }
     }
 }
@@ -110,5 +120,30 @@ mod tests {
         let (status, code) = api_error.status_and_code();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(code, "bad_request");
+    }
+
+    #[test]
+    fn invalid_amount_maps_to_bad_request() {
+        let api_error: ApiError = LedgerError::InvalidAmount.into();
+        let (status, code) = api_error.status_and_code();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(code, "bad_request");
+    }
+
+    #[test]
+    fn invalid_destination_maps_to_bad_request() {
+        let api_error: ApiError = LedgerError::InvalidDestination.into();
+        let (status, code) = api_error.status_and_code();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(code, "bad_request");
+    }
+
+    #[test]
+    fn invalid_destination_message_mentions_custody() {
+        let message = LedgerError::InvalidDestination.to_string();
+        assert!(
+            message.contains("custody"),
+            "error message should mention custody account: {message}"
+        );
     }
 }
