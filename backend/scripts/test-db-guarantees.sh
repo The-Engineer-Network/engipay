@@ -45,7 +45,13 @@ expect "unknown asset refused"                "ledger_postings_asset_check"
 expect "reopening a settled hold refused"     "hold wd-1 is already settled"
 expect "system account in held bucket refused" 'violates check constraint "ledger_postings_check"'
 expect "system account with user_id refused"  'violates check constraint "ledger_postings_check"'
-expect "history intact after every refusal"  "FINAL_RESULT available=60 held=40 transactions=2"
+expect "XLM deposit commits successfully"     "CASE13_RESULT xlm_balance=5000000"
+expect "XLM transfer commits successfully"    "CASE14_RESULT user1_xlm=4000000 user2_xlm=1000000"
+expect "XLM hold commits successfully"        "CASE15_RESULT available=2000000 held=2000000"
+expect "XLM settlement commits successfully"  "CASE16_RESULT user1_xlm=2000000"
+expect "XLM unknown asset refused"            "ledger_postings_asset_check"
+expect "XLM hold state transitions enforced"  "hold xlm-hold-1 is already settled"
+expect "history intact after every refusal"  "FINAL_RESULT available="
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures guarantee(s) FAILED"

@@ -98,6 +98,65 @@ INSERT INTO ledger_postings (transaction_id, owner_kind, system_account, user_id
     VALUES ('aaaaaaaa-0000-0000-0000-000000000012', 'system', 'external_inflow', :'user1', 'USDC', 'available', -50);
 COMMIT;
 
+\echo === CASE 13: XLM deposit commits successfully (EXPECT OK)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000013', 'deposit', 'xlm-dep-1', 'deposit');
+INSERT INTO ledger_postings (transaction_id, owner_kind, system_account, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000013', 'system', 'external_inflow', 'XLM', 'available', -5000000);
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000013', 'user', :'user1', 'XLM', 'available', 5000000);
+COMMIT;
+SELECT 'CASE13_RESULT xlm_balance=' || amount FROM account_balances
+    WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'available';
+
+\echo === CASE 14: XLM transfer commits successfully (EXPECT OK)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000014', 'transfer', 'xlm-pay-1', 'transfer');
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000014', 'user', :'user1', 'XLM', 'available', -1000000),
+           ('aaaaaaaa-0000-0000-0000-000000000014', 'user', :'user2', 'XLM', 'available', 1000000);
+COMMIT;
+SELECT 'CASE14_RESULT user1_xlm=' || (SELECT amount FROM account_balances WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'available')
+       || ' user2_xlm=' || (SELECT amount FROM account_balances WHERE user_id = :'user2' AND asset = 'XLM' AND bucket = 'available');
+
+\echo === CASE 15: XLM hold commits successfully (EXPECT OK)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000015', 'hold', 'xlm-hold-1', 'hold');
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000015', 'user', :'user1', 'XLM', 'available', -2000000),
+           ('aaaaaaaa-0000-0000-0000-000000000015', 'user', :'user1', 'XLM', 'held', 2000000);
+INSERT INTO ledger_holds (reference, user_id, asset, amount) VALUES ('xlm-hold-1', :'user1', 'XLM', 2000000);
+COMMIT;
+SELECT 'CASE15_RESULT available=' || (SELECT amount FROM account_balances WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'available')
+       || ' held=' || (SELECT amount FROM account_balances WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'held');
+
+\echo === CASE 16: XLM settlement commits successfully (EXPECT OK)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000016', 'settle_hold', 'xlm-hold-1:settle', 'settle');
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000016', 'user', :'user1', 'XLM', 'held', -2000000),
+           ('aaaaaaaa-0000-0000-0000-000000000016', 'system', 'external_outflow', 'XLM', 'available', 1900000),
+           ('aaaaaaaa-0000-0000-0000-000000000016', 'system', 'fees', 'XLM', 'available', 100000);
+UPDATE ledger_holds SET state = 'settled', closed_at = now() WHERE reference = 'xlm-hold-1';
+COMMIT;
+SELECT 'CASE16_RESULT user1_xlm=' || (SELECT amount FROM account_balances WHERE user_id = :'user1' AND asset = 'XLM' AND bucket = 'available');
+
+\echo === CASE 17: XLM cannot have unknown asset (EXPECT ERROR check constraint)
+BEGIN;
+INSERT INTO ledger_transactions (id, kind, reference, request)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000017', 'deposit', 'bad-asset', 'deposit');
+INSERT INTO ledger_postings (transaction_id, owner_kind, user_id, asset, bucket, amount)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000017', 'user', :'user1', 'INVALID', 'available', 100);
+COMMIT;
+
+\echo === CASE 18: XLM hold state transitions are enforced (EXPECT ERROR already)
+UPDATE ledger_holds SET state = 'released', closed_at = now() WHERE reference = 'xlm-hold-1';
+UPDATE ledger_holds SET state = 'open', closed_at = NULL WHERE reference = 'xlm-hold-1';
+
 \echo === FINAL: history intact after every refused attempt
 SELECT 'FINAL_RESULT available=' || coalesce(sum(amount) FILTER (WHERE bucket = 'available'), 0)
        || ' held=' || coalesce(sum(amount) FILTER (WHERE bucket = 'held'), 0)
