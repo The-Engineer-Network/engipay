@@ -82,6 +82,65 @@ COMMIT;
 UPDATE ledger_holds SET state = 'settled', closed_at = now() WHERE reference = 'wd-1';
 UPDATE ledger_holds SET state = 'open', closed_at = NULL WHERE reference = 'wd-1';
 
+-- deposit_addresses guarantees
+
+\echo === CASE 11: a valid deposit address inserts (EXPECT OK)
+INSERT INTO deposit_addresses (id, user_id, chain, address, muxed_id, derivation_index)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000011', :'user1', 'stellar', 'GAAAA...AAA', 1, 0);
+SELECT 'CASE11_RESULT chain=' || chain FROM deposit_addresses WHERE id = 'bbbbbbbb-0000-0000-0000-000000000011';
+
+\echo === CASE 12: duplicate address is refused (EXPECT ERROR duplicate key)
+INSERT INTO deposit_addresses (id, user_id, chain, address, derivation_index)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000012', :'user2', 'base', 'GAAAA...AAA', 1);
+
+\echo === CASE 13: duplicate user+chain is refused (EXPECT ERROR duplicate key)
+INSERT INTO deposit_addresses (id, user_id, chain, address, derivation_index)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000013', :'user1', 'stellar', 'GBBBB...BBB', 1);
+
+\echo === CASE 14: invalid chain is refused (EXPECT ERROR check constraint)
+INSERT INTO deposit_addresses (id, user_id, chain, address, derivation_index)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000014', :'user1', 'solana', 'GCCCC...CCC', 2);
+
+-- bank_accounts guarantees
+
+\echo === CASE 15: a valid bank account inserts (EXPECT OK)
+INSERT INTO bank_accounts (id, user_id, bank_code, account_number, account_name, verified)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000015', :'user1', '044', '1234567890', 'John Doe', true);
+SELECT 'CASE15_RESULT verified=' || verified FROM bank_accounts WHERE id = 'bbbbbbbb-0000-0000-0000-000000000015';
+
+\echo === CASE 16: duplicate user+bank+account is refused (EXPECT ERROR duplicate key)
+INSERT INTO bank_accounts (id, user_id, bank_code, account_number, account_name)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000016', :'user1', '044', '1234567890', 'John Doe');
+
+-- conversions guarantees
+
+\echo === CASE 17: a valid conversion inserts (EXPECT OK)
+INSERT INTO conversions (id, user_id, asset_in, asset_out, amount_in, amount_out, rate, fee, route, status, expires_at)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000017', :'user1', 'USDC', 'ETH', 1000000, 500000000000000, 0.0005, 1000, 'uniswap', 'quoted', now() + interval '10 minutes');
+SELECT 'CASE17_RESULT status=' || status FROM conversions WHERE id = 'bbbbbbbb-0000-0000-0000-000000000017';
+
+\echo === CASE 18: invalid conversion status is refused (EXPECT ERROR check constraint)
+INSERT INTO conversions (id, user_id, asset_in, asset_out, amount_in, amount_out, rate, fee, route, status, expires_at)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000018', :'user1', 'USDC', 'ETH', 1000000, 500000000000000, 0.0005, 1000, 'uniswap', 'pending', now() + interval '10 minutes');
+
+-- ramp_orders guarantees
+
+\echo === CASE 19: a valid ramp order inserts (EXPECT OK)
+INSERT INTO ramp_orders (id, user_id, direction, asset, crypto_amount, ngn_amount, rate, fee, partner, partner_ref, status)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000019', :'user1', 'on_ramp', 'USDC', 1000000, 1500000000, 1500.00, 5000, 'paystack', 'PS-001', 'quoted');
+SELECT 'CASE19_RESULT direction=' || direction FROM ramp_orders WHERE id = 'bbbbbbbb-0000-0000-0000-000000000019';
+
+\echo === CASE 20: invalid ramp direction is refused (EXPECT ERROR check constraint)
+INSERT INTO ramp_orders (id, user_id, direction, asset, crypto_amount, ngn_amount, rate, fee, partner, partner_ref, status)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000020', :'user1', 'swap', 'USDC', 1000000, 1500000000, 1500.00, 5000, 'paystack', 'PS-002', 'quoted');
+
+\echo === CASE 21: duplicate partner_ref is refused (EXPECT ERROR duplicate key)
+INSERT INTO ramp_orders (id, user_id, direction, asset, crypto_amount, ngn_amount, rate, fee, partner, partner_ref, status)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000021', :'user2', 'off_ramp', 'USDC', 500000, 750000000, 1500.00, 2500, 'paystack', 'PS-001', 'quoted');
+
+\echo === CASE 22: invalid ramp status is refused (EXPECT ERROR check constraint)
+INSERT INTO ramp_orders (id, user_id, direction, asset, crypto_amount, ngn_amount, rate, fee, partner, partner_ref, status)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000022', :'user1', 'on_ramp', 'BTC', 100000, 150000000, 1500.00, 500, 'flutterwave', 'FW-001', 'pending');
 \echo === CASE 11: system account in held bucket is rejected (EXPECT ERROR check constraint)
 BEGIN;
 INSERT INTO ledger_transactions (id, kind, reference, request)

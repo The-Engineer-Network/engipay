@@ -43,6 +43,18 @@ expect "reused reference refused"             "ledger_transactions_reference_key
 expect "zero amount refused"                  "ledger_postings_amount_check"
 expect "unknown asset refused"                "ledger_postings_asset_check"
 expect "reopening a settled hold refused"     "hold wd-1 is already settled"
+expect "valid deposit address inserts"        "CASE11_RESULT chain=stellar"
+expect "duplicate address refused"            "deposit_addresses_address_key"
+expect "duplicate user+chain refused"         "deposit_addresses_user_id_chain_key"
+expect "invalid chain refused"                "deposit_addresses_chain_check"
+expect "valid bank account inserts"           "CASE15_RESULT verified=t"
+expect "duplicate bank account refused"       "bank_accounts_user_id_bank_code_account_number_key"
+expect "valid conversion inserts"             "CASE17_RESULT status=quoted"
+expect "invalid conversion status refused"    "conversions_status_check"
+expect "valid ramp order inserts"             "CASE19_RESULT direction=on_ramp"
+expect "invalid ramp direction refused"       "ramp_orders_direction_check"
+expect "duplicate partner_ref refused"        "ramp_orders_partner_ref_key"
+expect "invalid ramp status refused"          "ramp_orders_status_check"
 expect "system account in held bucket refused" 'violates check constraint "ledger_postings_check"'
 expect "system account with user_id refused"  'violates check constraint "ledger_postings_check"'
 expect "history intact after every refusal"  "FINAL_RESULT available=60 held=40 transactions=2"
