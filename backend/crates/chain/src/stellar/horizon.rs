@@ -1,7 +1,13 @@
 //! Horizon responses, and the rules that turn a payment record into a deposit.
 //!
-//! Everything here is pure: no network, no clock. The decisions that credit a
-//! user's balance are tested against recorded Horizon JSON.
+//! The pure conversion logic (`deposit_from_record`) is free of network and
+//! clock dependencies so it can be tested against recorded JSON. The
+//! [`TransactionCache`] lives here too — it caches `GET /transactions/{hash}`
+//! responses by `tx_hash` with a 60-second TTL, so multi-operation
+//! transactions do not trigger redundant network round-trips.
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use engipay_core::{Asset, Chain, Money};
 use serde::Deserialize;
@@ -9,11 +15,33 @@ use serde::Deserialize;
 use super::network::StellarNetwork;
 use crate::ObservedDeposit;
 
+/// How long a cached transaction detail is considered fresh.
+pub const TRANSACTION_CACHE_TTL: Duration = Duration::from_secs(60);
+
 /// `GET /` on Horizon.
 #[derive(Debug, Deserialize)]
 pub struct Root {
     /// The newest ledger Horizon has fully ingested. Payments in it are final.
     pub history_latest_ledger: u64,
+}
+
+/// `GET /fee_stats` — the fee distribution from the last ledger Horizon saw.
+///
+/// All fee values are in stroops per operation as strings (Horizon returns them
+/// as JSON strings to avoid precision loss in some parsers).
+#[derive(Debug, Deserialize)]
+pub struct FeeStats {
+    /// The distribution of fees actually charged in the last ledger.
+    pub fee_charged: FeeDistribution,
+}
+
+/// Sub-object under [`FeeStats`] for the `fee_charged` distribution.
+#[derive(Debug, Deserialize)]
+pub struct FeeDistribution {
+    /// Median fee charged in the last ledger, in stroops (as a decimal string).
+    pub p50: String,
+    /// 90th-percentile fee charged in the last ledger, in stroops (string).
+    pub p90: String,
 }
 
 /// `GET /accounts/{id}`.
@@ -46,6 +74,10 @@ pub struct PaymentRecord {
     pub transaction_hash: String,
     #[serde(default)]
     pub transaction_successful: bool,
+    /// The paying account. Logged when a transfer into custody is refused, so a
+    /// person can trace it back.
+    #[serde(default)]
+    pub from: Option<String>,
     #[serde(default)]
     pub to: Option<String>,
     #[serde(default)]
@@ -68,6 +100,77 @@ pub struct JoinedTransaction {
     pub successful: bool,
 }
 
+/// Short-lived in-process cache for Horizon transaction detail responses.
+///
+/// Keyed by `transaction_hash`. Entries expire after [`TRANSACTION_CACHE_TTL`]
+/// (60 seconds). The cache is intentionally simple — no background eviction,
+/// just lazy expiry on read and on explicit [`TransactionCache::evict_expired`].
+///
+/// The main use-case is multi-operation transactions: Horizon returns one
+/// `PaymentRecord` per operation, all sharing the same `transaction_hash`.
+/// Without a cache each operation would trigger a separate
+/// `GET /transactions/{hash}` call; with the cache only the first does.
+#[derive(Debug, Default)]
+pub struct TransactionCache {
+    entries: HashMap<String, CacheEntry>,
+}
+
+#[derive(Debug)]
+struct CacheEntry {
+    transaction: JoinedTransaction,
+    inserted_at: Instant,
+}
+
+impl TransactionCache {
+    /// Creates an empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns a cached transaction if it exists and has not expired.
+    pub fn get(&self, tx_hash: &str) -> Option<&JoinedTransaction> {
+        self.entries.get(tx_hash).and_then(|entry| {
+            if entry.inserted_at.elapsed() < TRANSACTION_CACHE_TTL {
+                Some(&entry.transaction)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Inserts or refreshes a transaction entry, recording the current time.
+    pub fn insert(&mut self, tx_hash: String, transaction: JoinedTransaction) {
+        self.entries.insert(
+            tx_hash,
+            CacheEntry {
+                transaction,
+                inserted_at: Instant::now(),
+            },
+        );
+    }
+
+    /// Removes all entries whose TTL has elapsed. Call periodically to bound
+    /// memory growth across a long-running polling loop.
+    pub fn evict_expired(&mut self) {
+        self.entries
+            .retain(|_, entry| entry.inserted_at.elapsed() < TRANSACTION_CACHE_TTL);
+    }
+
+    /// Number of entries currently in the cache (including possibly-stale ones
+    /// that have not been read since they expired).
+    #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the cache holds no entries at all.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// `400` from `POST /transactions`.
 #[derive(Debug, Deserialize)]
 pub struct SubmitProblem {
@@ -82,10 +185,41 @@ pub struct SubmitExtras {
 }
 
 /// `200` from `POST /transactions`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Submitted {
     pub hash: String,
     pub ledger: u64,
+}
+
+/// Parses Horizon's `200` body from `POST /transactions`.
+///
+/// The transaction was accepted, so a body that cannot be read is reported as
+/// [`ChainError::Unavailable`] (outcome unknown), never as a rejection.
+pub fn parse_submitted(body: &[u8]) -> Result<Submitted, crate::ChainError> {
+    let submitted: Submitted = serde_json::from_slice(body).map_err(|error| {
+        crate::ChainError::Unavailable(format!("unreadable Horizon submission response: {error}"))
+    })?;
+    let is_hash =
+        submitted.hash.len() == 64 && submitted.hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !is_hash || submitted.ledger == 0 {
+        return Err(crate::ChainError::Unavailable(format!(
+            "Horizon accepted the transaction but reported hash {:?} in ledger {}",
+            submitted.hash, submitted.ledger
+        )));
+    }
+    Ok(submitted)
+}
+
+/// A readable reason for a failed `POST /transactions`, including Horizon's
+/// result codes (e.g. `tx_bad_seq`, `op_underfunded`) when it sent them.
+pub fn submit_problem_detail(status: u16, body: &[u8]) -> String {
+    match serde_json::from_slice::<SubmitProblem>(body) {
+        Ok(problem) => match problem.extras.and_then(|extras| extras.result_codes) {
+            Some(codes) => format!("{}: {codes}", problem.title),
+            None => problem.title,
+        },
+        Err(_) => format!("Horizon returned {status}"),
+    }
 }
 
 /// Why a payment into the custody account was not turned into a deposit. Each
@@ -96,11 +230,21 @@ pub enum Skipped {
     NotIncoming,
     Failed,
     /// A token EngiPay does not hold, including fake USDC from another issuer.
+    /// This is a security-sensitive rejection: unauthorized assets must be recorded.
     UnsupportedAsset {
         code: String,
         issuer: String,
+        /// `true` when `code == "USDC"` but the issuer is not Circle's.
+        counterfeit_usdc: bool,
     },
     Malformed(&'static str),
+}
+
+impl Skipped {
+    /// Whether this rejection is a security concern requiring audit logging.
+    pub fn is_security_sensitive(&self) -> bool {
+        matches!(self, Skipped::UnsupportedAsset { .. })
+    }
 }
 
 /// Turns a Horizon payment record into a deposit into `custody`.
@@ -133,12 +277,24 @@ pub fn deposit_from_record(
     let asset = match record.asset_type.as_deref() {
         Some("native") => Asset::Xlm,
         Some("credit_alphanum4") | Some("credit_alphanum12") => {
+            let asset_type = record.asset_type.as_deref().unwrap_or_default();
             let code = record.asset_code.clone().unwrap_or_default();
             let issuer = record.asset_issuer.clone().unwrap_or_default();
-            if code == "USDC" && issuer == network.usdc_issuer() {
+            // Circle issues USDC as alphanum4 only. A 12-character asset named
+            // "USDC" is a different token that borrows the ticker, so it is
+            // counterfeit even when it names Circle's issuer.
+            let usdc_shape_ok = asset_type == "credit_alphanum4";
+            if code == "USDC" && issuer == network.usdc_issuer() && usdc_shape_ok {
                 Asset::Usdc
             } else {
-                return Err(Skipped::UnsupportedAsset { code, issuer });
+                // Flag tokens named "USDC" from the wrong issuer separately so
+                // operators can distinguish counterfeit USDC from unknown assets.
+                let counterfeit_usdc = code == "USDC";
+                return Err(Skipped::UnsupportedAsset {
+                    code,
+                    issuer,
+                    counterfeit_usdc,
+                });
             }
         }
         _ => return Err(Skipped::Malformed("unknown asset_type")),
@@ -167,7 +323,9 @@ pub fn deposit_from_record(
             .to_muxed
             .clone()
             .unwrap_or_else(|| custody.to_owned()),
-        // The operation id is unique across the network's history.
+        // Deterministic idempotency key: "stellar:<transaction_hash>:<operation_index>"
+        // The paging_token is Horizon's operation index, unique per operation on the network.
+        // This prevents double-crediting the same deposit and identifies specific credit events.
         reference: format!(
             "stellar:{}:{}",
             record.transaction_hash, record.paging_token
@@ -200,10 +358,97 @@ pub fn cursor_for_ledger(ledger: u64) -> Option<i64> {
     ledger.checked_mul(1 << 32)
 }
 
+/// Extracts the 64-bit muxed account ID from a Stellar `M...` address.
+///
+/// Returns `Some(id)` when `destination` is a valid muxed account address,
+/// and `None` for a plain `G...` custody account address (which carries no
+/// embedded ID and must be flagged for memo parsing or manual review) or for
+/// any invalid input.
+pub fn extract_muxed_id(destination: &str) -> Option<u64> {
+    match engipay_core::stellar::parse_address(destination) {
+        Ok(engipay_core::stellar::StellarAddress::Muxed { id, .. }) => Some(id),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    const HASH: &str = "3389e9f0f1a65f19736cacf544c2e825313e8447f569233bb8db39aa607c8889";
+
+    #[test]
+    fn a_submission_response_yields_hash_and_ledger() {
+        let body = serde_json::json!({
+            "hash": HASH,
+            "ledger": 47_123_456,
+            "envelope_xdr": "AAAA",
+            "successful": true
+        });
+        let submitted = parse_submitted(body.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            submitted,
+            Submitted {
+                hash: HASH.to_owned(),
+                ledger: 47_123_456
+            }
+        );
+    }
+
+    #[test]
+    fn an_unreadable_submission_response_is_unknown_not_rejected() {
+        let cases = [
+            b"not json".to_vec(),
+            serde_json::json!({ "ledger": 5 }).to_string().into_bytes(),
+            serde_json::json!({ "hash": "zz", "ledger": 5 })
+                .to_string()
+                .into_bytes(),
+            serde_json::json!({ "hash": HASH, "ledger": 0 })
+                .to_string()
+                .into_bytes(),
+        ];
+        for body in cases {
+            assert!(
+                matches!(
+                    parse_submitted(&body),
+                    Err(crate::ChainError::Unavailable(_))
+                ),
+                "{}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+    }
+
+    #[test]
+    fn rejection_details_carry_horizon_result_codes() {
+        let body = serde_json::json!({
+            "type": "https://stellar.org/horizon-errors/transaction_failed",
+            "title": "Transaction Failed",
+            "status": 400,
+            "extras": {
+                "envelope_xdr": "AAAA",
+                "result_codes": { "transaction": "tx_failed", "operations": ["op_no_destination"] }
+            }
+        });
+        let detail = submit_problem_detail(400, body.to_string().as_bytes());
+        assert!(detail.starts_with("Transaction Failed"), "{detail}");
+        assert!(detail.contains("tx_failed"), "{detail}");
+        assert!(detail.contains("op_no_destination"), "{detail}");
+    }
+
+    #[test]
+    fn rejection_details_fall_back_to_title_or_status() {
+        let titled = serde_json::json!({ "title": "Transaction Malformed" });
+        assert_eq!(
+            submit_problem_detail(400, titled.to_string().as_bytes()),
+            "Transaction Malformed"
+        );
+        assert_eq!(
+            submit_problem_detail(400, b"<html>"),
+            "Horizon returned 400"
+        );
+    }
 
     fn account(seed: u8) -> String {
         stellar_strkey::ed25519::PublicKey([seed; 32])
@@ -284,7 +529,13 @@ mod tests {
             "asset_code": "USDC",
             "asset_issuer": sender(),
         }));
-        assert!(matches!(skipped, Err(Skipped::UnsupportedAsset { .. })));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -294,7 +545,91 @@ mod tests {
             "asset_code": "USDC",
             "asset_issuer": StellarNetwork::Mainnet.usdc_issuer(),
         }));
-        assert!(matches!(skipped, Err(Skipped::UnsupportedAsset { .. })));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
+    }
+
+    /// alphanum12 assets named "USDC" (e.g. "USDC        " padded) are treated
+    /// as counterfeit — the official Circle USDC is always alphanum4.
+    #[test]
+    fn alphanum12_usdc_from_any_issuer_is_counterfeit() {
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum12",
+            "asset_code": "USDC",
+            "asset_issuer": sender(),
+        }));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
+    }
+
+    /// alphanum12 assets named "USDC" using Circle's testnet issuer still fail:
+    /// the real Circle USDC is alphanum4, not alphanum12.
+    #[test]
+    fn alphanum12_usdc_from_circle_issuer_is_still_counterfeit() {
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum12",
+            "asset_code": "USDC",
+            "asset_issuer": StellarNetwork::Testnet.usdc_issuer(),
+        }));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: true,
+                ..
+            })
+        ));
+    }
+
+    /// A completely different token (not named USDC) is unsupported but is NOT
+    /// flagged as counterfeit_usdc.
+    #[test]
+    fn unknown_asset_is_unsupported_but_not_counterfeit() {
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum4",
+            "asset_code": "FAKE",
+            "asset_issuer": sender(),
+        }));
+        assert!(matches!(
+            skipped,
+            Err(Skipped::UnsupportedAsset {
+                counterfeit_usdc: false,
+                ..
+            })
+        ));
+    }
+
+    /// The UnsupportedAsset error carries the issuer so operators can trace
+    /// which account issued the counterfeit token.
+    #[test]
+    fn unsupported_asset_error_carries_issuer() {
+        let fake_issuer = sender();
+        let skipped = deposit(serde_json::json!({
+            "asset_type": "credit_alphanum4",
+            "asset_code": "USDC",
+            "asset_issuer": fake_issuer,
+        }));
+        match skipped {
+            Err(Skipped::UnsupportedAsset {
+                code,
+                issuer,
+                counterfeit_usdc,
+            }) => {
+                assert_eq!(code, "USDC");
+                assert_eq!(issuer, fake_issuer);
+                assert!(counterfeit_usdc);
+            }
+            other => panic!("expected UnsupportedAsset, got {other:?}"),
+        }
     }
 
     #[test]
@@ -359,11 +694,251 @@ mod tests {
     }
 
     #[test]
+    fn stroops_parse_edge_cases() {
+        assert_eq!(parse_stroops("0.0000000"), Some(0));
+        assert_eq!(parse_stroops("0.0000001"), Some(1));
+        assert_eq!(parse_stroops("1.0000000"), Some(10_000_000));
+        assert_eq!(parse_stroops("10.0000000"), Some(100_000_000));
+        assert_eq!(parse_stroops("100.0000000"), Some(1_000_000_000));
+        assert_eq!(parse_stroops("1000.0000000"), Some(10_000_000_000));
+        assert_eq!(parse_stroops("10000.0000000"), Some(100_000_000_000));
+        assert_eq!(parse_stroops("100000.0000000"), Some(1_000_000_000_000));
+        assert_eq!(parse_stroops("1000000.0000000"), Some(10_000_000_000_000));
+        assert_eq!(parse_stroops("10000000.0000000"), Some(100_000_000_000_000));
+        assert_eq!(
+            parse_stroops("100000000.0000000"),
+            Some(1_000_000_000_000_000)
+        );
+        assert_eq!(
+            parse_stroops("1000000000.0000000"),
+            Some(10_000_000_000_000_000)
+        );
+    }
+
+    #[test]
+    fn stroops_parse_fractional_precision() {
+        assert_eq!(parse_stroops("0.0000001"), Some(1));
+        assert_eq!(parse_stroops("0.0000010"), Some(10));
+        assert_eq!(parse_stroops("0.0000100"), Some(100));
+        assert_eq!(parse_stroops("0.0001000"), Some(1000));
+        assert_eq!(parse_stroops("0.0010000"), Some(10_000));
+        assert_eq!(parse_stroops("0.0100000"), Some(100_000));
+        assert_eq!(parse_stroops("0.1000000"), Some(1_000_000));
+        assert_eq!(parse_stroops("1.0000000"), Some(10_000_000));
+        assert_eq!(parse_stroops("0.1234567"), Some(1_234_567));
+        assert_eq!(parse_stroops("0.9999999"), Some(9_999_999));
+        // Seven decimals is exactly what Horizon sends, so this is valid.
+        assert_eq!(parse_stroops("123.4567890"), Some(1_234_567_890));
+        assert_eq!(parse_stroops("123.456789"), None);
+    }
+
+    #[test]
+    fn stroops_parse_invalid_formats() {
+        let invalid = [
+            "abc.0000000",
+            "123.abcdefg",
+            " 123.0000000",
+            "123.0000000 ",
+            "123. 000000",
+            "123.000 000",
+            "+123.0000000",
+            "123.0000000e0",
+            "NaN",
+            "Infinity",
+            "1.00000000",
+            "1.000000",
+            "1.00000",
+        ];
+        for bad in invalid {
+            assert_eq!(parse_stroops(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn unsupported_asset_is_security_sensitive() {
+        let unsupported = Skipped::UnsupportedAsset {
+            code: "FAKE".to_owned(),
+            issuer: "GXXXX".to_owned(),
+            counterfeit_usdc: false,
+        };
+        assert!(unsupported.is_security_sensitive());
+
+        assert!(!Skipped::NotIncoming.is_security_sensitive());
+        assert!(!Skipped::Failed.is_security_sensitive());
+        assert!(!Skipped::Malformed("test").is_security_sensitive());
+    }
+
+    #[test]
     fn a_ledger_cursor_sorts_before_that_ledgers_operations() {
         let cursor = cursor_for_ledger(100).unwrap();
         let first_operation_in_ledger_100: i64 = (100 << 32) + (1 << 12) + 1;
         let last_operation_in_ledger_99: i64 = (100 << 32) - 1;
         assert!(cursor < first_operation_in_ledger_100);
         assert!(cursor > last_operation_in_ledger_99);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // TransactionCache
+    // ──────────────────────────────────────────────────────────────────────────
+
+    fn tx(ledger: u64) -> JoinedTransaction {
+        JoinedTransaction {
+            ledger,
+            successful: true,
+        }
+    }
+
+    #[test]
+    fn cache_miss_on_empty_cache() {
+        let cache = TransactionCache::new();
+        assert!(cache.get("abc123").is_none());
+    }
+
+    #[test]
+    fn cache_hit_after_insert() {
+        let mut cache = TransactionCache::new();
+        cache.insert("abc123".to_owned(), tx(50));
+        let found = cache.get("abc123").expect("entry should be present");
+        assert_eq!(found.ledger, 50);
+        assert!(found.successful);
+    }
+
+    #[test]
+    fn cache_hit_for_second_operation_in_same_transaction() {
+        // Simulate a multi-operation transaction: two PaymentRecords share the
+        // same transaction_hash. The first miss populates the cache; the second
+        // should be a hit without re-fetching.
+        let tx_hash = "multiopera1234".to_owned();
+        let mut cache = TransactionCache::new();
+
+        // First operation: cache miss, then we insert the fetched data.
+        assert!(cache.get(&tx_hash).is_none(), "should miss on first lookup");
+        cache.insert(tx_hash.clone(), tx(200));
+
+        // Second operation (same tx_hash): should hit.
+        let found = cache.get(&tx_hash).expect("second lookup should hit");
+        assert_eq!(found.ledger, 200);
+    }
+
+    #[test]
+    fn cache_hit_for_many_operations_in_same_transaction() {
+        let tx_hash = "bigmultiopera".to_owned();
+        let mut cache = TransactionCache::new();
+        cache.insert(tx_hash.clone(), tx(300));
+
+        // 100 operations, same hash — all should hit the cache.
+        for _ in 0..100 {
+            let found = cache.get(&tx_hash).expect("should hit");
+            assert_eq!(found.ledger, 300);
+        }
+    }
+
+    #[test]
+    fn different_transaction_hashes_are_independent() {
+        let mut cache = TransactionCache::new();
+        cache.insert("tx_a".to_owned(), tx(10));
+        cache.insert("tx_b".to_owned(), tx(20));
+
+        assert_eq!(cache.get("tx_a").unwrap().ledger, 10);
+        assert_eq!(cache.get("tx_b").unwrap().ledger, 20);
+        assert!(cache.get("tx_c").is_none());
+    }
+
+    #[test]
+    fn insert_overwrites_existing_entry() {
+        let mut cache = TransactionCache::new();
+        cache.insert("tx1".to_owned(), tx(1));
+        cache.insert("tx1".to_owned(), tx(99));
+        assert_eq!(cache.get("tx1").unwrap().ledger, 99);
+    }
+
+    #[test]
+    fn expired_entry_returns_none() {
+        use std::time::{Duration, Instant};
+
+        // Build a cache, insert an entry, then manually back-date it past the TTL.
+        let mut cache = TransactionCache::new();
+        cache.insert("stale".to_owned(), tx(42));
+
+        // Force expiry by replacing the entry with an old `inserted_at`.
+        let stale_time = Instant::now()
+            .checked_sub(TRANSACTION_CACHE_TTL + Duration::from_secs(1))
+            .expect("time arithmetic should not underflow on any reasonable system");
+        cache.entries.insert(
+            "stale".to_owned(),
+            CacheEntry {
+                transaction: tx(42),
+                inserted_at: stale_time,
+            },
+        );
+
+        assert!(
+            cache.get("stale").is_none(),
+            "expired entry must not be returned"
+        );
+    }
+
+    #[test]
+    fn evict_expired_removes_only_stale_entries() {
+        use std::time::{Duration, Instant};
+
+        let mut cache = TransactionCache::new();
+        cache.insert("fresh".to_owned(), tx(1));
+
+        let stale_time = Instant::now()
+            .checked_sub(TRANSACTION_CACHE_TTL + Duration::from_secs(1))
+            .expect("time arithmetic should not underflow");
+        cache.entries.insert(
+            "stale".to_owned(),
+            CacheEntry {
+                transaction: tx(2),
+                inserted_at: stale_time,
+            },
+        );
+
+        assert_eq!(cache.len(), 2);
+        cache.evict_expired();
+        assert_eq!(cache.len(), 1, "only the stale entry should be removed");
+        assert!(cache.get("fresh").is_some());
+        // The stale key is gone from the map entirely.
+        assert!(!cache.entries.contains_key("stale"));
+    }
+
+    #[test]
+    fn deposit_from_multi_op_tx_uses_cached_transaction() {
+        // Verify that deposit_from_record still works correctly when the same
+        // JoinedTransaction (as would be returned from a cache hit) is reused
+        // for multiple PaymentRecord instances that share the same tx_hash.
+        let custody = custody();
+        let tx_hash = "shared_tx_abc".to_owned();
+        let cached_tx = JoinedTransaction {
+            ledger: 100,
+            successful: true,
+        };
+
+        // Create two payment records sharing the same transaction.
+        let mut base_record = record(serde_json::json!({
+            "transaction_hash": tx_hash,
+            "paging_token": "1001",
+            "transaction": { "ledger": 100, "successful": true }
+        }));
+        let mut second_record = base_record.clone();
+        second_record.paging_token = "1002".to_owned();
+
+        // Simulate using the cached JoinedTransaction for both records.
+        base_record.transaction = Some(cached_tx.clone());
+        second_record.transaction = Some(cached_tx.clone());
+
+        let d1 = deposit_from_record(&base_record, &custody, StellarNetwork::Testnet, 104)
+            .expect("first op should produce a deposit");
+        let d2 = deposit_from_record(&second_record, &custody, StellarNetwork::Testnet, 104)
+            .expect("second op should produce a deposit");
+
+        // Both deposits originate from the same ledger.
+        assert_eq!(d1.confirmations, d2.confirmations);
+        // References are unique per-operation (different paging_token).
+        assert_ne!(d1.reference, d2.reference);
+        assert!(d1.reference.contains(&tx_hash));
+        assert!(d2.reference.contains(&tx_hash));
     }
 }

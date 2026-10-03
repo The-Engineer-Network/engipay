@@ -55,6 +55,8 @@ expect "valid ramp order inserts"             "CASE19_RESULT direction=on_ramp"
 expect "invalid ramp direction refused"       "ramp_orders_direction_check"
 expect "duplicate partner_ref refused"        "ramp_orders_partner_ref_key"
 expect "invalid ramp status refused"          "ramp_orders_status_check"
+expect "system account in held bucket refused" 'violates check constraint "ledger_postings_check"'
+expect "system account with user_id refused"  'violates check constraint "ledger_postings_check"'
 expect "history intact after every refusal"  "FINAL_RESULT available=60 held=40 transactions=2"
 
 if [ "$failures" -gt 0 ]; then

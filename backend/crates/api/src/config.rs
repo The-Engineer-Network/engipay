@@ -7,6 +7,15 @@ pub struct Config {
     pub db_max_connections: u32,
     pub allowed_origins: Vec<String>,
     pub json_logs: bool,
+    pub stellar_server_secret: Option<String>,
+    /// HMAC-SHA256 signing key for session JWTs (see `auth::jwt`).
+    pub jwt_secret: String,
+    /// Shared Base (EVM) custody address (`0x...`). When unset the Base
+    /// deposit-address endpoint returns 503.
+    pub base_custody_address: Option<String>,
+    /// Shared Bitcoin custody address. When unset the Bitcoin deposit-address
+    /// endpoint returns 503.
+    pub bitcoin_custody_address: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +51,17 @@ impl Config {
                 .collect(),
             json_logs: env::var("LOG_FORMAT")
                 .is_ok_and(|format| format.eq_ignore_ascii_case("json")),
+            stellar_server_secret: env::var("STELLAR_SERVER_SECRET").ok(),
+            jwt_secret: env::var("JWT_SECRET").map_err(|_| ConfigError {
+                name: "JWT_SECRET",
+                reason: "must be set to a random secret used to sign session tokens".to_owned(),
+            })?,
+            base_custody_address: env::var("BASE_CUSTODY_ADDRESS")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
+            bitcoin_custody_address: env::var("BITCOIN_CUSTODY_ADDRESS")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
         })
     }
 
@@ -53,6 +73,10 @@ impl Config {
             db_max_connections: 1,
             allowed_origins: vec!["http://localhost:3000".to_owned()],
             json_logs: false,
+            stellar_server_secret: None,
+            jwt_secret: "test-secret-do-not-use-in-production".to_owned(),
+            base_custody_address: None,
+            bitcoin_custody_address: None,
         }
     }
 }

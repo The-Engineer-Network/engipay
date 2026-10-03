@@ -10,7 +10,14 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
-    router(AppState { database: None }, &Config::for_tests())
+    let config = Config::for_tests();
+    router(
+        AppState {
+            database: None,
+            config: config.clone(),
+        },
+        &config,
+    )
 }
 
 async fn get_json(path: &str) -> (StatusCode, Value) {
@@ -97,4 +104,47 @@ async fn only_the_configured_web_origin_is_allowed() {
             .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
             .is_none()
     );
+}
+
+/// SEP-7: `web+stellar:pay?destination=<account>`.
+fn stellar_payment_uri(destination: &str) -> String {
+    format!("web+stellar:pay?destination={destination}")
+}
+
+/// EIP-681: `ethereum:<address>@<chain_id>`.
+fn base_payment_uri(address: &str) -> String {
+    format!("ethereum:{address}@8453")
+}
+
+/// BIP-21: `bitcoin:<address>`.
+fn bitcoin_payment_uri(address: &str) -> String {
+    format!("bitcoin:{address}")
+}
+
+#[test]
+fn stellar_payment_uri_follows_sep7() {
+    let uri = stellar_payment_uri("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ");
+    assert!(uri.starts_with("web+stellar:pay?"));
+    assert_eq!(
+        uri,
+        "web+stellar:pay?destination=GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
+    );
+}
+
+#[test]
+fn base_payment_uri_follows_eip681() {
+    let uri = base_payment_uri("0x4200000000000000000000000000000000000006");
+    assert!(uri.starts_with("ethereum:0x"));
+    assert!(uri.ends_with("@8453"));
+    assert_eq!(
+        uri,
+        "ethereum:0x4200000000000000000000000000000000000006@8453"
+    );
+}
+
+#[test]
+fn bitcoin_payment_uri_follows_bip21() {
+    let uri = bitcoin_payment_uri("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+    assert!(uri.starts_with("bitcoin:"));
+    assert_eq!(uri, "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
 }
