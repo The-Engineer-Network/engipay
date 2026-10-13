@@ -4,15 +4,14 @@ Welcome to EngiPay development! This guide covers the local development workflow
 
 ---
 
-## 🌿 Branch Governance: `drips` Branch
+## 🌿 Branch Governance: `main` Branch
 
-- **Default Development Branch**: Active development and new features are integrated into the **`drips`** branch.
-- **Production Releases**: The `main` branch is reserved for verified releases.
-- **PR Requirement**: All pull requests must target `drips` and contain a line in the description:
+- **Single Branch**: `main` is the only long-lived branch. Branch from it and open pull requests against it.
+- **PR Requirement**: All pull requests must target `main` and contain a line in the description:
   ```markdown
   closes #<issue number>
   ```
-  Pull requests that meet these criteria and pass CI are automatically merged!
+- **Review**: Pull requests need passing CI and a maintainer's review. Nothing is merged automatically.
 
 ---
 

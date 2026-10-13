@@ -44,31 +44,30 @@ docker compose run --rm toolbox cargo test
 
 ## 🌿 Branching & Pull Request Workflow
 
-### Development Branch: `drips`
-All active development happens on the **`drips`** branch. The `main` branch is reserved for stable production releases.
+### Development Branch: `main`
+`main` is the only long-lived branch. Fork the repository, branch from `main`, and open your pull request against `main`.
 
 ### How to Contribute
-1. **Fork or branch**:
+1. **Fork and branch**:
    ```bash
-   git checkout drips
-   git pull origin drips
+   git checkout main
+   git pull origin main
    git checkout -b feature/your-feature-name
    ```
 2. **Make your changes**: Write atomic commits using [Conventional Commits](https://www.conventionalcommits.org/). Every change MUST include tests.
 3. **Run local CI checks** (see [DEVELOPMENT.md](DEVELOPMENT.md)):
    - `npm run typecheck && npm test && npm run build`
    - `cd backend && cargo clippy && cargo test`
-4. **Open a Pull Request targeting `drips`**:
-   - Ensure the base branch is **`drips`**.
+4. **Open a Pull Request targeting `main`**:
+   - Ensure the base branch is **`main`**.
    - Your PR description MUST contain at least one line linking the issue:
      ```markdown
      closes #<issue number>
      ```
      *(e.g., `Closes #42`)*.
-5. **Automated Validation & Auto-Merge**:
-   - The repository's automated CI checks and PR governance workflows will validate your PR.
-   - If the PR targets `drips`, links an issue via `closes #<issue number>`, and passes all CI tests, it is automatically queued for squash auto-merge!
-   - If requirements are missed, a bot will comment with exact guidance on how to fix them.
+5. **Review**:
+   - CI must pass before a maintainer looks at the pull request.
+   - A maintainer reviews and merges it. Nothing is merged automatically.
 
 ## Before you open a pull request
 

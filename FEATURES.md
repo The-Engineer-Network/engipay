@@ -1,6 +1,6 @@
 # EngiPay Feature Mapping & Implementation Roadmap
 
-> **Branch**: `drips`  
+> **Branch**: `main`  
 > **Source Plans**: [`PLAN.md`](PLAN.md), [`README.md`](README.md), [`backend/`](backend/)  
 > **Target Ecosystems**: Stellar (Soroban / Horizon / SEP-7 / SEP-23), Base (EVM / EIP-681), Bitcoin (BIP-21 / UTXO)
 
