@@ -22,10 +22,11 @@ pub const MIN_BITCOIN_CONFIRMATIONS: u64 = REQUIRED_CONFIRMATIONS;
 /// transaction seen in the mempool or a stale tip), since it cannot yet have
 /// any confirmations.
 pub fn is_bitcoin_confirmed(tx_height: u64, current_height: u64) -> bool {
-    if tx_height > current_height {
-        return false;
-    }
-    current_height - tx_height + 1 >= REQUIRED_CONFIRMATIONS
+    // `checked_sub` is `None` exactly when the transaction is ahead of the tip.
+    // A transaction `n` blocks below the tip has `n + 1` confirmations.
+    current_height
+        .checked_sub(tx_height)
+        .is_some_and(|below_tip| below_tip.saturating_add(1) >= REQUIRED_CONFIRMATIONS)
 }
 
 #[cfg(test)]

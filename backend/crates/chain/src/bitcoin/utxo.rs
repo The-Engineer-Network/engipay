@@ -235,6 +235,7 @@ impl UtxoWatcher {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use engipay_core::Chain;
@@ -267,7 +268,10 @@ mod tests {
     fn satoshis_map_one_to_one_to_ledger_minor_units() {
         // 1 BTC = 100_000_000 satoshis = 100_000_000 minor units in the ledger.
         let money = sats_to_money(100_000_000);
-        assert_eq!(money.minor, 100_000_000, "1 BTC must be 100_000_000 minor units");
+        assert_eq!(
+            money.minor, 100_000_000,
+            "1 BTC must be 100_000_000 minor units"
+        );
         assert_eq!(money.asset, Asset::Btc);
     }
 
@@ -314,8 +318,11 @@ mod tests {
     fn btc_has_8_decimal_places_on_bitcoin_network() {
         // Verifies that the 1:1 mapping assumption holds: both the ledger and
         // the Bitcoin network use exactly 8 decimal places.
-        assert_eq!(Asset::Btc.decimals(), 8,
-            "Asset::Btc ledger decimals must be 8");
+        assert_eq!(
+            Asset::Btc.decimals(),
+            8,
+            "Asset::Btc ledger decimals must be 8"
+        );
         assert_eq!(
             Asset::Btc.network_decimals(Chain::Bitcoin),
             Some(8),
@@ -347,13 +354,13 @@ mod tests {
     #[test]
     fn sats_to_money_minor_equals_sats_for_all_representative_values() {
         let cases: &[(u64, &str)] = &[
-            (1,                   "1 satoshi (smallest unit)"),
-            (546,                 "dust limit"),
-            (10_000,              "typical small payment"),
-            (1_000_000,           "0.01 BTC"),
-            (50_000_000,          "0.5 BTC"),
-            (100_000_000,         "1 BTC"),
-            (1_000_000_000,       "10 BTC"),
+            (1, "1 satoshi (smallest unit)"),
+            (546, "dust limit"),
+            (10_000, "typical small payment"),
+            (1_000_000, "0.01 BTC"),
+            (50_000_000, "0.5 BTC"),
+            (100_000_000, "1 BTC"),
+            (1_000_000_000, "10 BTC"),
             (2_100_000_000_000_000, "21 million BTC (total supply)"),
         ];
         for &(sats, label) in cases {
@@ -395,170 +402,6 @@ mod tests {
 
     #[test]
     fn detects_output_matching_user_script_pubkey() {
-        let user_script = p2wpkh(0xAA);
-        let watcher = watcher_with("bc1quser", user_script.clone());
-
-        let tx = ConfirmedTransaction {
-            txid: txid(0x01),
-            outputs: vec![
-                TxOutput {
-                    value_sats: 1_000,
-                    script_pubkey: p2wpkh(0xBB),
-                },
-                TxOutput {
-                    value_sats: 42_000,
-                    script_pubkey: user_script,
-                },
-            ],
-        };
-
-        let detected = watcher.inspect_transaction(&tx).expect("inspection ok");
-        assert_eq!(detected.len(), 1);
-        assert_eq!(
-            detected[0],
-            DetectedUtxo {
-                txid: txid(0x01),
-                vout: 1,
-                value_sats: 42_000,
-                address: "bc1quser".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn ignores_outputs_with_non_matching_script_pubkeys() {
-        let watcher = watcher_with("bc1quser", p2wpkh(0xAA));
-
-        let tx = ConfirmedTransaction {
-            txid: txid(0x02),
-            outputs: vec![
-                TxOutput {
-                    value_sats: 5_000,
-                    script_pubkey: p2wpkh(0xBB),
-                },
-                TxOutput {
-                    value_sats: 7_000,
-                    script_pubkey: p2wpkh(0xCC),
-                },
-            ],
-        };
-
-        let detected = watcher.inspect_transaction(&tx).expect("inspection ok");
-        assert!(detected.is_empty());
-    }
-
-    #[test]
-    fn detects_multiple_outputs_and_preserves_vout_index() {
-        let first = p2wpkh(0x01);
-        let second = p2wpkh(0x02);
-        let mut watcher = UtxoWatcher::new();
-        watcher
-            .register_address("bc1qfirst", first.clone())
-            .expect("valid script");
-        watcher
-            .register_address("bc1qsecond", second.clone())
-            .expect("valid script");
-
-        let tx = ConfirmedTransaction {
-            txid: txid(0x03),
-            outputs: vec![
-                TxOutput {
-                    value_sats: 100,
-                    script_pubkey: first,
-                },
-                TxOutput {
-                    value_sats: 200,
-                    script_pubkey: p2wpkh(0x09),
-                },
-                TxOutput {
-                    value_sats: 300,
-                    script_pubkey: second,
-                },
-            ],
-        };
-
-        let detected = watcher.inspect_transaction(&tx).expect("inspection ok");
-        assert_eq!(detected.len(), 2);
-        assert_eq!(detected[0].vout, 0);
-        assert_eq!(detected[0].value_sats, 100);
-        assert_eq!(detected[0].address, "bc1qfirst");
-        assert_eq!(detected[1].vout, 2);
-        assert_eq!(detected[1].value_sats, 300);
-        assert_eq!(detected[1].address, "bc1qsecond");
-    }
-
-    #[test]
-    fn rejects_empty_script_pubkey_on_registration() {
-        let mut watcher = UtxoWatcher::new();
-        let err = watcher
-            .register_address("bc1quser", ScriptPubKey::new(Vec::new()))
-            .expect_err("empty script must be rejected");
-        assert_eq!(
-            err,
-            UtxoWatchError::EmptyScriptPubKey {
-                address: "bc1quser".to_string(),
-            }
-        );
-        assert!(watcher.is_empty());
-    }
-
-    #[test]
-    fn rejects_zero_value_output_for_user_address() {
-        let user_script = p2wpkh(0xAA);
-        let watcher = watcher_with("bc1quser", user_script.clone());
-
-        let tx = ConfirmedTransaction {
-            txid: txid(0x04),
-            outputs: vec![TxOutput {
-                value_sats: 0,
-                script_pubkey: user_script,
-            }],
-        };
-
-        let err = watcher
-            .inspect_transaction(&tx)
-            .expect_err("zero value must be rejected");
-        assert_eq!(
-            err,
-            UtxoWatchError::ZeroValueOutput {
-                txid: txid(0x04),
-                vout: 0,
-            }
-        );
-    }
-
-    #[test]
-    fn inspect_confirmed_aggregates_across_transactions() {
-        let user_script = p2wpkh(0xAA);
-        let watcher = watcher_with("bc1quser", user_script.clone());
-
-        let transactions = vec![
-            ConfirmedTransaction {
-                txid: txid(0x05),
-                outputs: vec![TxOutput {
-                    value_sats: 1_500,
-                    script_pubkey: user_script.clone(),
-                }],
-            },
-            ConfirmedTransaction {
-                txid: txid(0x06),
-                outputs: vec![TxOutput {
-                    value_sats: 2_500,
-                    script_pubkey: user_script,
-                }],
-            },
-        ];
-
-        let detected = watcher
-            .inspect_confirmed(&transactions)
-            .expect("inspection ok");
-        assert_eq!(detected.len(), 2);
-        assert_eq!(detected[0].txid, txid(0x05));
-        assert_eq!(detected[0].value_sats, 1_500);
-        assert_eq!(detected[1].txid, txid(0x06));
-        assert_eq!(detected[1].value_sats, 2_500);
-    }
-}
         let user_script = p2wpkh(0xAA);
         let watcher = watcher_with("bc1quser", user_script.clone());
 

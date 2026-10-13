@@ -37,12 +37,12 @@
 
 #![allow(clippy::unwrap_used)]
 
-use engipay_chain::bitcoin::{
-    ConfirmedTransaction, ScriptPubKey, TxOutput, Txid, UtxoWatchError, UtxoWatcher,
-    is_bitcoin_confirmed, MIN_BITCOIN_CONFIRMATIONS, BITCOIN_CHAIN_ID,
-};
 use engipay_chain::bitcoin::confirmations::REQUIRED_CONFIRMATIONS;
 use engipay_chain::bitcoin::cursor::BITCOIN_CHAIN;
+use engipay_chain::bitcoin::{
+    BITCOIN_CHAIN_ID, ConfirmedTransaction, MIN_BITCOIN_CONFIRMATIONS, ScriptPubKey, TxOutput,
+    Txid, UtxoWatchError, UtxoWatcher, is_bitcoin_confirmed,
+};
 use engipay_chain::{ChainClient, ObservedDeposit, is_creditable};
 use engipay_core::{Asset, Chain, Money};
 
@@ -73,7 +73,10 @@ fn p2tr(marker: u8) -> ScriptPubKey {
 
 /// An OP_RETURN script (unspendable data carrier). These are never user outputs.
 fn op_return(data: &[u8]) -> ScriptPubKey {
-    let mut script = vec![0x6a, data.len() as u8];
+    let mut script = vec![
+        0x6a,
+        u8::try_from(data.len()).expect("test payloads fit in one push"),
+    ];
     script.extend_from_slice(data);
     ScriptPubKey::new(script)
 }
@@ -105,19 +108,6 @@ impl ChainClient for FakeBitcoinClient {
         _height: u64,
     ) -> Result<Vec<ObservedDeposit>, engipay_chain::ChainError> {
         Ok(Vec::new())
-    }
-
-    async fn stream_events(
-        &self,
-        from_height: u64,
-        poll_interval: std::time::Duration,
-    ) -> Result<engipay_chain::EventStream, engipay_chain::ChainError> {
-        use std::sync::Arc;
-        Ok(engipay_chain::polling_stream(
-            Arc::new(FakeBitcoinClient),
-            from_height,
-            poll_interval,
-        ))
     }
 }
 
@@ -455,12 +445,10 @@ fn batch_inspection_aggregates_detected_utxos_in_transaction_order() {
         },
         ConfirmedTransaction {
             txid: txid(0x11),
-            outputs: vec![
-                TxOutput {
-                    value_sats: 2_000,
-                    script_pubkey: p2wpkh(0xFF), // not user
-                },
-            ],
+            outputs: vec![TxOutput {
+                value_sats: 2_000,
+                script_pubkey: p2wpkh(0xFF), // not user
+            }],
         },
         ConfirmedTransaction {
             txid: txid(0x12),
@@ -485,9 +473,7 @@ fn batch_inspection_aggregates_detected_utxos_in_transaction_order() {
 #[test]
 fn batch_inspection_of_empty_transaction_list_returns_empty_vec() {
     let watcher = watcher_with("bc1qalice", p2wpkh(0xAA));
-    let detected = watcher
-        .inspect_confirmed(&[])
-        .expect("empty batch ok");
+    let detected = watcher.inspect_confirmed(&[]).expect("empty batch ok");
     assert!(detected.is_empty());
 }
 
@@ -501,15 +487,28 @@ fn vout_index_corresponds_to_position_in_outputs_vec() {
     let second = p2wpkh(0x02);
     let third = p2wpkh(0x03);
     let mut watcher = UtxoWatcher::new();
-    watcher.register_address("bc1qfirst", first.clone()).unwrap();
-    watcher.register_address("bc1qthird", third.clone()).unwrap();
+    watcher
+        .register_address("bc1qfirst", first.clone())
+        .unwrap();
+    watcher
+        .register_address("bc1qthird", third.clone())
+        .unwrap();
 
     let tx = ConfirmedTransaction {
         txid: txid(0x20),
         outputs: vec![
-            TxOutput { value_sats: 1_000, script_pubkey: first },   // vout 0
-            TxOutput { value_sats: 2_000, script_pubkey: second },  // vout 1 — unregistered
-            TxOutput { value_sats: 3_000, script_pubkey: third },   // vout 2
+            TxOutput {
+                value_sats: 1_000,
+                script_pubkey: first,
+            }, // vout 0
+            TxOutput {
+                value_sats: 2_000,
+                script_pubkey: second,
+            }, // vout 1 — unregistered
+            TxOutput {
+                value_sats: 3_000,
+                script_pubkey: third,
+            }, // vout 2
         ],
     };
 
@@ -530,9 +529,18 @@ fn transaction_with_only_non_user_outputs_yields_empty_result() {
     let tx = ConfirmedTransaction {
         txid: txid(0x30),
         outputs: vec![
-            TxOutput { value_sats: 100_000, script_pubkey: p2wpkh(0xBB) },
-            TxOutput { value_sats: 200_000, script_pubkey: p2wpkh(0xCC) },
-            TxOutput { value_sats: 0,       script_pubkey: op_return(b"memo") },
+            TxOutput {
+                value_sats: 100_000,
+                script_pubkey: p2wpkh(0xBB),
+            },
+            TxOutput {
+                value_sats: 200_000,
+                script_pubkey: p2wpkh(0xCC),
+            },
+            TxOutput {
+                value_sats: 0,
+                script_pubkey: op_return(b"memo"),
+            },
         ],
     };
 
@@ -580,9 +588,9 @@ fn transaction_ahead_of_current_tip_is_not_creditable() {
 fn confirmation_counting_handles_large_block_heights_without_overflow() {
     // Near u64::MAX to ensure no arithmetic overflow.
     let high = u64::MAX / 2;
-    assert!(!is_bitcoin_confirmed(high, high));               // 1 confirmation
-    assert!(is_bitcoin_confirmed(high, high + 1));            // 2 confirmations
-    assert!(!is_bitcoin_confirmed(high + 1, high));           // tip behind tx
+    assert!(!is_bitcoin_confirmed(high, high)); // 1 confirmation
+    assert!(is_bitcoin_confirmed(high, high + 1)); // 2 confirmations
+    assert!(!is_bitcoin_confirmed(high + 1, high)); // tip behind tx
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -55,15 +55,17 @@ impl BitcoinCursor {
 ///
 /// Returns `Ok(None)` when no cursor has been persisted yet, allowing the
 /// watcher to fall back to its configured start height.
+///
+/// `chain_cursors.cursor` is text because Stellar stores a paging token there;
+/// Bitcoin stores the block height as a decimal string in the same column.
 pub async fn get_last_scanned_height(pool: &PgPool) -> Result<Option<i64>, CursorError> {
-    let height: Option<i64> = sqlx::query_scalar(
-        "SELECT last_scanned_height FROM chain_cursors WHERE chain = $1",
-    )
-    .bind(BITCOIN_CHAIN)
-    .fetch_optional(pool)
-    .await?;
+    let cursor: Option<String> =
+        sqlx::query_scalar("SELECT cursor FROM chain_cursors WHERE chain = $1")
+            .bind(BITCOIN_CHAIN)
+            .fetch_optional(pool)
+            .await?;
 
-    Ok(height)
+    cursor.map(|text| parse_height(&text)).transpose()
 }
 
 /// Persists the latest scanned Bitcoin block height in `chain_cursors`.
@@ -78,15 +80,27 @@ pub async fn set_last_scanned_height(pool: &PgPool, height: i64) -> Result<(), C
     }
 
     sqlx::query(
-        "INSERT INTO chain_cursors (chain, last_scanned_height) VALUES ($1, $2) \
-         ON CONFLICT (chain) DO UPDATE SET last_scanned_height = EXCLUDED.last_scanned_height",
+        "INSERT INTO chain_cursors (chain, cursor, updated_at) VALUES ($1, $2, now())          ON CONFLICT (chain) DO UPDATE          SET cursor = EXCLUDED.cursor, updated_at = EXCLUDED.updated_at",
     )
     .bind(BITCOIN_CHAIN)
-    .bind(height)
+    .bind(height.to_string())
     .execute(pool)
     .await?;
 
     Ok(())
+}
+
+/// A stored cursor that is not a block height means the row was written by
+/// something else. Refuse it: guessing a height would skip or replay deposits.
+fn parse_height(text: &str) -> Result<i64, CursorError> {
+    text.parse::<i64>()
+        .ok()
+        .filter(|height| *height >= 0)
+        .ok_or_else(|| {
+            CursorError::Database(sqlx::Error::Protocol(format!(
+                "stored bitcoin cursor {text:?} is not a block height"
+            )))
+        })
 }
 
 #[cfg(test)]
@@ -99,12 +113,25 @@ mod tests {
     }
 
     #[test]
-    fn negative_height_is_rejected() {
-        // Validation happens before any database access, so a pool is not
-        // required to exercise the guard.
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
+    fn stored_heights_round_trip_through_text() {
+        assert_eq!(parse_height("0").ok(), Some(0));
+        assert_eq!(parse_height(&840_000_i64.to_string()).ok(), Some(840_000));
+    }
+
+    #[test]
+    fn a_cursor_that_is_not_a_height_is_refused() {
+        assert!(parse_height("-1").is_err());
+        assert!(parse_height("12.5").is_err());
+        // A Stellar paging token written under the wrong chain key.
+        assert!(parse_height("stellar:123").is_err());
+    }
+
+    #[tokio::test]
+    async fn negative_height_is_rejected() {
+        // Validation happens before any database access, so the pool is never
+        // connected. A lazy pool still has to be created inside the runtime.
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/unused").expect("lazy pool");
-        let result = rt.block_on(set_last_scanned_height(&pool, -1));
+        let result = set_last_scanned_height(&pool, -1).await;
         assert!(result.is_err());
     }
 }

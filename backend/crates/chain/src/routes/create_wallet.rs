@@ -43,10 +43,10 @@
 use std::env;
 
 use axum::Json;
+use axum::Router;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::Router;
 use engipay_core::Chain;
 use engipay_core::stellar::muxed_deposit_address;
 use serde::{Deserialize, Serialize};
@@ -115,30 +115,37 @@ async fn handle_create_wallet(
     Json(req): Json<CreateWalletRequest>,
 ) -> Result<Json<CreateWalletResponse>, WalletError> {
     let response = match req.chain {
-        Chain::Stellar => derive_stellar(req.user_id)?,
-        Chain::Base => derive_base()?,
-        Chain::Bitcoin => derive_bitcoin()?,
+        Chain::Stellar => derive_stellar(req.user_id, configured("STELLAR_CUSTODY_ACCOUNT"))?,
+        Chain::Base => derive_base(configured("BASE_CUSTODY_ADDRESS"))?,
+        Chain::Bitcoin => derive_bitcoin(configured("BITCOIN_CUSTODY_ADDRESS"))?,
     };
     Ok(Json(response))
 }
 
 // ─── Per-chain derivation ─────────────────────────────────────────────────────
 
+/// Reads one setting from the environment. The derivation functions take the
+/// value as an argument so they can be tested without touching the process
+/// environment, which is shared between test threads.
+fn configured(name: &str) -> Option<String> {
+    env::var(name).ok()
+}
+
 /// Derives a Stellar muxed deposit address for `user_id`.
 ///
-/// Reads `STELLAR_CUSTODY_ACCOUNT` from the environment.  The muxed ID is the
+/// `custody` is the configured `STELLAR_CUSTODY_ACCOUNT`.  The muxed ID is the
 /// lower 64 bits of the UUID (bytes 8–15, big-endian), matching the derivation
 /// used by `AccountResolver` so incoming deposits are always attributed to the
 /// correct user.
-fn derive_stellar(user_id: Uuid) -> Result<CreateWalletResponse, WalletError> {
-    let custody = env::var("STELLAR_CUSTODY_ACCOUNT")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| {
-            WalletError::Unavailable(
-                "STELLAR_CUSTODY_ACCOUNT is not set; cannot derive Stellar addresses".to_owned(),
-            )
-        })?;
+fn derive_stellar(
+    user_id: Uuid,
+    custody: Option<String>,
+) -> Result<CreateWalletResponse, WalletError> {
+    let custody = custody.filter(|v| !v.trim().is_empty()).ok_or_else(|| {
+        WalletError::Unavailable(
+            "STELLAR_CUSTODY_ACCOUNT is not set; cannot derive Stellar addresses".to_owned(),
+        )
+    })?;
 
     let muxed_id = muxed_id_from_uuid(user_id);
 
@@ -154,16 +161,13 @@ fn derive_stellar(user_id: Uuid) -> Result<CreateWalletResponse, WalletError> {
 
 /// Returns the configured Base (EVM) custody address.
 ///
-/// Reads `BASE_CUSTODY_ADDRESS` from the environment.
-fn derive_base() -> Result<CreateWalletResponse, WalletError> {
-    let address = env::var("BASE_CUSTODY_ADDRESS")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| {
-            WalletError::Unavailable(
-                "BASE_CUSTODY_ADDRESS is not set; cannot provision Base addresses".to_owned(),
-            )
-        })?;
+/// `custody` is the configured `BASE_CUSTODY_ADDRESS`.
+fn derive_base(custody: Option<String>) -> Result<CreateWalletResponse, WalletError> {
+    let address = custody.filter(|v| !v.trim().is_empty()).ok_or_else(|| {
+        WalletError::Unavailable(
+            "BASE_CUSTODY_ADDRESS is not set; cannot provision Base addresses".to_owned(),
+        )
+    })?;
 
     Ok(CreateWalletResponse {
         address,
@@ -173,16 +177,13 @@ fn derive_base() -> Result<CreateWalletResponse, WalletError> {
 
 /// Returns the configured Bitcoin custody address.
 ///
-/// Reads `BITCOIN_CUSTODY_ADDRESS` from the environment.
-fn derive_bitcoin() -> Result<CreateWalletResponse, WalletError> {
-    let address = env::var("BITCOIN_CUSTODY_ADDRESS")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| {
-            WalletError::Unavailable(
-                "BITCOIN_CUSTODY_ADDRESS is not set; cannot provision Bitcoin addresses".to_owned(),
-            )
-        })?;
+/// `custody` is the configured `BITCOIN_CUSTODY_ADDRESS`.
+fn derive_bitcoin(custody: Option<String>) -> Result<CreateWalletResponse, WalletError> {
+    let address = custody.filter(|v| !v.trim().is_empty()).ok_or_else(|| {
+        WalletError::Unavailable(
+            "BITCOIN_CUSTODY_ADDRESS is not set; cannot provision Bitcoin addresses".to_owned(),
+        )
+    })?;
 
     Ok(CreateWalletResponse {
         address,
@@ -203,25 +204,28 @@ fn derive_bitcoin() -> Result<CreateWalletResponse, WalletError> {
 pub fn muxed_id_from_uuid(user_id: Uuid) -> u64 {
     let bytes = user_id.as_bytes();
     u64::from_be_bytes([
-        bytes[8], bytes[9], bytes[10], bytes[11],
-        bytes[12], bytes[13], bytes[14], bytes[15],
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
     ])
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use engipay_core::stellar::parse_address;
     use engipay_core::stellar::StellarAddress;
+    use engipay_core::stellar::parse_address;
     use stellar_strkey::ed25519;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// Builds a deterministic `G...` custody account from a seed byte.
     fn custody_account(seed: u8) -> String {
-        ed25519::PublicKey([seed; 32]).to_string()
+        ed25519::PublicKey([seed; 32])
+            .to_string()
+            .as_str()
+            .to_owned()
     }
 
     /// Returns a fixed, well-known UUID for deterministic tests.
@@ -241,8 +245,7 @@ mod tests {
 
         let bytes = id.as_bytes();
         let expected = u64::from_be_bytes([
-            bytes[8], bytes[9], bytes[10], bytes[11],
-            bytes[12], bytes[13], bytes[14], bytes[15],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
         ]);
         assert_eq!(muxed, expected);
     }
@@ -266,31 +269,31 @@ mod tests {
 
     #[test]
     fn stellar_address_is_a_valid_muxed_address() {
-        // Set custody env var for this test.
         let custody = custody_account(1);
-        std::env::set_var("STELLAR_CUSTODY_ACCOUNT", &custody);
 
         let user_id = known_uuid();
-        let resp = derive_stellar(user_id).expect("derivation must succeed");
+        let resp =
+            derive_stellar(user_id, Some(custody.to_owned())).expect("derivation must succeed");
 
         assert!(
             resp.address.starts_with('M'),
             "Stellar deposit address must be an M... muxed address, got: {}",
             resp.address
         );
-        assert!(resp.muxed_id.is_some(), "muxed_id must be present for Stellar");
-
-        std::env::remove_var("STELLAR_CUSTODY_ACCOUNT");
+        assert!(
+            resp.muxed_id.is_some(),
+            "muxed_id must be present for Stellar"
+        );
     }
 
     #[test]
     fn stellar_muxed_address_embeds_correct_base_account_and_muxed_id() {
         let custody = custody_account(2);
-        std::env::set_var("STELLAR_CUSTODY_ACCOUNT", &custody);
 
         let user_id = known_uuid();
         let muxed_id = muxed_id_from_uuid(user_id);
-        let resp = derive_stellar(user_id).expect("derivation must succeed");
+        let resp =
+            derive_stellar(user_id, Some(custody.to_owned())).expect("derivation must succeed");
 
         // Parse the returned address and check both fields.
         let parsed = parse_address(&resp.address).expect("must parse as a valid Stellar address");
@@ -303,45 +306,47 @@ mod tests {
             "base account and muxed ID must match the configured custody and UUID-derived ID"
         );
         assert_eq!(resp.muxed_id, Some(muxed_id));
-
-        std::env::remove_var("STELLAR_CUSTODY_ACCOUNT");
     }
 
     #[test]
     fn stellar_different_users_get_different_addresses() {
         let custody = custody_account(3);
-        std::env::set_var("STELLAR_CUSTODY_ACCOUNT", &custody);
 
         let user_a = Uuid::new_v4();
         let user_b = Uuid::new_v4();
 
-        let addr_a = derive_stellar(user_a).expect("ok").address;
-        let addr_b = derive_stellar(user_b).expect("ok").address;
+        let addr_a = derive_stellar(user_a, Some(custody.to_owned()))
+            .expect("ok")
+            .address;
+        let addr_b = derive_stellar(user_b, Some(custody.to_owned()))
+            .expect("ok")
+            .address;
 
-        assert_ne!(addr_a, addr_b, "different users must get different addresses");
-
-        std::env::remove_var("STELLAR_CUSTODY_ACCOUNT");
+        assert_ne!(
+            addr_a, addr_b,
+            "different users must get different addresses"
+        );
     }
 
     #[test]
     fn stellar_same_user_always_gets_same_address() {
         let custody = custody_account(4);
-        std::env::set_var("STELLAR_CUSTODY_ACCOUNT", &custody);
 
         let user_id = known_uuid();
-        let addr1 = derive_stellar(user_id).expect("ok").address;
-        let addr2 = derive_stellar(user_id).expect("ok").address;
+        let addr1 = derive_stellar(user_id, Some(custody.to_owned()))
+            .expect("ok")
+            .address;
+        let addr2 = derive_stellar(user_id, Some(custody.to_owned()))
+            .expect("ok")
+            .address;
 
         assert_eq!(addr1, addr2, "derivation must be deterministic");
-
-        std::env::remove_var("STELLAR_CUSTODY_ACCOUNT");
     }
 
     #[test]
     fn stellar_returns_unavailable_when_custody_env_var_is_missing() {
-        std::env::remove_var("STELLAR_CUSTODY_ACCOUNT");
-
-        let err = derive_stellar(known_uuid()).expect_err("must fail without custody account");
+        let err =
+            derive_stellar(known_uuid(), None).expect_err("must fail without custody account");
         assert!(
             matches!(err, WalletError::Unavailable(_)),
             "missing env var must return Unavailable, got: {err}"
@@ -350,12 +355,9 @@ mod tests {
 
     #[test]
     fn stellar_returns_unavailable_when_custody_env_var_is_empty() {
-        std::env::set_var("STELLAR_CUSTODY_ACCOUNT", "");
-
-        let err = derive_stellar(known_uuid()).expect_err("must fail with empty custody account");
+        let err = derive_stellar(known_uuid(), Some(String::new()))
+            .expect_err("must fail with empty custody account");
         assert!(matches!(err, WalletError::Unavailable(_)));
-
-        std::env::remove_var("STELLAR_CUSTODY_ACCOUNT");
     }
 
     #[test]
@@ -365,8 +367,7 @@ mod tests {
         let user_id = known_uuid();
         let bytes = user_id.as_bytes();
         let expected_muxed_id = u64::from_be_bytes([
-            bytes[8], bytes[9], bytes[10], bytes[11],
-            bytes[12], bytes[13], bytes[14], bytes[15],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
         ]);
         assert_eq!(muxed_id_from_uuid(user_id), expected_muxed_id);
     }
@@ -376,20 +377,15 @@ mod tests {
     #[test]
     fn base_returns_configured_custody_address() {
         let custody = "0xDeadBeefDeadBeefDeadBeefDeadBeefDeadBeef";
-        std::env::set_var("BASE_CUSTODY_ADDRESS", custody);
 
-        let resp = derive_base().expect("derivation must succeed");
+        let resp = derive_base(Some(custody.to_owned())).expect("derivation must succeed");
         assert_eq!(resp.address, custody);
         assert!(resp.muxed_id.is_none(), "Base must not return a muxed_id");
-
-        std::env::remove_var("BASE_CUSTODY_ADDRESS");
     }
 
     #[test]
     fn base_returns_unavailable_when_env_var_is_missing() {
-        std::env::remove_var("BASE_CUSTODY_ADDRESS");
-
-        let err = derive_base().expect_err("must fail without custody address");
+        let err = derive_base(None).expect_err("must fail without custody address");
         assert!(
             matches!(err, WalletError::Unavailable(_)),
             "missing env var must return Unavailable, got: {err}"
@@ -398,12 +394,9 @@ mod tests {
 
     #[test]
     fn base_returns_unavailable_when_env_var_is_empty() {
-        std::env::set_var("BASE_CUSTODY_ADDRESS", "");
-
-        let err = derive_base().expect_err("must fail with empty custody address");
+        let err =
+            derive_base(Some(String::new())).expect_err("must fail with empty custody address");
         assert!(matches!(err, WalletError::Unavailable(_)));
-
-        std::env::remove_var("BASE_CUSTODY_ADDRESS");
     }
 
     // ── Bitcoin address derivation ────────────────────────────────────────────
@@ -411,20 +404,18 @@ mod tests {
     #[test]
     fn bitcoin_returns_configured_custody_address() {
         let custody = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
-        std::env::set_var("BITCOIN_CUSTODY_ADDRESS", custody);
 
-        let resp = derive_bitcoin().expect("derivation must succeed");
+        let resp = derive_bitcoin(Some(custody.to_owned())).expect("derivation must succeed");
         assert_eq!(resp.address, custody);
-        assert!(resp.muxed_id.is_none(), "Bitcoin must not return a muxed_id");
-
-        std::env::remove_var("BITCOIN_CUSTODY_ADDRESS");
+        assert!(
+            resp.muxed_id.is_none(),
+            "Bitcoin must not return a muxed_id"
+        );
     }
 
     #[test]
     fn bitcoin_returns_unavailable_when_env_var_is_missing() {
-        std::env::remove_var("BITCOIN_CUSTODY_ADDRESS");
-
-        let err = derive_bitcoin().expect_err("must fail without custody address");
+        let err = derive_bitcoin(None).expect_err("must fail without custody address");
         assert!(
             matches!(err, WalletError::Unavailable(_)),
             "missing env var must return Unavailable, got: {err}"
@@ -433,12 +424,9 @@ mod tests {
 
     #[test]
     fn bitcoin_returns_unavailable_when_env_var_is_empty() {
-        std::env::set_var("BITCOIN_CUSTODY_ADDRESS", "");
-
-        let err = derive_bitcoin().expect_err("must fail with empty custody address");
+        let err =
+            derive_bitcoin(Some(String::new())).expect_err("must fail with empty custody address");
         assert!(matches!(err, WalletError::Unavailable(_)));
-
-        std::env::remove_var("BITCOIN_CUSTODY_ADDRESS");
     }
 
     // ── Error types / HTTP mapping ────────────────────────────────────────────
@@ -464,9 +452,8 @@ mod tests {
     #[test]
     fn stellar_address_contains_custody_base_account() {
         let custody = custody_account(9);
-        std::env::set_var("STELLAR_CUSTODY_ACCOUNT", &custody);
 
-        let resp = derive_stellar(known_uuid()).expect("ok");
+        let resp = derive_stellar(known_uuid(), Some(custody.to_owned())).expect("ok");
         let parsed = parse_address(&resp.address).expect("valid address");
 
         assert_eq!(
@@ -474,27 +461,25 @@ mod tests {
             custody,
             "base account of muxed address must match custody account"
         );
-
-        std::env::remove_var("STELLAR_CUSTODY_ACCOUNT");
     }
 
     #[test]
     fn stellar_muxed_address_parses_back_to_same_muxed_id() {
         let custody = custody_account(5);
-        std::env::set_var("STELLAR_CUSTODY_ACCOUNT", &custody);
 
         let user_id = known_uuid();
-        let resp = derive_stellar(user_id).expect("ok");
+        let resp = derive_stellar(user_id, Some(custody.to_owned())).expect("ok");
         let muxed_id = resp.muxed_id.expect("must have muxed_id");
 
         let parsed = parse_address(&resp.address).expect("valid Stellar address");
         if let StellarAddress::Muxed { id, .. } = parsed {
-            assert_eq!(id, muxed_id, "parsed muxed ID must equal the returned muxed_id");
+            assert_eq!(
+                id, muxed_id,
+                "parsed muxed ID must equal the returned muxed_id"
+            );
         } else {
             panic!("expected a Muxed address, got Account");
         }
-
-        std::env::remove_var("STELLAR_CUSTODY_ACCOUNT");
     }
 
     #[test]
@@ -503,26 +488,19 @@ mod tests {
         let base_custody = "0xAbCdEf1234567890AbCdEf1234567890AbCdEf12";
         let btc_custody = "bc1qtest000000000000000000000000000000000";
 
-        std::env::set_var("STELLAR_CUSTODY_ACCOUNT", &stellar_custody);
-        std::env::set_var("BASE_CUSTODY_ADDRESS", base_custody);
-        std::env::set_var("BITCOIN_CUSTODY_ADDRESS", btc_custody);
-
         let user_id = known_uuid();
 
-        let stellar = derive_stellar(user_id).expect("Stellar must succeed");
+        let stellar = derive_stellar(user_id, Some(stellar_custody.to_owned()))
+            .expect("Stellar must succeed");
         assert!(stellar.address.starts_with('M'));
         assert!(stellar.muxed_id.is_some());
 
-        let base = derive_base().expect("Base must succeed");
+        let base = derive_base(Some(base_custody.to_owned())).expect("Base must succeed");
         assert_eq!(base.address, base_custody);
         assert!(base.muxed_id.is_none());
 
-        let bitcoin = derive_bitcoin().expect("Bitcoin must succeed");
+        let bitcoin = derive_bitcoin(Some(btc_custody.to_owned())).expect("Bitcoin must succeed");
         assert_eq!(bitcoin.address, btc_custody);
         assert!(bitcoin.muxed_id.is_none());
-
-        std::env::remove_var("STELLAR_CUSTODY_ACCOUNT");
-        std::env::remove_var("BASE_CUSTODY_ADDRESS");
-        std::env::remove_var("BITCOIN_CUSTODY_ADDRESS");
     }
 }

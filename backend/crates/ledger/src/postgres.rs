@@ -1245,12 +1245,19 @@ mod tests {
             .create_hold(alice, usdc(60), "hold-closed")
             .await
             .unwrap();
-        store.release_hold("hold-closed").await.unwrap();
+        store.settle_hold("hold-closed", None).await.unwrap();
 
-        // Try to release again
+        // The money has left; it cannot be handed back to the user as well.
+        // (Releasing the same hold twice is a replay, covered above.)
         let result = store.release_hold("hold-closed").await;
 
-        assert!(matches!(result, Err(LedgerError::HoldClosed { .. })));
+        assert!(matches!(
+            result,
+            Err(LedgerError::HoldClosed {
+                state: HoldState::Settled,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

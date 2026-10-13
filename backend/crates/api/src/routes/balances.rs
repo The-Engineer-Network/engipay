@@ -69,21 +69,14 @@ impl HoldItem {
 /// Both raw minor-unit integers and exact fixed-decimal strings are returned
 /// so frontend clients can display amounts without floating-point arithmetic.
 ///
-/// Example for 1.5 USDC (7 decimals) without holds:
-/// API response shape for a single asset balance.
-///
-/// Both raw minor-unit integers and fixed-decimal strings are returned so
-/// frontend clients can display amounts without floating-point arithmetic.
-///
-/// Example for 1.5 USDC (7 decimals):
+/// Example for 1.5 USDC (7 decimals) without holds; `holds` is left out:
 /// ```json
 /// {
 ///   "asset": "USDC",
 ///   "available_minor": 15000000,
 ///   "available": "1.5000000",
 ///   "held_minor": 0,
-///   "held": "0.0000000",
-///   "holds": null
+///   "held": "0.0000000"
 /// }
 /// ```
 ///
@@ -104,7 +97,6 @@ impl HoldItem {
 ///       "created_at": "2026-09-30T11:00:00Z"
 ///     }
 ///   ]
-///   "held": "0.0000000"
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -841,7 +833,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let usdc = body
+        let usdc = body["balances"]
             .as_array()
             .unwrap()
             .iter()
@@ -903,17 +895,18 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
 
-        // Response now uses { balances: [...], holds: null/absent }.
-        let balances = body["balances"].as_array().unwrap();
+        // Without include_holds the response is a plain array of balances.
+        let balances = body.as_array().unwrap();
         let usdc = balances
             .iter()
             .find(|b| b["asset"] == "USDC")
             .expect("usdc balance present");
-        assert_eq!(usdc["available"], 25_000_000);
-        assert_eq!(usdc["held"], 0);
+        assert_eq!(usdc["available_minor"], 25_000_000);
+        assert_eq!(usdc["available"], "2.5000000");
+        assert_eq!(usdc["held_minor"], 0);
 
-        // Without include_holds, the holds field is absent.
-        assert!(body.get("holds").is_none() || body["holds"].is_null());
+        // Without include_holds, no balance carries a holds field.
+        assert!(usdc.get("holds").is_none());
     }
 
     /// Requires `DATABASE_URL`: deposits, creates a hold, then calls
@@ -985,18 +978,21 @@ mod tests {
             .iter()
             .find(|b| b["asset"] == "USDC")
             .expect("usdc balance present");
-        assert_eq!(usdc["available"], 60_000_000);
-        assert_eq!(usdc["held"], 40_000_000);
+        assert_eq!(usdc["available_minor"], 60_000_000);
+        assert_eq!(usdc["held_minor"], 40_000_000);
 
         // Holds array must be present and contain the hold we just created.
-        let holds = body["holds"].as_array().expect("holds array present");
+        let holds = body["active_holds"]
+            .as_array()
+            .expect("holds array present");
         assert!(!holds.is_empty(), "holds array must not be empty");
         let hold = holds
             .iter()
             .find(|h| h["reference"] == hold_ref)
             .expect("our hold must appear in the holds array");
         assert_eq!(hold["asset"], "USDC");
-        assert_eq!(hold["amount"], 40_000_000);
+        assert_eq!(hold["amount_minor"], 40_000_000);
+        assert_eq!(hold["amount"], "4.0000000");
         assert!(
             hold["created_at"].as_str().is_some(),
             "created_at must be present"
@@ -1079,7 +1075,9 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
 
-        let holds = body["holds"].as_array().expect("holds array present");
+        let holds = body["active_holds"]
+            .as_array()
+            .expect("holds array present");
 
         // Released hold must not appear.
         assert!(
@@ -1208,8 +1206,8 @@ mod tests {
         // Balances are present.
         let balances = body["balances"].as_array().unwrap();
         let usdc = balances.iter().find(|b| b["asset"] == "USDC").unwrap();
-        assert_eq!(usdc["available"], 30_000_000);
-        assert_eq!(usdc["held"], 20_000_000);
+        assert_eq!(usdc["available_minor"], 30_000_000);
+        assert_eq!(usdc["held_minor"], 20_000_000);
 
         // The active hold is listed.
         let holds = body["active_holds"].as_array().unwrap();
@@ -1217,7 +1215,8 @@ mod tests {
         let hold = &holds[0];
         assert_eq!(hold["reference"], "hold-ref-1");
         assert_eq!(hold["asset"], "USDC");
-        assert_eq!(hold["amount"], 20_000_000);
+        assert_eq!(hold["amount_minor"], 20_000_000);
+        assert_eq!(hold["amount"], "2.0000000");
         assert!(hold["created_at"].as_str().unwrap().contains('T'));
     }
 }

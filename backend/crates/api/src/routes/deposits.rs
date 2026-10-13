@@ -195,14 +195,13 @@ async fn provision_stellar(
 /// Provisions a shared Base or Bitcoin custody address for a user.
 ///
 /// **Note:** the API service does not hold HD wallet keys, so per-user address
-/// derivation is not yet implemented.  The configured custody address is stored
-/// per-user with a sequential `derivation_index` as a placeholder.  When the
-/// chain service exposes a key-derivation endpoint this function will be updated
-/// to call it and store a proper per-user address.
+/// derivation is not yet implemented.  Every user is given the configured
+/// custody address, and a sequential `derivation_index` is stored alongside it
+/// for the day the chain service exposes key derivation.
 ///
-/// Because `address` must be unique per `(chain, address)`, this approach only
-/// works for the first user.  Subsequent users for the same chain will receive
-/// an `Internal` error until the key-derivation path is implemented.
+/// The address returned is exactly the custody address: anything appended to
+/// it would no longer be an address a wallet can pay.  Because the address is
+/// shared, a deposit to it cannot yet be attributed to a user automatically.
 async fn provision_custody(
     state: &AppState,
     user_id: Uuid,
@@ -238,13 +237,10 @@ async fn provision_custody(
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
 
-    // Build a per-user address by appending the derivation index to make it unique.
-    // This is a placeholder until the chain service exposes HD key derivation.
-    // On testnet the chain service watches the shared custody address; the
-    // derivation_index is stored so it can be used when upgrading.
-    let address = format!("{custody}:{derivation_index}");
-
-    upsert_deposit_address(pool, user_id, chain, &address, None, Some(derivation_index)).await
+    // The chain service watches the shared custody address. The
+    // derivation_index is stored so it can be used when upgrading to per-user
+    // addresses; it is never part of the address itself.
+    upsert_deposit_address(pool, user_id, chain, custody, None, Some(derivation_index)).await
 }
 
 /// Inserts a deposit address row, ignoring a race where another request

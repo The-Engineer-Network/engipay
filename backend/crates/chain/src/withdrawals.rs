@@ -1,6 +1,6 @@
 //! Withdrawal records and the status machine they move through.
 //!
-//! One row in `withdrawals` per outbound payment (migration 0009). The chain
+//! One row in `withdrawals` per outbound payment (migrations 0011 and 0013). The chain
 //! service advances it as the payment is broadcast, confirmed and settled:
 //!
 //! ```text
@@ -210,7 +210,8 @@ impl WithdrawalStore for PgWithdrawalStore {
     async fn get(&self, id: Uuid) -> Result<Withdrawal, WithdrawalError> {
         let row = sqlx::query(
             "SELECT id, user_id, asset, amount::text AS amount, \
-                    estimated_fee::text AS estimated_fee, destination, hold_reference, \
+                    estimated_network_fee::text AS estimated_network_fee, destination, \
+                    hold_reference, \
                     tx_hash, confirmed_ledger, status \
              FROM withdrawals WHERE id = $1",
         )
@@ -241,9 +242,13 @@ impl WithdrawalStore for PgWithdrawalStore {
             id: row.get("id"),
             user: UserId::from_uuid(row.get("user_id")),
             amount: minor("amount")?,
-            fee: minor("estimated_fee")?,
+            fee: minor("estimated_network_fee")?,
             destination: row.get("destination"),
-            hold_reference: row.get("hold_reference"),
+            // A row without one predates migration 0013. Settling it would mean
+            // guessing which hold to settle, so it is refused instead.
+            hold_reference: row
+                .get::<Option<String>, _>("hold_reference")
+                .ok_or_else(|| corrupt(id, "hold_reference"))?,
             tx_hash: row.get("tx_hash"),
             confirmed_ledger,
             status,
@@ -519,8 +524,9 @@ mod tests {
 
         sqlx::query(
             "INSERT INTO withdrawals \
-                (user_id, asset, amount, estimated_fee, destination, hold_reference) \
-             VALUES ($1, 'USDC', 900, 100, 'GDESTINATION', $2) RETURNING id",
+                (user_id, chain, asset, amount, estimated_network_fee, destination, \
+                 hold_reference) \
+             VALUES ($1, 'stellar', 'USDC', 900, 100, 'GDESTINATION', $2) RETURNING id",
         )
         .bind(user.as_uuid())
         .bind(&hold_reference)

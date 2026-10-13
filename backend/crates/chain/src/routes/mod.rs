@@ -5,19 +5,18 @@
 //! and it is mounted separately from the public `/v1` API on purpose — a
 //! compromise of the API service must not automatically become a compromise of
 //! the fee quoter and, later, of the signer.
-
-use std::sync::Arc;
+//!
 //! These endpoints are not exposed to the public internet. They are called
 //! by the API service over a private network channel (loopback or container
 //! networking) so it can obtain chain-specific data — such as fee estimates
 //! and deposit address derivation — without holding any signing keys itself.
 
-pub mod create_wallet;
-pub mod estimate_fee;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::post;
 
+pub mod create_wallet;
 pub mod estimate_fee;
 
 use crate::routes::estimate_fee::FeeOracle;
@@ -46,9 +45,5 @@ fn internal(state: ChainHttpState) -> Router {
     Router::new()
         .route("/internal/estimate-fee", post(estimate_fee::estimate_fee))
         .with_state(state)
-/// Mounts all internal routes under `/internal`.
-pub fn internal() -> Router {
-    Router::new()
-        .merge(estimate_fee::routes())
         .merge(create_wallet::routes())
 }
