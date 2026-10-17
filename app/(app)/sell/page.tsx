@@ -45,7 +45,7 @@ export default function SellPage() {
                 className="h-auto border-0 bg-transparent px-0 py-1 text-3xl font-semibold tabular-nums tracking-tight focus-visible:ring-0 flex-1"
               />
               <Select value={asset} onValueChange={setAsset}>
-                <SelectTrigger id="sell-asset" className="w-32 shrink-0">
+                <SelectTrigger id="sell-asset" aria-label="Asset to sell" className="w-32 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

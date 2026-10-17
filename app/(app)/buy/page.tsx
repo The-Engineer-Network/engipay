@@ -69,16 +69,18 @@ export default function BuyPage() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="buy-asset">You receive</Label>
+            <Label htmlFor="buy-receive">You receive</Label>
             <div className="flex gap-2">
               <Input
+                id="buy-receive"
                 value=""
                 readOnly
+                aria-readonly="true"
                 placeholder="0.00"
                 className="h-auto flex-1 border-0 bg-transparent px-0 py-1 text-3xl font-semibold tabular-nums tracking-tight text-muted-foreground focus-visible:ring-0"
               />
               <Select value={asset} onValueChange={setAsset}>
-                <SelectTrigger id="buy-asset" className="w-32 shrink-0">
+                <SelectTrigger id="buy-asset" aria-label="Asset to receive" className="w-32 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

@@ -40,7 +40,7 @@ export default function ConvertPage() {
       <Card>
         <CardContent className="space-y-4 p-6">
           <div className="space-y-2">
-            <Label htmlFor="convert-from">You pay</Label>
+            <Label htmlFor="convert-amount">You pay</Label>
             <div className="flex gap-2">
               <Input
                 id="convert-amount"
@@ -52,7 +52,7 @@ export default function ConvertPage() {
                 className="h-auto border-0 bg-transparent px-0 py-1 text-3xl font-semibold tabular-nums tracking-tight focus-visible:ring-0 flex-1"
               />
               <Select value={from} onValueChange={setFrom}>
-                <SelectTrigger id="convert-from" className="w-32 shrink-0">
+                <SelectTrigger id="convert-from" aria-label="Asset to pay with" className="w-32 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -82,17 +82,18 @@ export default function ConvertPage() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="convert-to">You receive</Label>
+            <Label htmlFor="convert-receive">You receive</Label>
             <div className="flex gap-2">
               <Input
                 id="convert-receive"
                 value=""
                 readOnly
+                aria-readonly="true"
                 placeholder="0.00"
                 className="h-auto border-0 bg-transparent px-0 py-1 text-3xl font-semibold tabular-nums tracking-tight text-muted-foreground focus-visible:ring-0 flex-1"
               />
               <Select value={to} onValueChange={setTo}>
-                <SelectTrigger id="convert-to" className="w-32 shrink-0">
+                <SelectTrigger id="convert-to" aria-label="Asset to receive" className="w-32 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
