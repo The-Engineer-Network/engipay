@@ -7,7 +7,7 @@ import { MarketingHero } from "@/components/marketing/MarketingHero"
 export const metadata: Metadata = {
   title: "About - EngiPay",
   description:
-    "EngiPay is a Nigerian crypto payments app: send and receive, pay by code, and move money between crypto and Naira.",
+    "EngiPay is a Nigerian crypto payments app: send and receive, and pay by code. Naira conversion is being built.",
 }
 
 const VALUES = [
@@ -47,7 +47,7 @@ export default function AboutPage() {
             address between apps.
           </p>
           <p className="leading-relaxed text-muted-foreground">
-            EngiPay does four things: buy and sell crypto for Naira, pay and get paid by scanning
+            EngiPay is built around four things: buy and sell crypto for Naira, pay and get paid by scanning
             a code, send Bitcoin wallet to wallet, and hold and convert what you own in one
             place. Nothing else, until those four are genuinely good.
           </p>

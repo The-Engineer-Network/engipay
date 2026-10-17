@@ -25,7 +25,7 @@ const GROUPS: QaGroup[] = [
       {
         question: "What is EngiPay?",
         answer:
-          "A crypto payments app for Nigeria. You can send and receive crypto, pay by scanning a code, send Bitcoin wallet to wallet, convert one token into another, and move money between crypto and Naira.",
+          "A crypto payments app for Nigeria. You can send and receive crypto on Base and pay by scanning a code. Bitcoin sending, token swaps and Naira conversion are still being built.",
       },
       {
         question: "Which networks does it use?",
