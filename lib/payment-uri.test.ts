@@ -6,6 +6,7 @@
  */
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
+import { checkBitcoinAddress } from "./validation/bitcoinAddress.ts"
 import {
   buildEngipayRequest,
   buildPaymentUri,
@@ -18,6 +19,9 @@ import {
   shortenAddress,
   toBaseUnits,
 } from "./payment-uri.ts"
+
+// The existing Bitcoin fixtures are mainnet addresses.
+process.env.NEXT_PUBLIC_CHAIN_ENV = "mainnet"
 
 const EVM = "0x1234567890abcdef1234567890abcdef12345678"
 const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
@@ -377,5 +381,61 @@ describe("EVM address checksum (EIP-55)", () => {
     assert.equal(isEvmAddress(USDC_BAD_CHECKSUM), false)
     assert.equal(parsePaymentCode(USDC_BAD_CHECKSUM), null)
     assert.equal(parsePaymentCode(`ethereum:${USDC_BAD_CHECKSUM}@8453`), null)
+  })
+})
+
+describe("Bitcoin address checksums and network", () => {
+  const valid = {
+    mainnet: [
+      "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
+      "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+      "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+      "BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4",
+      "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0",
+    ],
+    testnet: [
+      "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn",
+      "2MzQwSSnBHWHqSAqtTVQ6v47XtaisrJa1Vc",
+      "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+      "tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c",
+    ],
+  } as const
+
+  it("accepts BIP-173/350 and Base58Check vectors on their own network", () => {
+    for (const address of valid.mainnet) {
+      assert.equal(checkBitcoinAddress(address, "mainnet").valid, true, address)
+    }
+    for (const address of valid.testnet) {
+      assert.equal(checkBitcoinAddress(address, "testnet").valid, true, address)
+    }
+  })
+
+  it("refuses the other network with a clear reason", () => {
+    const result = checkBitcoinAddress(valid.testnet[0], "mainnet")
+    assert.equal(result.valid, false)
+    assert.match(!result.valid ? result.reason : "", /testnet address/)
+    const reverse = checkBitcoinAddress(valid.mainnet[2], "testnet")
+    assert.match(!reverse.valid ? reverse.reason : "", /mainnet address/)
+  })
+
+  it("rejects mistyped and malformed addresses", () => {
+    const invalid = [
+      "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3", // Base58Check typo
+      "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdp", // bech32 typo
+      "bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7k7grplx", // v1 with bech32 (BIP-350)
+      "bc1qW508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", // mixed case
+      "tc1qw508d6qejxtdg4y5r3zarvary0c5xw7kg3g4ty", // bad hrp
+      "bc1",
+      "",
+    ]
+    for (const address of invalid) {
+      assert.equal(checkBitcoinAddress(address, "mainnet").valid, false, address)
+    }
+  })
+
+  it("follows NEXT_PUBLIC_CHAIN_ENV in isBitcoinAddress", () => {
+    assert.equal(isBitcoinAddress(valid.mainnet[0]), true)
+    assert.equal(isBitcoinAddress(valid.testnet[0]), false)
+    assert.equal(isBitcoinAddress(valid.testnet[0], "testnet"), true)
   })
 })
