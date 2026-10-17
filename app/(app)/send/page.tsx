@@ -9,7 +9,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Bitcoin } from "lucide-react"
 import { activeChain } from "@/lib/wagmi"
 import { stellarNetwork } from "@/lib/stellar"
-import { cn } from "@/lib/utils"
+import { NetworkTabs, networkPanelId, networkTabId } from "@/components/app/NetworkTabs"
 import { useWallet } from "@/contexts/WalletContext"
 
 type Network = "base" | "stellar"
@@ -30,31 +30,18 @@ function SendForm() {
   return (
     <div className="space-y-4">
       {/* The network decides what an address means, so it is chosen first. */}
-      <div className="grid grid-cols-2 gap-1 rounded-full border border-border bg-card/60 p-1" role="tablist">
-        {(
-          [
-            { value: "base", label: activeChain.name },
-            { value: "stellar", label: stellarNetwork.label },
-          ] as const
-        ).map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            role="tab"
-            aria-selected={network === option.value}
-            onClick={() => setNetwork(option.value)}
-            className={cn(
-              "rounded-full px-4 py-2 text-sm font-medium transition-colors",
-              network === option.value
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      <NetworkTabs
+        className="grid grid-cols-2 gap-1 rounded-full border border-border bg-card/60 p-1"
+        idPrefix="send"
+        value={network}
+        onChange={setNetwork}
+        options={[
+          { value: "base", label: activeChain.name },
+          { value: "stellar", label: stellarNetwork.label },
+        ]}
+      />
 
+      <div role="tabpanel" id={networkPanelId("send", network)} aria-labelledby={networkTabId("send", network)}>
       {network === "base" ? (
         <SendPayment
           initialRecipient={params.get("network") === "stellar" ? "" : recipient}
@@ -71,6 +58,7 @@ function SendForm() {
           }
         />
       )}
+      </div>
     </div>
   )
 }

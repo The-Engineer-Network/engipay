@@ -22,7 +22,7 @@ import { TRACKED_TOKENS } from "@/lib/tokens"
 import { activeChain } from "@/lib/wagmi"
 import { stellarNetwork } from "@/lib/stellar"
 import { STELLAR_AMOUNT, buildPaymentUri, shortenAddress } from "@/lib/payment-uri"
-import { cn } from "@/lib/utils"
+import { NetworkTabs, networkPanelId, networkTabId } from "@/components/app/NetworkTabs"
 
 const NATIVE = "native"
 
@@ -125,32 +125,23 @@ export default function ReceivePage() {
 
       <Card>
         <CardContent className="space-y-6 p-6">
-          <div className="grid grid-cols-2 gap-1 rounded-full border border-border bg-background/60 p-1" role="tablist">
-            {(
-              [
-                { value: "base", label: activeChain.name },
-                { value: "stellar", label: stellarNetwork.label },
-              ] as const
-            ).map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="tab"
-                aria-selected={network === option.value}
-                onClick={() => setNetwork(option.value)}
-                className={cn(
-                  "rounded-full px-4 py-2 text-sm font-medium transition-colors",
-                  network === option.value
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <NetworkTabs
+            className="grid grid-cols-2 gap-1 rounded-full border border-border bg-background/60 p-1"
+            idPrefix="receive"
+            value={network}
+            onChange={setNetwork}
+            options={[
+              { value: "base", label: activeChain.name },
+              { value: "stellar", label: stellarNetwork.label },
+            ]}
+          />
 
-          <div className="flex flex-col items-center gap-4">
+          <div
+            role="tabpanel"
+            id={networkPanelId("receive", network)}
+            aria-labelledby={networkTabId("receive", network)}
+            className="flex flex-col items-center gap-4"
+          >
             {qrDataUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
