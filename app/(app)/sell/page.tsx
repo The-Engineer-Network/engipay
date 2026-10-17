@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/app/PageHeader"
 import { PendingServiceNote } from "@/components/app/PendingServiceNote"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { AmountInput } from "@/components/ui/AmountInput"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -16,12 +16,13 @@ import {
 } from "@/components/ui/select"
 import { Landmark, Plus } from "lucide-react"
 import { DISPLAY_ASSETS } from "@/lib/assets"
+import { decimalsForAsset, isPositiveAmount } from "@/lib/amountInput"
 
 export default function SellPage() {
   const [amount, setAmount] = useState("")
   const [asset, setAsset] = useState(DISPLAY_ASSETS[1]?.symbol ?? "USDC")
 
-  const amountValid = amount === "" || Number(amount) > 0
+  const amountValid = amount === "" || isPositiveAmount(amount)
 
   return (
     <div className="mx-auto max-w-lg">
@@ -35,17 +36,17 @@ export default function SellPage() {
           <div className="space-y-2">
             <Label htmlFor="sell-amount">You sell</Label>
             <div className="flex gap-2">
-              <Input
+              <AmountInput
                 id="sell-amount"
-                inputMode="decimal"
                 placeholder="0.00"
                 value={amount}
-                onChange={(event) => setAmount(event.target.value)}
+                onValueChange={setAmount}
+                decimals={decimalsForAsset(asset)}
                 aria-invalid={!amountValid}
                 className="h-auto border-0 bg-transparent px-0 py-1 text-3xl font-semibold tabular-nums tracking-tight focus-visible:ring-0 flex-1"
               />
               <Select value={asset} onValueChange={setAsset}>
-                <SelectTrigger id="sell-asset" className="w-32 shrink-0">
+                <SelectTrigger id="sell-asset" aria-label="Asset to sell" className="w-32 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

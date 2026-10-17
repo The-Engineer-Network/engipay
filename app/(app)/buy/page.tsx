@@ -6,6 +6,7 @@ import { PendingServiceNote } from "@/components/app/PendingServiceNote"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { AmountInput } from "@/components/ui/AmountInput"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -15,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { DISPLAY_ASSETS } from "@/lib/assets"
+import { isPositiveAmount } from "@/lib/amountInput"
 
 /** Quick amounts, in Naira. */
 const PRESETS = ["5000", "10000", "50000", "100000"]
@@ -23,7 +25,7 @@ export default function BuyPage() {
   const [naira, setNaira] = useState("")
   const [asset, setAsset] = useState(DISPLAY_ASSETS[1]?.symbol ?? "USDC")
 
-  const amountValid = naira === "" || Number(naira) > 0
+  const amountValid = naira === "" || isPositiveAmount(naira)
 
   return (
     <div className="mx-auto max-w-lg">
@@ -40,12 +42,12 @@ export default function BuyPage() {
               <span className="pointer-events-none absolute left-0 top-1/2 -translate-y-1/2 text-3xl font-semibold text-muted-foreground">
                 ₦
               </span>
-              <Input
+              <AmountInput
                 id="buy-naira"
-                inputMode="numeric"
                 placeholder="0"
                 value={naira}
-                onChange={(event) => setNaira(event.target.value)}
+                onValueChange={setNaira}
+                decimals={2}
                 aria-invalid={!amountValid}
                 className="h-auto border-0 bg-transparent py-1 pl-8 text-3xl font-semibold tabular-nums tracking-tight focus-visible:ring-0"
               />
@@ -69,16 +71,18 @@ export default function BuyPage() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="buy-asset">You receive</Label>
+            <Label htmlFor="buy-receive">You receive</Label>
             <div className="flex gap-2">
               <Input
+                id="buy-receive"
                 value=""
                 readOnly
+                aria-readonly="true"
                 placeholder="0.00"
                 className="h-auto flex-1 border-0 bg-transparent px-0 py-1 text-3xl font-semibold tabular-nums tracking-tight text-muted-foreground focus-visible:ring-0"
               />
               <Select value={asset} onValueChange={setAsset}>
-                <SelectTrigger id="buy-asset" className="w-32 shrink-0">
+                <SelectTrigger id="buy-asset" aria-label="Asset to receive" className="w-32 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
