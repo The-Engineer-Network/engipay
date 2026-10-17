@@ -7,7 +7,7 @@ import { MarketingHero } from "@/components/marketing/MarketingHero"
 export const metadata: Metadata = {
   title: "Features - EngiPay",
   description:
-    "Send and receive crypto, pay by scanning a code, send Bitcoin, and move money between crypto and Naira.",
+    "Send and receive crypto and pay by scanning a code. Bitcoin sending and Naira conversion are still being built.",
 }
 
 interface Feature {
@@ -69,7 +69,7 @@ export default function FeaturesPage() {
     <>
       <MarketingHero
         title="Features"
-        description="Four things, done properly: Naira in and out, scan to pay, Bitcoin transfers, and one place to hold and convert what you own."
+        description="Four things we are building: Naira in and out, scan to pay, Bitcoin transfers, and one place to hold and convert what you own. Each one says what works today."
       />
 
       <section className="py-16">

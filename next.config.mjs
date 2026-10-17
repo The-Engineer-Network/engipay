@@ -1,5 +1,19 @@
+import { buildSecurityHeaders } from "./lib/security-headers.mjs";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Report-only until the CSP is checked in a browser; set CSP_ENFORCE=true to enforce.
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: buildSecurityHeaders({
+          reportOnly: process.env.CSP_ENFORCE !== "true",
+          dev: process.env.NODE_ENV !== "production",
+        }),
+      },
+    ];
+  },
   // Lets a verification build run beside `next dev` without both writing to
   // .next, which corrupts the build (PageNotFoundError, ENOENT).
   distDir: process.env.NEXT_DIST_DIR || ".next",
