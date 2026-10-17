@@ -2,8 +2,8 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { useAccount, useSendTransaction, useWriteContract, useWaitForTransactionReceipt } from "wagmi"
-import { isAddress, parseEther, parseUnits, type Address } from "viem"
+import { useAccount, useBalance, useSendTransaction, useWriteContract, useWaitForTransactionReceipt } from "wagmi"
+import { isAddress, type Address } from "viem"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -14,6 +14,7 @@ import { TRACKED_TOKENS, ERC20_ABI } from "@/lib/tokens"
 import { activeChain } from "@/lib/wagmi"
 import { useWallet } from "@/contexts/WalletContext"
 import { cn } from "@/lib/utils"
+import { validateSendAmount } from "@/lib/amountValidation"
 
 const NATIVE = "native"
 
@@ -55,12 +56,24 @@ export function SendPayment({
 
   const isBusy = isSendingNative || isSendingToken || isConfirming
   const recipientValid = recipient === "" || isAddress(recipient)
-  const amountValid = amount === "" || Number(amount) > 0
 
   const selectedSymbol =
     asset === NATIVE
       ? activeChain.nativeCurrency.symbol
       : TRACKED_TOKENS.find((token) => token.address === asset)?.symbol ?? ""
+
+  // Exact balance in base units, so the check never goes through floating point.
+  const selectedDecimals =
+    asset === NATIVE
+      ? activeChain.nativeCurrency.decimals
+      : TRACKED_TOKENS.find((token) => token.address === asset)?.decimals ?? 18
+  const { address: account } = useAccount()
+  const { data: selectedBalance } = useBalance({
+    address: account,
+    token: asset === NATIVE ? undefined : (asset as Address),
+  })
+  const amountCheck = validateSendAmount(amount, selectedDecimals, selectedSymbol, selectedBalance?.value)
+  const amountValid = amount === "" || amountCheck.ok
 
   const heldBalance = balances.find((item) => item.symbol === selectedSymbol)?.balance
 
@@ -98,10 +111,10 @@ export function SendPayment({
       })
       return
     }
-    if (!(Number(amount) > 0)) {
+    if (!amountCheck.ok) {
       toast({
         title: "Invalid amount",
-        description: "Enter an amount greater than zero.",
+        description: amountCheck.message,
         variant: "destructive",
       })
       return
@@ -113,7 +126,7 @@ export function SendPayment({
       if (asset === NATIVE) {
         hash = await sendTransactionAsync({
           to: recipient as Address,
-          value: parseEther(amount),
+          value: amountCheck.units,
         })
       } else {
         const token = TRACKED_TOKENS.find((t) => t.address === asset)
@@ -122,7 +135,7 @@ export function SendPayment({
           address: token.address,
           abi: ERC20_ABI,
           functionName: "transfer",
-          args: [recipient as Address, parseUnits(amount, token.decimals)],
+          args: [recipient as Address, amountCheck.units],
         })
       }
 
@@ -244,7 +257,7 @@ export function SendPayment({
         </div>
         <div className="h-px bg-border" />
         {!amountValid && (
-          <p className="text-sm text-destructive">Enter an amount greater than zero.</p>
+          <p className="text-sm text-destructive">{amountCheck.ok ? "" : amountCheck.message}</p>
         )}
       </div>
 
