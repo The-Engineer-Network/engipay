@@ -12,6 +12,8 @@
  * produce still works in a wallet that has never heard of EngiPay.
  */
 
+import { isAddress } from "viem"
+
 export type PaymentChain = "base" | "bitcoin" | "stellar"
 
 export interface ParsedPayment {
@@ -53,12 +55,13 @@ export interface StellarMemo {
 const BASE_CHAIN_ID = 8453
 const BASE_SEPOLIA_CHAIN_ID = 84532
 
-const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/
 // Legacy (1…, 3…) and bech32 (bc1…) Bitcoin addresses.
 const BTC_ADDRESS = /^(bc1[a-z0-9]{8,87}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/
 
 export function isEvmAddress(value: string): boolean {
-  return EVM_ADDRESS.test(value.trim())
+  // viem enforces the EIP-55 checksum on mixed-case input and still accepts
+  // all-lowercase and all-uppercase addresses, which carry no checksum.
+  return isAddress(value.trim())
 }
 
 export function isBitcoinAddress(value: string): boolean {

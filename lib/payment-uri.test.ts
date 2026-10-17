@@ -21,6 +21,8 @@ import {
 
 const EVM = "0x1234567890abcdef1234567890abcdef12345678"
 const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+// USDC_BASE with the case of one letter changed, so its EIP-55 checksum no longer matches.
+const USDC_BAD_CHECKSUM = "0x833589FCD6eDb6E08f4c7C32D4f71b54bdA02913"
 const BTC_BECH32 = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
 const BTC_LEGACY = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
 
@@ -362,5 +364,18 @@ describe("shortenAddress", () => {
 
   it("leaves short strings untouched", () => {
     assert.equal(shortenAddress("0x12"), "0x12")
+  })
+})
+
+describe("EVM address checksum (EIP-55)", () => {
+  it("accepts a correct checksum and all-lowercase input", () => {
+    assert.equal(isEvmAddress(USDC_BASE), true)
+    assert.equal(isEvmAddress(USDC_BASE.toLowerCase()), true)
+  })
+
+  it("rejects a mixed-case address with a wrong checksum", () => {
+    assert.equal(isEvmAddress(USDC_BAD_CHECKSUM), false)
+    assert.equal(parsePaymentCode(USDC_BAD_CHECKSUM), null)
+    assert.equal(parsePaymentCode(`ethereum:${USDC_BAD_CHECKSUM}@8453`), null)
   })
 })
