@@ -2,8 +2,8 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { useAccount, useBalance, useSendTransaction, useWriteContract, useWaitForTransactionReceipt } from "wagmi"
-import { isAddress, type Address } from "viem"
+import { useAccount, useBalance, useEstimateGas, useEstimateFeesPerGas, useSendTransaction, useWriteContract, useWaitForTransactionReceipt } from "wagmi"
+import { encodeFunctionData, formatEther, isAddress, type Address } from "viem"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -15,6 +15,13 @@ import { activeChain } from "@/lib/wagmi"
 import { useWallet } from "@/contexts/WalletContext"
 import { cn } from "@/lib/utils"
 import { validateSendAmount } from "@/lib/amountValidation"
+import {
+  FALLBACK_NATIVE_GAS,
+  FALLBACK_TOKEN_GAS,
+  estimateFeeWei,
+  feeWarning,
+  maxNativeSendable,
+} from "@/lib/baseFeeEstimate"
 
 const NATIVE = "native"
 
@@ -74,6 +81,37 @@ export function SendPayment({
   })
   const amountCheck = validateSendAmount(amount, selectedDecimals, selectedSymbol, selectedBalance?.value)
   const amountValid = amount === "" || amountCheck.ok
+
+  // Estimated network fee. Re-runs whenever the token, amount or recipient change.
+  const feeReady = amountCheck.ok && isAddress(recipient)
+  const { data: ethBalance } = useBalance({ address: account })
+  const { data: feeData } = useEstimateFeesPerGas()
+  const { data: gasEstimate } = useEstimateGas({
+    account,
+    to: asset === NATIVE ? (recipient as Address) : (asset as Address),
+    value: asset === NATIVE && amountCheck.ok ? amountCheck.units : undefined,
+    data:
+      asset === NATIVE || !amountCheck.ok
+        ? undefined
+        : encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [recipient as Address, amountCheck.units],
+          }),
+    query: { enabled: feeReady && Boolean(account) },
+  })
+  const feeWei = estimateFeeWei(
+    gasEstimate ?? (asset === NATIVE ? FALLBACK_NATIVE_GAS : FALLBACK_TOKEN_GAS),
+    feeData?.maxFeePerGas ?? 0n
+  )
+  const feeIssue = feeReady
+    ? feeWarning({
+        isNative: asset === NATIVE,
+        amountWei: amountCheck.ok ? amountCheck.units : 0n,
+        ethBalanceWei: ethBalance?.value ?? 0n,
+        feeWei,
+      })
+    : null
 
   const heldBalance = balances.find((item) => item.symbol === selectedSymbol)?.balance
 
@@ -256,6 +294,17 @@ export function SendPayment({
           </span>
         </div>
         <div className="h-px bg-border" />
+        {asset === NATIVE && ethBalance && (
+          <button
+            type="button"
+            onClick={() =>
+              setAmount(formatEther(maxNativeSendable(ethBalance.value, feeWei)))
+            }
+            className="text-xs text-primary hover:underline"
+          >
+            Max
+          </button>
+        )}
         {!amountValid && (
           <p className="text-sm text-destructive">{amountCheck.ok ? "" : amountCheck.message}</p>
         )}
@@ -295,6 +344,21 @@ export function SendPayment({
           <p className="text-sm text-destructive">That is not a valid address.</p>
         )}
       </div>
+
+      {feeData?.maxFeePerGas !== undefined && (
+        <div className="space-y-1 text-sm">
+          <p className="text-muted-foreground">
+            Estimated network fee: {formatEther(feeWei)} {activeChain.nativeCurrency.symbol}
+          </p>
+          {feeIssue && (
+            <p className="text-destructive">
+              {feeIssue === "native-short"
+                ? "Your ETH balance cannot cover this amount plus the network fee."
+                : "You need ETH on this network to pay the network fee for a token transfer."}
+            </p>
+          )}
+        </div>
+      )}
 
       <Button
         onClick={handleSend}
