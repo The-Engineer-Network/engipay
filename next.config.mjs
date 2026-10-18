@@ -14,6 +14,15 @@ const nextConfig = {
       },
     ];
   },
+  async rewrites() {
+    const backendUrl = process.env.ENGIPAY_BACKEND_URL || "http://127.0.0.1:8080";
+    return [
+      {
+        source: "/api/:path*",
+        destination: `${backendUrl}/:path*`,
+      },
+    ];
+  },
   // Lets a verification build run beside `next dev` without both writing to
   // .next, which corrupts the build (PageNotFoundError, ENOENT).
   distDir: process.env.NEXT_DIST_DIR || ".next",

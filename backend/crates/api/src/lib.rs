@@ -19,6 +19,7 @@ use tower_http::trace::TraceLayer;
 use crate::config::Config;
 use crate::middleware::logging::log_requests;
 use crate::middleware::recovery::CatchPanicLayer;
+use crate::middleware::rate_limit::RateLimiter;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,6 +27,7 @@ pub struct AppState {
     /// the database return 503 rather than pretending to work.
     pub database: Option<PgPool>,
     pub config: Config,
+    pub rate_limiter: RateLimiter,
 }
 
 pub fn router(state: AppState, config: &Config) -> Router {
@@ -33,6 +35,10 @@ pub fn router(state: AppState, config: &Config) -> Router {
         .merge(routes::health::routes())
         .merge(routes::openapi::routes())
         .nest("/v1", routes::v1())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::rate_limit::rate_limit_middleware,
+        ))
         .layer(cors(config))
         .layer(TraceLayer::new_for_http())
         // Structured JSON request logging with correlation IDs. Placed inside

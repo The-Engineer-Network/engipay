@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
+use crate::services::limits::check_velocity_limits;
 
 /// A validated request to transfer funds between two EngiPay users.
 ///
@@ -193,7 +194,21 @@ async fn create_transfer(
         .database
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
-    let ledger = PostgresLedgerStore::new(pool);
+    let ledger = PostgresLedgerStore::new(pool.clone());
+
+    // Get user's tier for velocity limit check
+    let tier: i32 = sqlx::query_scalar(
+        "SELECT COALESCE(tier, 0) FROM user_profiles WHERE id = $1"
+    )
+    .bind(sender.as_uuid())
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch user tier: {}", e)))?
+    .unwrap_or(0);
+
+    // Check velocity limits before executing transfer
+    check_velocity_limits(&pool, sender, tier, money, state.config.tier_0_daily_limit_minor)
+        .await?;
 
     // The idempotency reference is the caller-supplied `reference`, so a retry
     // of the same request replays instead of double-spending.

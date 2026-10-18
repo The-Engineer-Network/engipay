@@ -1,5 +1,8 @@
+use std::net::SocketAddr;
+
 use anyhow::Context;
 use engipay_api::{AppState, config::Config, router};
+use engipay_api::middleware::rate_limit::RateLimiter;
 use sqlx::postgres::PgPoolOptions;
 use tracing::{info, warn};
 
@@ -32,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         database,
         config: config.clone(),
+        rate_limiter: RateLimiter::new(),
     };
     let app = router(state, &config);
 
@@ -40,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("could not bind {}", config.bind_addr))?;
     info!(address = %config.bind_addr, "engipay api listening");
 
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("server error")?;

@@ -2,8 +2,8 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { useAccount, useSendTransaction, useWriteContract, useWaitForTransactionReceipt } from "wagmi"
-import { isAddress, parseEther, parseUnits, type Address } from "viem"
+import { useAccount, useBalance, useEstimateGas, useEstimateFeesPerGas, useSendTransaction, useWriteContract, useWaitForTransactionReceipt } from "wagmi"
+import { encodeFunctionData, formatEther, isAddress, type Address } from "viem"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -14,6 +14,14 @@ import { TRACKED_TOKENS, ERC20_ABI } from "@/lib/tokens"
 import { activeChain } from "@/lib/wagmi"
 import { useWallet } from "@/contexts/WalletContext"
 import { cn } from "@/lib/utils"
+import { validateSendAmount } from "@/lib/amountValidation"
+import {
+  FALLBACK_NATIVE_GAS,
+  FALLBACK_TOKEN_GAS,
+  estimateFeeWei,
+  feeWarning,
+  maxNativeSendable,
+} from "@/lib/baseFeeEstimate"
 
 const NATIVE = "native"
 
@@ -55,12 +63,55 @@ export function SendPayment({
 
   const isBusy = isSendingNative || isSendingToken || isConfirming
   const recipientValid = recipient === "" || isAddress(recipient)
-  const amountValid = amount === "" || Number(amount) > 0
 
   const selectedSymbol =
     asset === NATIVE
       ? activeChain.nativeCurrency.symbol
       : TRACKED_TOKENS.find((token) => token.address === asset)?.symbol ?? ""
+
+  // Exact balance in base units, so the check never goes through floating point.
+  const selectedDecimals =
+    asset === NATIVE
+      ? activeChain.nativeCurrency.decimals
+      : TRACKED_TOKENS.find((token) => token.address === asset)?.decimals ?? 18
+  const { address: account } = useAccount()
+  const { data: selectedBalance } = useBalance({
+    address: account,
+    token: asset === NATIVE ? undefined : (asset as Address),
+  })
+  const amountCheck = validateSendAmount(amount, selectedDecimals, selectedSymbol, selectedBalance?.value)
+  const amountValid = amount === "" || amountCheck.ok
+
+  // Estimated network fee. Re-runs whenever the token, amount or recipient change.
+  const feeReady = amountCheck.ok && isAddress(recipient)
+  const { data: ethBalance } = useBalance({ address: account })
+  const { data: feeData } = useEstimateFeesPerGas()
+  const { data: gasEstimate } = useEstimateGas({
+    account,
+    to: asset === NATIVE ? (recipient as Address) : (asset as Address),
+    value: asset === NATIVE && amountCheck.ok ? amountCheck.units : undefined,
+    data:
+      asset === NATIVE || !amountCheck.ok
+        ? undefined
+        : encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [recipient as Address, amountCheck.units],
+          }),
+    query: { enabled: feeReady && Boolean(account) },
+  })
+  const feeWei = estimateFeeWei(
+    gasEstimate ?? (asset === NATIVE ? FALLBACK_NATIVE_GAS : FALLBACK_TOKEN_GAS),
+    feeData?.maxFeePerGas ?? 0n
+  )
+  const feeIssue = feeReady
+    ? feeWarning({
+        isNative: asset === NATIVE,
+        amountWei: amountCheck.ok ? amountCheck.units : 0n,
+        ethBalanceWei: ethBalance?.value ?? 0n,
+        feeWei,
+      })
+    : null
 
   const heldBalance = balances.find((item) => item.symbol === selectedSymbol)?.balance
 
@@ -98,10 +149,10 @@ export function SendPayment({
       })
       return
     }
-    if (!(Number(amount) > 0)) {
+    if (!amountCheck.ok) {
       toast({
         title: "Invalid amount",
-        description: "Enter an amount greater than zero.",
+        description: amountCheck.message,
         variant: "destructive",
       })
       return
@@ -113,7 +164,7 @@ export function SendPayment({
       if (asset === NATIVE) {
         hash = await sendTransactionAsync({
           to: recipient as Address,
-          value: parseEther(amount),
+          value: amountCheck.units,
         })
       } else {
         const token = TRACKED_TOKENS.find((t) => t.address === asset)
@@ -122,7 +173,7 @@ export function SendPayment({
           address: token.address,
           abi: ERC20_ABI,
           functionName: "transfer",
-          args: [recipient as Address, parseUnits(amount, token.decimals)],
+          args: [recipient as Address, amountCheck.units],
         })
       }
 
@@ -243,8 +294,19 @@ export function SendPayment({
           </span>
         </div>
         <div className="h-px bg-border" />
+        {asset === NATIVE && ethBalance && (
+          <button
+            type="button"
+            onClick={() =>
+              setAmount(formatEther(maxNativeSendable(ethBalance.value, feeWei)))
+            }
+            className="text-xs text-primary hover:underline"
+          >
+            Max
+          </button>
+        )}
         {!amountValid && (
-          <p className="text-sm text-destructive">Enter an amount greater than zero.</p>
+          <p className="text-sm text-destructive">{amountCheck.ok ? "" : amountCheck.message}</p>
         )}
       </div>
 
@@ -282,6 +344,21 @@ export function SendPayment({
           <p className="text-sm text-destructive">That is not a valid address.</p>
         )}
       </div>
+
+      {feeData?.maxFeePerGas !== undefined && (
+        <div className="space-y-1 text-sm">
+          <p className="text-muted-foreground">
+            Estimated network fee: {formatEther(feeWei)} {activeChain.nativeCurrency.symbol}
+          </p>
+          {feeIssue && (
+            <p className="text-destructive">
+              {feeIssue === "native-short"
+                ? "Your ETH balance cannot cover this amount plus the network fee."
+                : "You need ETH on this network to pay the network fee for a token transfer."}
+            </p>
+          )}
+        </div>
+      )}
 
       <Button
         onClick={handleSend}

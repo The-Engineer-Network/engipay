@@ -555,6 +555,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
     use crate::{AppState, router};
 
     fn app() -> axum::Router {
@@ -563,6 +564,7 @@ mod tests {
             AppState {
                 database: None,
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )
@@ -691,6 +693,7 @@ mod tests {
         let state = AppState {
             database: Some(pool),
             config: config.clone(),
+            rate_limiter: RateLimiter::new(),
         };
         let app = router(state, &config);
 
@@ -810,6 +813,7 @@ mod tests {
         let state = AppState {
             database: Some(pool),
             config: config.clone(),
+            rate_limiter: RateLimiter::new(),
         };
         let app = router(state, &config);
         let token = crate::auth::jwt::create_token(
@@ -870,6 +874,7 @@ mod tests {
         let state = AppState {
             database: Some(pool),
             config: config.clone(),
+            rate_limiter: RateLimiter::new(),
         };
         let app = router(state, &config);
 
@@ -947,6 +952,7 @@ mod tests {
         let state = AppState {
             database: Some(pool),
             config: config.clone(),
+            rate_limiter: RateLimiter::new(),
         };
         let app = router(state, &config);
 
@@ -1050,6 +1056,7 @@ mod tests {
         let state = AppState {
             database: Some(pool),
             config: config.clone(),
+            rate_limiter: RateLimiter::new(),
         };
         let app = router(state, &config);
 
@@ -1125,6 +1132,7 @@ mod tests {
             AppState {
                 database: Some(pool),
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )
@@ -1186,6 +1194,7 @@ mod tests {
             AppState {
                 database: Some(pool),
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )
