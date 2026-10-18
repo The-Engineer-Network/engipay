@@ -19,6 +19,7 @@ pub fn v1() -> Router<AppState> {
         .merge(auth::routes())
         .merge(balances::routes())
         .merge(deposits::routes())
+        .merge(me::routes())
         .merge(transactions::routes())
         .merge(requests::routes())
         .merge(transfers::routes())

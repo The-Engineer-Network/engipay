@@ -12,8 +12,22 @@ mod user;
 pub use user::AuthUser;
 
 use crate::AppState;
+use axum::http::StatusCode;
+use axum::routing::post;
 use axum::Router;
 
 pub fn routes() -> Router<AppState> {
-    Router::new().merge(nonce::routes())
+    Router::new()
+        .merge(nonce::routes())
+        .route("/auth/logout", post(logout))
+}
+
+/// POST /v1/auth/logout - revoke the current session token
+async fn logout(_auth: AuthUser) -> StatusCode {
+    // TODO: Implement token revocation
+    // For now, logout is a stateless operation since JWTs have no server-side state.
+    // A future implementation would:
+    // 1. Store the token's jti in a revocation list
+    // 2. Check revocation list in AuthUser::verify
+    StatusCode::NO_CONTENT
 }

@@ -1,5 +1,6 @@
 use anyhow::Context;
 use engipay_api::{AppState, config::Config, router};
+use engipay_api::middleware::rate_limit::RateLimiter;
 use sqlx::postgres::PgPoolOptions;
 use tracing::{info, warn};
 
@@ -32,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         database,
         config: config.clone(),
+        rate_limiter: RateLimiter::new(),
     };
     let app = router(state, &config);
 

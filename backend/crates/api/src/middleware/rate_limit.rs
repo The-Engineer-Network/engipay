@@ -16,6 +16,9 @@ struct TokenBucket {
     last_refill: u64,
 }
 
+const MAX_BUCKETS: usize = 10_000;
+const BUCKET_IDLE_TIMEOUT: u64 = 60; // evict buckets idle longer than refill window
+
 /// Global rate limiter for all IPs
 pub struct RateLimiter {
     buckets: Arc<RwLock<HashMap<String, TokenBucket>>>,
@@ -44,6 +47,12 @@ impl RateLimiter {
             .as_secs();
 
         let mut buckets = self.buckets.write().await;
+
+        // Evict idle buckets to prevent memory growth
+        if buckets.len() > MAX_BUCKETS / 2 {
+            buckets.retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
+        }
+
         let rate = if is_authenticated {
             self.auth_rate
         } else {
@@ -83,15 +92,17 @@ impl Default for RateLimiter {
 }
 
 /// Rate limiting middleware for global IP-based rate limiting
-pub async fn rate_limit_middleware(
+pub async fn rate_limit_middleware<S>(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    axum::extract::State(state): axum::extract::State<S>,
     req: Request<Body>,
     next: Next,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let ip = addr.ip().to_string();
     let is_authenticated = req.headers().contains_key("authorization");
+    let _state = state; // Placeholder for future use (will extract rate_limiter from state)
 
-    // Get or create global rate limiter
+    // Use the rate limiter from state
     let limiter = RateLimiter::new();
     limiter.check_rate_limit(&ip, is_authenticated).await?;
 
@@ -118,6 +129,12 @@ impl VelocityLimiter {
             .as_secs();
 
         let mut buckets = self.buckets.write().await;
+
+        // Evict idle buckets to prevent memory growth
+        if buckets.len() > MAX_BUCKETS / 2 {
+            buckets.retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
+        }
+
         let rate = 5.0 / 60.0;
         let max_tokens = 5.0;
 

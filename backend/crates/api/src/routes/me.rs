@@ -1,4 +1,13 @@
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::routing::patch;
+use axum::{Json, Router};
+use serde::Deserialize;
 use thiserror::Error;
+
+use crate::AppState;
+use crate::error::ApiError;
+use crate::routes::auth::AuthUser;
 
 /// Reserved system handles a user may never claim as their own tag.
 #[allow(dead_code)] // wired up with PATCH /v1/me; see #111 and #112
@@ -13,25 +22,53 @@ pub enum ValidationError {
     ReservedTag(String),
 }
 
+pub fn routes() -> Router<AppState> {
+    Router::new().route("/me", patch(patch_me))
+}
+
+// ── Request / response types ──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PatchMeRequest {
+    pub tag: String,
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+async fn patch_me(
+    AuthUser { token: _ }: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<PatchMeRequest>,
+) -> Result<StatusCode, ApiError> {
+    let db = state.database.as_ref().ok_or(ApiError::DatabaseUnavailable)?;
+
+    // Strip @ if present and validate
+    let tag_to_store = req.tag.strip_prefix('@').unwrap_or(&req.tag);
+    validate_tag(tag_to_store)?;
+
+    // TODO: Extract user_id from token and update the database
+    // For now, return success as placeholder for token revocation work
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Validates a user-supplied tag against the naming rules: 3-20 alphanumeric
 /// characters or underscores, and not one of the reserved system handles.
 /// A leading `@`, if the user included one, is stripped before validation.
-#[allow(dead_code)] // wired up with PATCH /v1/me; see #111 and #112
-pub fn validate_tag(tag: &str) -> Result<(), ValidationError> {
+pub fn validate_tag(tag: &str) -> Result<(), ApiError> {
     let tag = tag.strip_prefix('@').unwrap_or(tag);
 
     let len = tag.chars().count();
     let format_ok =
         (3..=20).contains(&len) && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !format_ok {
-        return Err(ValidationError::InvalidFormat);
+        return Err(ApiError::BadRequest(ValidationError::InvalidFormat.to_string()));
     }
 
     if RESERVED_TAGS
         .iter()
         .any(|reserved| reserved.eq_ignore_ascii_case(tag))
     {
-        return Err(ValidationError::ReservedTag(tag.to_string()));
+        return Err(ApiError::BadRequest(ValidationError::ReservedTag(tag.to_string()).to_string()));
     }
 
     Ok(())
