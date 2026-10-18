@@ -1,9 +1,9 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -103,15 +103,16 @@ pub async fn create_withdrawal(
         .ok_or(ApiError::DatabaseUnavailable)?;
 
     // Check if withdrawal destination is in cooling-off period
-    let cooling_off_decision = cooling_off::check_address_cooling_off(&pool, payload.user_id, &payload.destination)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("cooling off check failed: {}", e)))?;
+    let cooling_off_decision =
+        cooling_off::check_address_cooling_off(&pool, payload.user_id, &payload.destination)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("cooling off check failed: {}", e)))?;
 
     // Check if withdrawal requires manual review
     let review_config = withdrawal_review::ReviewConfig::from_env()
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
     let review_decision = withdrawal_review::check_withdrawal(
-        engipay_core::Money::from_minor(engipay_core::Asset::Usdc, payload.amount),
+        engipay_core::Money::from_minor(engipay_core::Asset::Usdc, i128::from(payload.amount)),
         &review_config,
     );
 
@@ -159,7 +160,10 @@ pub async fn get_withdrawal(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<axum::response::Response, ApiError> {
-    let _db = state.database.as_ref().ok_or(ApiError::DatabaseUnavailable)?;
+    let _db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
     // TODO: query the database for the withdrawal record once the postgres
     // ledger layer exposes get_withdrawal.
     let _ = id;

@@ -211,35 +211,45 @@ async fn create_transfer(
     let ledger = PostgresLedgerStore::new(pool.clone());
 
     // Get recipient tag for receipt display
-    let recipient_tag: Option<String> = sqlx::query_scalar(
-        "SELECT tag FROM user_profiles WHERE id = $1 LIMIT 1"
-    )
-    .bind(recipient)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch recipient tag: {}", e)))?
-    .flatten();
+    let recipient_tag: Option<String> =
+        sqlx::query_scalar("SELECT tag FROM user_profiles WHERE id = $1 LIMIT 1")
+            .bind(recipient)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| {
+                ApiError::Internal(anyhow::anyhow!("failed to fetch recipient tag: {}", e))
+            })?
+            .flatten();
 
     let recipient_tag = recipient_tag.unwrap_or_else(|| recipient.to_string());
 
     // Get user's tier for velocity limit check
-    let tier: i32 = sqlx::query_scalar(
-        "SELECT COALESCE(tier, 0) FROM user_profiles WHERE id = $1"
-    )
-    .bind(sender.as_uuid())
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch user tier: {}", e)))?
-    .unwrap_or(0);
+    let tier: i32 = sqlx::query_scalar("SELECT COALESCE(tier, 0) FROM user_profiles WHERE id = $1")
+        .bind(sender.as_uuid())
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch user tier: {}", e)))?
+        .unwrap_or(0);
 
     // Check velocity limits before executing transfer
-    check_velocity_limits(&pool, sender, tier, money, state.config.tier_0_daily_limit_minor)
-        .await?;
+    check_velocity_limits(
+        &pool,
+        sender,
+        tier,
+        money,
+        state.config.tier_0_daily_limit_minor,
+    )
+    .await?;
 
     // The idempotency reference is the caller-supplied `reference`, so a retry
     // of the same request replays instead of double-spending.
     let receipt = ledger
-        .transfer(sender, recipient, money, request.reference.trim())
+        .transfer(
+            sender,
+            UserId::from_uuid(recipient),
+            money,
+            request.reference.trim(),
+        )
         .await
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
 
