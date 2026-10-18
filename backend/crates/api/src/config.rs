@@ -23,6 +23,10 @@ pub struct Config {
     /// Daily transaction limit for tier 0 (in USDC minor units, 7 decimals).
     /// Higher tiers scale by (tier + 1). Default: 500 USDC.
     pub tier_0_daily_limit_minor: i128,
+    /// Base URL of the chain service (e.g. `http://chain:8080`). When unset the
+    /// API degrades: withdrawal creation keeps the caller-supplied fee and
+    /// deposit provisioning falls back to local derivation.
+    pub chain_service_url: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +85,10 @@ impl Config {
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
             tier_0_daily_limit_minor,
+            chain_service_url: env::var("CHAIN_SERVICE_URL")
+                .ok()
+                .map(|url| url.trim().to_owned())
+                .filter(|url| !url.is_empty()),
         })
     }
 
@@ -98,6 +106,7 @@ impl Config {
             base_custody_address: None,
             bitcoin_custody_address: None,
             tier_0_daily_limit_minor: 500 * 10_000_000,
+            chain_service_url: None,
         }
     }
 }

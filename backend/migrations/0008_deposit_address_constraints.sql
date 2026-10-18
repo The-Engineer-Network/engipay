@@ -62,3 +62,55 @@ BEGIN
     END IF;
 END
 $$;
+
+-- Backfill duplicate derivation_index values before adding the
+-- UNIQUE(chain, derivation_index) constraint.  Older code allocated indexes
+-- with COUNT(*), so concurrent requests could store the same index.  Keep the
+-- lowest row per (chain, derivation_index) and reassign the rest to fresh
+-- indexes above the current maximum for that chain.
+WITH ranked AS (
+    SELECT id,
+           chain,
+           derivation_index,
+           ROW_NUMBER() OVER (
+               PARTITION BY chain, derivation_index
+               ORDER BY created_at, id
+           ) AS rn
+    FROM   deposit_addresses
+    WHERE  derivation_index IS NOT NULL
+),
+max_idx AS (
+    SELECT chain, MAX(derivation_index) AS max_index
+    FROM   deposit_addresses
+    WHERE  derivation_index IS NOT NULL
+    GROUP BY chain
+),
+dupes AS (
+    SELECT r.id,
+           r.chain,
+           m.max_index
+             + ROW_NUMBER() OVER (PARTITION BY r.chain ORDER BY r.id) AS new_index
+    FROM   ranked r
+    JOIN   max_idx m ON m.chain = r.chain
+    WHERE  r.rn > 1
+)
+UPDATE deposit_addresses d
+SET    derivation_index = dupes.new_index
+FROM   dupes
+WHERE  d.id = dupes.id;
+
+-- Add UNIQUE(chain, derivation_index): derivation indexes are unique per chain.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM   pg_constraint
+        WHERE  conname = 'deposit_addresses_chain_derivation_index_key'
+          AND  conrelid = 'deposit_addresses'::regclass
+    ) THEN
+        ALTER TABLE deposit_addresses
+            ADD CONSTRAINT deposit_addresses_chain_derivation_index_key
+            UNIQUE (chain, derivation_index);
+    END IF;
+END
+$$;

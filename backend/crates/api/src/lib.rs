@@ -4,6 +4,7 @@
 //! without opening a socket.
 
 pub mod auth;
+pub mod chain_client;
 pub mod config;
 pub mod error;
 pub mod middleware;
@@ -16,6 +17,7 @@ use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::chain_client::ChainClient;
 use crate::config::Config;
 use crate::middleware::logging::log_requests;
 use crate::middleware::recovery::CatchPanicLayer;
@@ -28,6 +30,9 @@ pub struct AppState {
     pub database: Option<PgPool>,
     pub config: Config,
     pub rate_limiter: RateLimiter,
+    /// Typed HTTP client for the chain service. When the base URL is unset the
+    /// client is disabled and fee estimation falls back to a clear 503.
+    pub chain_client: ChainClient,
 }
 
 pub fn router(state: AppState, config: &Config) -> Router {

@@ -2,6 +2,7 @@
 //! itself does not know about, such as AML velocity limits and SEP-23 muxed
 //! address derivation.
 
+pub mod chain_client;
 pub mod cooling_off;
 pub mod limits;
 pub mod payment_requests;

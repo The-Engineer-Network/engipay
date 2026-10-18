@@ -52,6 +52,15 @@ for constraint in "${constraints[@]}"; do
   fi
 done
 
+# Verify the deposit address derivation index uniqueness constraint exists
+echo "Verifying deposit address uniqueness constraint..."
+if psql -d "$db" -t -c "SELECT 1 FROM pg_constraint WHERE conname = 'deposit_addresses_chain_derivation_index_key' AND contype = 'u' LIMIT 1" | grep -q "1"; then
+  echo "  ✓ Constraint 'deposit_addresses_chain_derivation_index_key' exists"
+else
+  echo "  ✗ Constraint 'deposit_addresses_chain_derivation_index_key' NOT FOUND"
+  exit 1
+fi
+
 # Verify views exist
 echo "Verifying views..."
 if psql -d "$db" -c "SELECT 1 FROM information_schema.views WHERE table_name = 'account_balances'" | grep -q "1"; then

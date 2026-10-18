@@ -38,8 +38,11 @@ sha2.workspace = true
 sha3.workspace = true
 hex.workspace = true
 rand.workspace = true
+# HTTP client for the chain service.
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 serde_json.workspace = true
+wiremock = "0.6"

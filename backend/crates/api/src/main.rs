@@ -1,5 +1,5 @@
 use anyhow::Context;
-use engipay_api::{AppState, config::Config, router};
+use engipay_api::{AppState, chain_client::ChainClient, config::Config, router};
 use engipay_api::middleware::rate_limit::RateLimiter;
 use sqlx::postgres::PgPoolOptions;
 use tracing::{info, warn};
@@ -30,10 +30,18 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    let chain_client = ChainClient::from_config(&config);
+    if chain_client.is_enabled() {
+        info!("chain service client configured");
+    } else {
+        warn!("CHAIN_SERVICE_URL is not set; chain service calls are disabled");
+    }
+
     let state = AppState {
         database,
         config: config.clone(),
         rate_limiter: RateLimiter::new(),
+        chain_client,
     };
     let app = router(state, &config);
 

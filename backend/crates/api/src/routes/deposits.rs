@@ -29,7 +29,7 @@
 use axum::extract::{Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use engipay_core::stellar::muxed_deposit_address;
+use engipay_core::stellar::derive_deposit_address;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -160,19 +160,11 @@ async fn provision_stellar(
         .config
         .stellar_custody_account
         .as_deref()
-        .ok_or_else(|| {
-            ApiError::Internal(anyhow::anyhow!(
-                "STELLAR_CUSTODY_ACCOUNT is not configured; cannot provision Stellar addresses"
-            ))
-        })?;
+        .ok_or(ApiError::ServiceUnavailable)?;
 
-    // Derive a stable 64-bit muxed ID from the lower 8 bytes of the UUID.
-    let bytes = user_id.as_bytes();
-    let muxed_id = u64::from_be_bytes([
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-    ]);
-
-    let address = muxed_deposit_address(custody, muxed_id).map_err(|e| {
+    // Derivation lives in engipay-core so the API and chain services cannot
+    // drift apart on how a user maps to a muxed address.
+    let (address, muxed_id) = derive_deposit_address(custody, user_id).map_err(|e| {
         ApiError::Internal(anyhow::anyhow!(
             "could not build muxed deposit address: {e}"
         ))
@@ -213,34 +205,19 @@ async fn provision_custody(
             .config
             .base_custody_address
             .as_deref()
-            .ok_or_else(|| {
-                ApiError::Internal(anyhow::anyhow!(
-                    "BASE_CUSTODY_ADDRESS is not configured; cannot provision Base addresses"
-                ))
-            })?,
-        DepositChain::Bitcoin => state.config.bitcoin_custody_address.as_deref().ok_or_else(
-            || {
-                ApiError::Internal(anyhow::anyhow!(
-                    "BITCOIN_CUSTODY_ADDRESS is not configured; cannot provision Bitcoin addresses"
-                ))
-            },
-        )?,
+            .ok_or(ApiError::ServiceUnavailable)?,
+        DepositChain::Bitcoin => state
+            .config
+            .bitcoin_custody_address
+            .as_deref()
+            .ok_or(ApiError::ServiceUnavailable)?,
         DepositChain::Stellar => unreachable!("handled by provision_stellar"),
     };
-
-    // Use a sequential derivation index: count existing rows for this chain.
-    let derivation_index: i32 = sqlx::query_scalar(
-        "SELECT COALESCE(COUNT(*)::INT, 0) FROM deposit_addresses WHERE chain = $1",
-    )
-    .bind(chain.as_str())
-    .fetch_one(pool)
-    .await
-    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
 
     // The chain service watches the shared custody address. The
     // derivation_index is stored so it can be used when upgrading to per-user
     // addresses; it is never part of the address itself.
-    upsert_deposit_address(pool, user_id, chain, custody, None, Some(derivation_index)).await
+    upsert_deposit_address(pool, user_id, chain, custody, None, None).await
 }
 
 /// Inserts a deposit address row, ignoring a race where another request
@@ -254,9 +231,19 @@ async fn upsert_deposit_address(
     muxed_id: Option<i64>,
     derivation_index: Option<i32>,
 ) -> Result<String, ApiError> {
+    // Allocate the derivation index atomically.  `MAX(...) + 1` is computed
+    // inside the INSERT while holding a row lock on the chain's existing rows,
+    // so two concurrent requests cannot observe the same value.  A unique
+    // constraint on (chain, derivation_index) backs this up.
     sqlx::query(
         "INSERT INTO deposit_addresses (id, user_id, chain, address, muxed_id, derivation_index)
-         VALUES ($1, $2, $3, $4, $5, $6)
+         SELECT $1, $2, $3, $4, $5,
+                COALESCE($6, (SELECT COALESCE(MAX(derivation_index) + 1, 0)
+                              FROM deposit_addresses
+                              WHERE chain = $3))
+         WHERE NOT EXISTS (
+             SELECT 1 FROM deposit_addresses WHERE user_id = $2 AND chain = $3
+         )
          ON CONFLICT (user_id, chain) DO NOTHING",
     )
     .bind(Uuid::new_v4())
@@ -357,29 +344,21 @@ mod tests {
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // upper 8 bytes
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, // lower 8 bytes → muxed_id
         ]);
-        let bytes = uuid.as_bytes();
-        let muxed_id = u64::from_be_bytes([
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ]);
-        assert_eq!(muxed_id, 0xAABBCCDDEEFF1122u64);
+        assert_eq!(
+            engipay_core::stellar::muxed_id_from_uuid(uuid),
+            0xAABBCCDDEEFF1122u64
+        );
     }
 
     #[test]
     fn different_uuids_produce_different_muxed_ids() {
-        let make_muxed_id = |uuid: Uuid| {
-            let bytes = uuid.as_bytes();
-            u64::from_be_bytes([
-                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                bytes[15],
-            ])
-        };
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
-        // UUIDs v4 are random; the lower 64 bits will virtually always differ.
         assert_ne!(a, b);
-        // With overwhelmingly high probability these differ too.
-        // If this is flaky, replace with two deterministic UUIDs.
-        let _ = (make_muxed_id(a), make_muxed_id(b)); // just ensure it compiles/runs
+        assert_ne!(
+            engipay_core::stellar::muxed_id_from_uuid(a),
+            engipay_core::stellar::muxed_id_from_uuid(b)
+        );
     }
 
     // ── DepositChain deserialization ─────────────────────────────────────────
@@ -860,17 +839,7 @@ mod tests {
         assert_eq!(base, custody, "base account must match custody account");
 
         // Derive the expected muxed_id the same way the handler does.
-        let uuid_bytes = user_id.as_bytes();
-        let expected_muxed_id = u64::from_be_bytes([
-            uuid_bytes[8],
-            uuid_bytes[9],
-            uuid_bytes[10],
-            uuid_bytes[11],
-            uuid_bytes[12],
-            uuid_bytes[13],
-            uuid_bytes[14],
-            uuid_bytes[15],
-        ]);
+        let expected_muxed_id = engipay_core::stellar::muxed_id_from_uuid(user_id);
         assert_eq!(
             id, expected_muxed_id,
             "muxed ID must match lower 64 bits of user UUID"

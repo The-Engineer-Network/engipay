@@ -89,9 +89,21 @@ pub async fn create_withdrawal(
         return Err(ApiError::from(LedgerError::InvalidDestination));
     }
 
+    // Price the withdrawal with a live fee from the chain service. When the
+    // client is not configured we fall back to the caller-supplied estimate;
+    // when the chain service is unreachable we surface a clear 503 instead of
+    // hanging or silently using a stale fee.
+    let estimated_network_fee = match state.chain_client.as_ref() {
+        Some(client) => client
+            .estimate_fee(&payload.destination)
+            .await
+            .map_err(|_| ApiError::ServiceUnavailable)?,
+        None => payload.estimated_network_fee,
+    };
+
     let required = payload
         .amount
-        .checked_add(payload.estimated_network_fee)
+        .checked_add(estimated_network_fee)
         .ok_or(LedgerError::InvalidAmount)?;
 
     let db = state
@@ -110,7 +122,7 @@ pub async fn create_withdrawal(
     .bind(withdrawal_id)
     .bind(payload.user_id)
     .bind(payload.amount)
-    .bind(payload.estimated_network_fee)
+    .bind(estimated_network_fee)
     .bind(&payload.destination)
     .bind(&hold_ref)
     .execute(db)
@@ -123,7 +135,7 @@ pub async fn create_withdrawal(
             id: withdrawal_id,
             user_id: payload.user_id,
             amount: payload.amount,
-            estimated_network_fee: payload.estimated_network_fee,
+            estimated_network_fee,
             status: "pending".to_owned(),
         }),
     ))
@@ -154,6 +166,7 @@ mod tests {
     ) -> AppState {
         AppState {
             database: None,
+            chain_client: None,
             config: Config {
                 stellar_custody_account: stellar.map(str::to_owned),
                 base_custody_address: base.map(str::to_owned),

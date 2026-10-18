@@ -48,7 +48,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use engipay_core::Chain;
-use engipay_core::stellar::muxed_deposit_address;
+use engipay_core::stellar::derive_deposit_address;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -147,9 +147,7 @@ fn derive_stellar(
         )
     })?;
 
-    let muxed_id = muxed_id_from_uuid(user_id);
-
-    let address = muxed_deposit_address(&custody, muxed_id).map_err(|e| {
+    let (address, muxed_id) = derive_deposit_address(&custody, user_id).map_err(|e| {
         WalletError::Unavailable(format!("could not build muxed deposit address: {e}"))
     })?;
 
@@ -191,23 +189,6 @@ fn derive_bitcoin(custody: Option<String>) -> Result<CreateWalletResponse, Walle
     })
 }
 
-// ─── Derivation helpers ───────────────────────────────────────────────────────
-
-/// Extracts the lower 64 bits of a UUID as a big-endian `u64`.
-///
-/// Bytes 8–15 of a UUID v4 are random (with version/variant bits in the most
-/// significant nibbles of bytes 8 and 6). Taking the lower 8 bytes gives a
-/// stable, unique-enough 64-bit ID in the space of realistic EngiPay user
-/// counts. This matches the derivation used in both the API service's
-/// `provision_stellar` and the chain service's `AccountResolver`, ensuring
-/// that deposit events are always attributed to the correct user.
-pub fn muxed_id_from_uuid(user_id: Uuid) -> u64 {
-    let bytes = user_id.as_bytes();
-    u64::from_be_bytes([
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-    ])
-}
-
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -215,6 +196,7 @@ pub fn muxed_id_from_uuid(user_id: Uuid) -> u64 {
 mod tests {
     use super::*;
     use engipay_core::stellar::StellarAddress;
+    use engipay_core::stellar::muxed_id_from_uuid;
     use engipay_core::stellar::parse_address;
     use stellar_strkey::ed25519;
 
@@ -362,14 +344,17 @@ mod tests {
 
     #[test]
     fn stellar_muxed_id_matches_api_service_derivation() {
-        // Verify the derivation formula is identical to the API service's
-        // provision_stellar: lower 8 bytes of UUID, big-endian.
+        // Both services now share `engipay_core::stellar::derive_deposit_address`,
+        // so the chain service's address must equal the core derivation exactly.
+        let custody = custody_account(6);
         let user_id = known_uuid();
-        let bytes = user_id.as_bytes();
-        let expected_muxed_id = u64::from_be_bytes([
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ]);
-        assert_eq!(muxed_id_from_uuid(user_id), expected_muxed_id);
+
+        let resp = derive_stellar(user_id, Some(custody.clone())).expect("derivation must succeed");
+        let (expected_address, expected_muxed_id) =
+            derive_deposit_address(&custody, user_id).expect("core derivation must succeed");
+
+        assert_eq!(resp.address, expected_address);
+        assert_eq!(resp.muxed_id, Some(expected_muxed_id));
     }
 
     // ── Base address derivation ───────────────────────────────────────────────

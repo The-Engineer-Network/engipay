@@ -9,6 +9,7 @@
 //! to the right person without relying on the sender remembering a memo.
 
 use stellar_strkey::{Strkey, ed25519};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StellarAddress {
@@ -74,6 +75,29 @@ pub fn muxed_deposit_address(base_account: &str, id: u64) -> Result<String, Stel
             .to_string()
             .as_str(),
     ))
+}
+
+/// The muxed id for a user: the lower 8 bytes of their UUID, big-endian.
+///
+/// This is the single definition of how a user maps onto a muxed account id.
+/// Both the deposit route and the wallet-creation route call
+/// [`derive_deposit_address`], so the rule cannot drift between them.
+pub fn muxed_id_from_uuid(user_id: Uuid) -> u64 {
+    let bytes = user_id.as_bytes();
+    u64::from_be_bytes([
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+    ])
+}
+
+/// Derives the per-user deposit address for a custody account.
+///
+/// The custody account must be a plain `G...` account; the result is the
+/// `M...` address that credits deposits to `user_id`.
+pub fn derive_deposit_address(
+    custody_account: &str,
+    user_id: Uuid,
+) -> Result<String, StellarAddressError> {
+    muxed_deposit_address(custody_account, muxed_id_from_uuid(user_id))
 }
 
 /// stellar-strkey encodes into fixed-size, allocation-free strings; the rest of
@@ -193,6 +217,60 @@ mod tests {
         let deposit = muxed_deposit_address(&custody, 1).unwrap();
         assert_eq!(
             muxed_deposit_address(&deposit, 2),
+            Err(StellarAddressError::NotAnAccount)
+        );
+    }
+
+    #[test]
+    fn muxed_id_uses_the_lower_eight_uuid_bytes_big_endian() {
+        let user = Uuid::from_bytes([
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
+        ]);
+        assert_eq!(muxed_id_from_uuid(user), 0x0809_0a0b_0c0d_0e0f);
+    }
+
+    #[test]
+    fn deposit_address_is_deterministic_for_a_user() {
+        let custody = account(9);
+        let user = Uuid::from_u128(0x1234_5678_9abc_def0_1122_3344_5566_7788);
+        let first = derive_deposit_address(&custody, user).unwrap();
+        let second = derive_deposit_address(&custody, user).unwrap();
+        assert_eq!(first, second);
+        assert!(first.starts_with('M'));
+        assert_eq!(
+            parse_address(&first),
+            Ok(StellarAddress::Muxed {
+                base: custody.clone(),
+                id: muxed_id_from_uuid(user),
+            })
+        );
+    }
+
+    #[test]
+    fn deposit_address_matches_the_muxed_encoding() {
+        let custody = account(9);
+        let user = Uuid::from_u128(0xdead_beef_cafe_f00d_0123_4567_89ab_cdef);
+        assert_eq!(
+            derive_deposit_address(&custody, user).unwrap(),
+            muxed_deposit_address(&custody, muxed_id_from_uuid(user)).unwrap()
+        );
+    }
+
+    #[test]
+    fn different_users_get_different_deposit_addresses_from_uuid() {
+        let custody = account(9);
+        let a = derive_deposit_address(&custody, Uuid::from_u128(1)).unwrap();
+        let b = derive_deposit_address(&custody, Uuid::from_u128(2)).unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn deposit_address_refuses_muxed_custody() {
+        let custody = account(9);
+        let deposit = muxed_deposit_address(&custody, 1).unwrap();
+        assert_eq!(
+            derive_deposit_address(&deposit, Uuid::from_u128(1)),
             Err(StellarAddressError::NotAnAccount)
         );
     }
