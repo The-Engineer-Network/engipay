@@ -30,13 +30,11 @@ impl From<LimitError> for ApiError {
     }
 }
 
-/// Tier 0's $500/day figure is the one this issue specifies explicitly;
-/// higher tiers scale by KYC level as a placeholder until product defines
-/// their own figures.
-fn tier_daily_limit(tier: i32) -> Money {
-    const TIER_0_LIMIT_MINOR: i128 = 500 * 10_000_000; // USDC, 7 decimals.
+/// Calculates tier's daily limit based on tier 0's limit and tier scaling.
+/// Higher tiers scale by (tier + 1) to provide increasing limits for KYC levels.
+pub fn tier_daily_limit(tier: i32, tier_0_limit_minor: i128) -> Money {
     let multiplier = i128::from(tier.max(0)).saturating_add(1);
-    Money::from_minor(Asset::Usdc, TIER_0_LIMIT_MINOR.saturating_mul(multiplier))
+    Money::from_minor(Asset::Usdc, tier_0_limit_minor.saturating_mul(multiplier))
 }
 
 /// Sum of `user_id`'s outgoing transfers in the reference asset (USDC) over
@@ -75,6 +73,7 @@ pub async fn calculate_24h_volume(pool: &PgPool, user_id: UserId) -> Result<Mone
 /// Asserts that `user_id`'s rolling 24h volume plus `amount` stays within
 /// their tier's daily limit, before a withdrawal or transfer is allowed to
 /// proceed. `tier` is the caller's current KYC tier (`user_profiles.tier`).
+/// `tier_0_limit_minor` is the base daily limit for tier 0 (from configuration).
 ///
 /// Returns [`LimitError::Exceeded`] (mapped to `ApiError::LimitExceeded`,
 /// HTTP 403) detailing the current usage and the maximum allowance when the
@@ -84,9 +83,10 @@ pub async fn check_velocity_limits(
     user_id: UserId,
     tier: i32,
     amount: Money,
+    tier_0_limit_minor: i128,
 ) -> Result<(), LimitError> {
     let current = calculate_24h_volume(pool, user_id).await?;
-    let limit = tier_daily_limit(tier);
+    let limit = tier_daily_limit(tier, tier_0_limit_minor);
 
     if current.minor.saturating_add(amount.minor) > limit.minor {
         return Err(LimitError::Exceeded {
@@ -107,15 +107,17 @@ mod tests {
 
     #[test]
     fn tier_0_daily_limit_is_500_usdc() {
+        let tier_0_limit = 500 * 10_000_000;
         assert_eq!(
-            tier_daily_limit(0),
-            Money::from_minor(Asset::Usdc, 500 * 10_000_000)
+            tier_daily_limit(0, tier_0_limit),
+            Money::from_minor(Asset::Usdc, tier_0_limit)
         );
     }
 
     #[test]
     fn higher_tiers_get_a_larger_limit() {
-        assert!(tier_daily_limit(1).minor > tier_daily_limit(0).minor);
+        let tier_0_limit = 500 * 10_000_000;
+        assert!(tier_daily_limit(1, tier_0_limit).minor > tier_daily_limit(0, tier_0_limit).minor);
     }
 
     /// `check_velocity_limits` itself needs a real pool (it calls
@@ -125,7 +127,7 @@ mod tests {
     #[test]
     fn a_request_that_would_exceed_the_tier_limit_is_rejected() {
         let tier = 0;
-        let limit = tier_daily_limit(tier);
+        let limit = tier_daily_limit(tier, 500 * 10_000_000);
         let current = Money::from_minor(Asset::Usdc, limit.minor - 10);
         let requested = Money::from_minor(Asset::Usdc, 20);
 
@@ -144,7 +146,7 @@ mod tests {
     #[test]
     fn a_request_within_the_remaining_allowance_is_not_rejected() {
         let tier = 0;
-        let limit = tier_daily_limit(tier);
+        let limit = tier_daily_limit(tier, 500 * 10_000_000);
         let current = Money::from_minor(Asset::Usdc, limit.minor - 100);
         let requested = Money::from_minor(Asset::Usdc, 20);
 
@@ -169,15 +171,16 @@ mod tests {
             .await
             .unwrap();
 
+        let tier_0_limit_minor = 500 * 10_000_000;
         let volume = calculate_24h_volume(&pool, user).await.unwrap();
         assert_eq!(volume, Money::zero(Asset::Usdc));
 
-        let over_limit = Money::from_minor(Asset::Usdc, tier_daily_limit(0).minor + 1);
-        let result = check_velocity_limits(&pool, user, 0, over_limit).await;
+        let over_limit = Money::from_minor(Asset::Usdc, tier_daily_limit(0, tier_0_limit_minor).minor + 1);
+        let result = check_velocity_limits(&pool, user, 0, over_limit, tier_0_limit_minor).await;
         assert!(matches!(result, Err(LimitError::Exceeded { .. })));
 
         let within_limit = Money::from_minor(Asset::Usdc, 100);
-        let result = check_velocity_limits(&pool, user, 0, within_limit).await;
+        let result = check_velocity_limits(&pool, user, 0, within_limit, tier_0_limit_minor).await;
         assert!(result.is_ok());
     }
 }

@@ -14,10 +14,15 @@ pub enum ApiError {
     Unauthorized(String),
     #[error("not found")]
     NotFound,
+    #[error("{0}")]
+    Conflict(String),
     #[error("the database is not available")]
     DatabaseUnavailable,
     #[error("{0}")]
     LimitExceeded(String),
+    /// A feature is not available yet (for example, pricing is not configured).
+    #[error("{0}")]
+    Unavailable(String),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -56,10 +61,12 @@ impl ApiError {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             ApiError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            ApiError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             ApiError::DatabaseUnavailable => {
                 (StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
             }
             ApiError::LimitExceeded(_) => (StatusCode::FORBIDDEN, "limit_exceeded"),
+            ApiError::Unavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }

@@ -36,6 +36,10 @@ npm test
 # Build production bundle
 npm run build
 
+# Browser smoke tests against the production build (run after `npm run build`)
+npx playwright install chromium
+npm run test:e2e
+
 # Run dependency audit
 npm audit --audit-level=high
 ```

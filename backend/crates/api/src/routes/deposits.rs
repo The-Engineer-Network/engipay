@@ -314,6 +314,7 @@ mod tests {
 
     use super::{DepositChain, build_qr_uri};
     use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
     use crate::{AppState, router};
 
     // ── QR URI unit tests ────────────────────────────────────────────────────
@@ -417,6 +418,7 @@ mod tests {
             AppState {
                 database: None,
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )
@@ -531,6 +533,7 @@ mod tests {
             AppState {
                 database: Some(pool),
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )
@@ -543,6 +546,7 @@ mod tests {
             AppState {
                 database: Some(pool),
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )
@@ -555,6 +559,7 @@ mod tests {
             AppState {
                 database: Some(pool),
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )

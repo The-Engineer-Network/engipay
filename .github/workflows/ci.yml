@@ -45,6 +45,14 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
 
+      - name: Install Chromium for browser tests
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser smoke tests (production build)
+        run: npm run test:e2e
+        env:
+          CI: "true"
+
       - name: Dependency audit
         run: npm audit --audit-level=high
 
