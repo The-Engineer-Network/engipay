@@ -417,6 +417,7 @@ mod tests {
             AppState {
                 database: None,
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )
@@ -531,6 +532,7 @@ mod tests {
             AppState {
                 database: Some(pool),
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )
@@ -543,6 +545,7 @@ mod tests {
             AppState {
                 database: Some(pool),
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )
@@ -555,6 +558,7 @@ mod tests {
             AppState {
                 database: Some(pool),
                 config: config.clone(),
+            rate_limiter: RateLimiter::new(),
             },
             &config,
         )

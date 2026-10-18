@@ -5,6 +5,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use engipay_api::{AppState, config::Config, router};
+use engipay_api::middleware::rate_limit::RateLimiter;
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -15,6 +16,7 @@ fn app() -> axum::Router {
         AppState {
             database: None,
             config: config.clone(),
+            rate_limiter: RateLimiter::new(),
         },
         &config,
     )
