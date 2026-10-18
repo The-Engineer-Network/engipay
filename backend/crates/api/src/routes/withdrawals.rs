@@ -1,9 +1,9 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -11,6 +11,8 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::{ApiError, LedgerError},
+    services::cooling_off,
+    services::withdrawal_review,
 };
 
 pub fn router() -> Router<AppState> {
@@ -95,18 +97,40 @@ pub async fn create_withdrawal(
         .checked_add(payload.estimated_network_fee)
         .ok_or(LedgerError::InvalidAmount)?;
 
-    let db = state
+    let pool = state
         .database
-        .as_ref()
+        .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
+
+    // Check if withdrawal destination is in cooling-off period
+    let cooling_off_decision =
+        cooling_off::check_address_cooling_off(&pool, payload.user_id, &payload.destination)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("cooling off check failed: {}", e)))?;
+
+    // Check if withdrawal requires manual review
+    let review_config = withdrawal_review::ReviewConfig::from_env()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+    let review_decision = withdrawal_review::check_withdrawal(
+        engipay_core::Money::from_minor(engipay_core::Asset::Usdc, i128::from(payload.amount)),
+        &review_config,
+    );
+
+    // Map both checks onto a status the `withdrawals` table accepts: manual
+    // review wins, then a cooling-off hold (which must record its deadline),
+    // otherwise the row is ready for the broadcast worker.
+    let (status, cooling_off_until) = match (&cooling_off_decision, &review_decision) {
+        (_, rd) if rd.requires_review() => (rd.status().to_owned(), None),
+        (cooling_off::CoolingOff::Hold { until }, _) => ("cooling_off".to_owned(), Some(*until)),
+        _ => ("pending_broadcast".to_owned(), None),
+    };
 
     let withdrawal_id = Uuid::new_v4();
     let hold_ref = withdrawal_hold_reference(withdrawal_id);
 
     // Store the withdrawal with its hold reference
     sqlx::query(
-        "INSERT INTO withdrawals (id, user_id, amount, estimated_network_fee, destination, hold_reference, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'pending')"
+        "INSERT INTO withdrawals (id, user_id, amount, estimated_network_fee, destination, hold_reference, status, cooling_off_until)          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
     )
     .bind(withdrawal_id)
     .bind(payload.user_id)
@@ -114,7 +138,9 @@ pub async fn create_withdrawal(
     .bind(payload.estimated_network_fee)
     .bind(&payload.destination)
     .bind(&hold_ref)
-    .execute(db)
+    .bind(&status)
+    .bind(cooling_off_until)
+    .execute(&pool)
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to create withdrawal: {}", e)))?;
 
@@ -125,7 +151,7 @@ pub async fn create_withdrawal(
             user_id: payload.user_id,
             amount: payload.amount,
             estimated_network_fee: payload.estimated_network_fee,
-            status: "pending".to_owned(),
+            status,
         }),
     ))
 }
@@ -134,7 +160,10 @@ pub async fn get_withdrawal(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<axum::response::Response, ApiError> {
-    let _db = state.database.as_ref().ok_or(ApiError::DatabaseUnavailable)?;
+    let _db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
     // TODO: query the database for the withdrawal record once the postgres
     // ledger layer exposes get_withdrawal.
     let _ = id;

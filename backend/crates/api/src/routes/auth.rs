@@ -14,9 +14,9 @@ mod user;
 pub use user::AuthUser;
 
 use crate::AppState;
+use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::post;
-use axum::Router;
 
 pub fn routes() -> Router<AppState> {
     Router::new()

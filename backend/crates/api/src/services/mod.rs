@@ -6,5 +6,6 @@ pub mod buy;
 pub mod cooling_off;
 pub mod limits;
 pub mod payment_requests;
+pub mod recipient;
 pub mod stellar_muxed;
 pub mod withdrawal_review;

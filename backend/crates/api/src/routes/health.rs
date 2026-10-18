@@ -34,10 +34,7 @@ struct ReadinessProbe {
 /// Liveness probe: indicates if the process is alive.
 /// Returns 200 if the application is running, regardless of database status.
 async fn liveness() -> (StatusCode, Json<LivenessProbe>) {
-    (
-        StatusCode::OK,
-        Json(LivenessProbe { status: "alive" }),
-    )
+    (StatusCode::OK, Json(LivenessProbe { status: "alive" }))
 }
 
 /// Readiness probe: indicates if the application is ready to serve traffic.
@@ -62,7 +59,10 @@ async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<Readiness
 
     (
         status,
-        Json(ReadinessProbe { status: "ready", database }),
+        Json(ReadinessProbe {
+            status: "ready",
+            database,
+        }),
     )
 }
 

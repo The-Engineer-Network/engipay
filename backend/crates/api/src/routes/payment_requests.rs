@@ -20,7 +20,7 @@ pub struct PaymentRequestResponse {
 }
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/payment-requests/:id", get(get_payment_request))
+    Router::new().route("/payment-requests/{id}", get(get_payment_request))
 }
 
 /// Get a payment request by ID. No authentication required so external payers
@@ -36,7 +36,7 @@ async fn get_payment_request(
 
     let row = sqlx::query(
         r#"
-        SELECT id, recipient_tag, requested_amount, asset, status, expires_at, settled_at
+        SELECT id, recipient_tag, requested_amount::text AS requested_amount, asset, status, expires_at, settled_at
         FROM payment_requests
         WHERE id = $1
         "#,
@@ -51,7 +51,13 @@ async fn get_payment_request(
 
     let row_id: Uuid = row.try_get("id").map_err(db_err)?;
     let recipient_tag: Option<String> = row.try_get("recipient_tag").map_err(db_err)?;
-    let requested_amount: i128 = row.try_get("requested_amount").map_err(db_err)?;
+    // NUMERIC(78, 0) has no direct i128 mapping in sqlx, so it is read as text.
+    let requested_amount: i128 = row
+        .try_get::<Option<String>, _>("requested_amount")
+        .map_err(db_err)?
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("payment request has no amount")))?
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid requested_amount: {e}")))?;
     let asset: String = row.try_get("asset").map_err(db_err)?;
     let row_status: String = row.try_get("status").map_err(db_err)?;
     let expires_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
