@@ -9,6 +9,11 @@ import { cn } from "@/lib/utils"
 
 const HIDDEN_KEY = "engipay-hide-balance"
 
+interface BalanceHeroProps {
+  balances?: import("@/types/dashboard").Balance[]
+  isLoading?: boolean
+}
+
 /**
  * The first thing on the home screen: what you hold, and the two things people
  * most often want to do with it.
@@ -17,8 +22,10 @@ const HIDDEN_KEY = "engipay-hide-balance"
  * price feed we have not wired yet, and an invented number on a payments app
  * is worse than no number.
  */
-export function BalanceHero() {
-  const { balances, isLoadingBalances, walletAddress } = useWallet()
+export function BalanceHero({ balances: propBalances, isLoading: propIsLoading }: BalanceHeroProps = {}) {
+  const { balances: walletBalances, isLoadingBalances: walletIsLoading, walletAddress } = useWallet()
+  const balances = propBalances ?? walletBalances
+  const isLoadingBalances = propIsLoading ?? walletIsLoading
   const [hidden, setHidden] = useState(false)
   const [copied, setCopied] = useState(false)
 
