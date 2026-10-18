@@ -314,6 +314,7 @@ mod tests {
 
     use super::{DepositChain, build_qr_uri};
     use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
     use crate::{AppState, router};
 
     // ── QR URI unit tests ────────────────────────────────────────────────────

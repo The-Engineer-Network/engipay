@@ -89,7 +89,8 @@ pub async fn create_withdrawal(
         return Err(ApiError::from(LedgerError::InvalidDestination));
     }
 
-    let required = payload
+    // Overflow guard only: the balance check that uses this sum is not wired in yet.
+    payload
         .amount
         .checked_add(payload.estimated_network_fee)
         .ok_or(LedgerError::InvalidAmount)?;
@@ -132,7 +133,7 @@ pub async fn create_withdrawal(
 pub async fn get_withdrawal(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let _db = state.database.as_ref().ok_or(ApiError::DatabaseUnavailable)?;
     // TODO: query the database for the withdrawal record once the postgres
     // ledger layer exposes get_withdrawal.
@@ -144,6 +145,7 @@ pub async fn get_withdrawal(
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
 
     /// Builds an [`AppState`] with the given custody addresses pre-configured,
     /// mirroring the real production configuration.
@@ -160,6 +162,7 @@ mod tests {
                 bitcoin_custody_address: bitcoin.map(str::to_owned),
                 ..Config::for_tests()
             },
+            rate_limiter: RateLimiter::new(),
         }
     }
 

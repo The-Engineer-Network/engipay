@@ -32,7 +32,7 @@ impl From<LimitError> for ApiError {
 
 /// Calculates tier's daily limit based on tier 0's limit and tier scaling.
 /// Higher tiers scale by (tier + 1) to provide increasing limits for KYC levels.
-fn tier_daily_limit(tier: i32, tier_0_limit_minor: i128) -> Money {
+pub fn tier_daily_limit(tier: i32, tier_0_limit_minor: i128) -> Money {
     let multiplier = i128::from(tier.max(0)).saturating_add(1);
     Money::from_minor(Asset::Usdc, tier_0_limit_minor.saturating_mul(multiplier))
 }
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn a_request_that_would_exceed_the_tier_limit_is_rejected() {
         let tier = 0;
-        let limit = tier_daily_limit(tier);
+        let limit = tier_daily_limit(tier, 500 * 10_000_000);
         let current = Money::from_minor(Asset::Usdc, limit.minor - 10);
         let requested = Money::from_minor(Asset::Usdc, 20);
 
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn a_request_within_the_remaining_allowance_is_not_rejected() {
         let tier = 0;
-        let limit = tier_daily_limit(tier);
+        let limit = tier_daily_limit(tier, 500 * 10_000_000);
         let current = Money::from_minor(Asset::Usdc, limit.minor - 100);
         let requested = Money::from_minor(Asset::Usdc, 20);
 

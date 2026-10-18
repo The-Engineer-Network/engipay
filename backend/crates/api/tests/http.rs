@@ -42,6 +42,15 @@ async fn health_reports_ok_without_a_database() {
 }
 
 #[tokio::test]
+async fn me_requires_a_bearer_token() {
+    let response = app()
+        .oneshot(Request::builder().uri("/v1/me").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn lists_exactly_the_supported_assets() {
     let (status, body) = get_json("/v1/assets").await;
     assert_eq!(status, StatusCode::OK);
