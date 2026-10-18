@@ -1,5 +1,6 @@
 "use client"
 
+import { useState, useMemo } from "react"
 import Link from "next/link"
 import {
   ArrowUpRight,
@@ -8,11 +9,24 @@ import {
   ArrowLeftRight,
   Receipt,
   ChevronRight,
+  ShieldCheck,
+  Wallet,
 } from "lucide-react"
 import { BalanceHero } from "@/components/app/BalanceHero"
 import { AssetList } from "@/components/app/AssetList"
 import { Reveal } from "@/components/marketing/Reveal"
 import { useWallet } from "@/contexts/WalletContext"
+import { useEngiPayBalances } from "@/hooks/use-engipay-balances"
+import { useEngiPayTransactions } from "@/hooks/use-engipay-transactions"
+import type { Balance } from "@/types/dashboard"
+import { cn } from "@/lib/utils"
+
+const ASSET_METADATA: Record<string, { name: string; icon: string }> = {
+  USDC: { name: "USD Coin", icon: "💵" },
+  ETH: { name: "Ether", icon: "🔷" },
+  XLM: { name: "Stellar Lumens", icon: "✨" },
+  BTC: { name: "Bitcoin", icon: "₿" },
+}
 
 /**
  * The four things people do between funding and cashing out. Adding money and
@@ -45,13 +59,77 @@ const ACTIONS = [
   },
 ] as const
 
+type BalanceSource = "custodial" | "wallet"
+
 export default function HomePage() {
-  const { balances, isLoadingBalances } = useWallet()
+  const { balances: walletBalances, isLoadingBalances: isLoadingWallet } = useWallet()
+  const { balances: engipayBalances, isLoading: isLoadingEngiPay } = useEngiPayBalances()
+  const { transactions, isLoading: isLoadingTx } = useEngiPayTransactions({ maxItems: 5 })
+
+  // Check if user has an active session token for custodial balance
+  const hasToken =
+    typeof window !== "undefined" ? Boolean(localStorage.getItem("engipay-token")) : false
+
+  const [source, setSource] = useState<BalanceSource>(hasToken ? "custodial" : "wallet")
+
+  const custodialDashboardBalances = useMemo<Balance[]>(() => {
+    return engipayBalances.map((b) => {
+      const meta = ASSET_METADATA[b.asset] ?? { name: b.asset, icon: "🪙" }
+      return {
+        symbol: b.asset,
+        name: meta.name,
+        balance: b.available,
+        value: "$0.00",
+        change: "+0.0%",
+        icon: meta.icon,
+        trend: "stable",
+        volume: "EngiPay Custody",
+        held: b.held,
+      } as Balance & { held?: string }
+    })
+  }, [engipayBalances])
+
+  const activeBalances = source === "custodial" && hasToken ? custodialDashboardBalances : walletBalances
+  const activeIsLoading = source === "custodial" && hasToken ? isLoadingEngiPay : isLoadingWallet
 
   return (
     <div className="mx-auto max-w-3xl space-y-8">
+      {/* Source Switcher if authenticated */}
+      {hasToken && (
+        <div className="flex items-center justify-center">
+          <div className="inline-flex rounded-full border border-border bg-card/60 p-1 shadow-sm backdrop-blur">
+            <button
+              type="button"
+              onClick={() => setSource("custodial")}
+              className={cn(
+                "flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium transition-colors",
+                source === "custodial"
+                  ? "bg-primary text-primary-foreground shadow"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              EngiPay Account
+            </button>
+            <button
+              type="button"
+              onClick={() => setSource("wallet")}
+              className={cn(
+                "flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium transition-colors",
+                source === "wallet"
+                  ? "bg-primary text-primary-foreground shadow"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Wallet className="h-3.5 w-3.5" />
+              External Wallet
+            </button>
+          </div>
+        </div>
+      )}
+
       <Reveal variant="scale">
-        <BalanceHero />
+        <BalanceHero balances={activeBalances} isLoading={activeIsLoading} />
       </Reveal>
 
       <Reveal delay={60}>
@@ -82,10 +160,17 @@ export default function HomePage() {
 
       <Reveal delay={120}>
         <section aria-labelledby="assets-heading">
-          <h2 id="assets-heading" className="mb-4 text-base font-semibold tracking-tight">
-            Your assets
-          </h2>
-          <AssetList balances={balances} isLoading={isLoadingBalances} />
+          <div className="mb-4 flex items-center justify-between">
+            <h2 id="assets-heading" className="text-base font-semibold tracking-tight">
+              {source === "custodial" && hasToken ? "EngiPay Account Assets" : "Your wallet assets"}
+            </h2>
+            {source === "custodial" && (
+              <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium text-primary">
+                Custodial (Instant Transfers)
+              </span>
+            )}
+          </div>
+          <AssetList balances={activeBalances} isLoading={activeIsLoading} />
         </section>
       </Reveal>
 
@@ -104,15 +189,76 @@ export default function HomePage() {
             </Link>
           </div>
 
-          <div className="glass-panel flex flex-col items-center gap-3 p-10 text-center">
-            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <Receipt className="h-5 w-5" aria-hidden="true" />
-            </span>
-            <p className="text-sm font-medium">No activity yet</p>
-            <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-              Payments, conversions and Naira transfers will appear here as you make them.
-            </p>
-          </div>
+          {isLoadingTx ? (
+            <div className="space-y-2">
+              {[0, 1].map((i) => (
+                <div key={i} className="h-16 animate-pulse rounded-lg border border-border bg-card" />
+              ))}
+            </div>
+          ) : transactions.length > 0 ? (
+            <ul className="space-y-2">
+              {transactions.map((tx) => (
+                <li
+                  key={tx.id}
+                  className="lift-card glass-panel flex items-center justify-between p-4"
+                >
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={cn(
+                        "flex h-9 w-9 items-center justify-center rounded-full text-sm",
+                        tx.direction === "credit"
+                          ? "bg-success/15 text-success"
+                          : "bg-muted text-muted-foreground"
+                      )}
+                    >
+                      {tx.direction === "credit" ? (
+                        <ArrowDownLeft className="h-4 w-4" />
+                      ) : (
+                        <ArrowUpRight className="h-4 w-4" />
+                      )}
+                    </span>
+                    <div>
+                      <span className="block text-sm font-medium capitalize">
+                        {tx.description ?? tx.type}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {new Date(tx.created_at).toLocaleDateString(undefined, {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span
+                      className={cn(
+                        "block font-semibold tabular-nums",
+                        tx.direction === "credit" ? "text-success" : ""
+                      )}
+                    >
+                      {tx.direction === "credit" ? "+" : "-"}
+                      {tx.amount} {tx.asset}
+                    </span>
+                    <span className="block text-[11px] capitalize text-muted-foreground">
+                      {tx.status}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="glass-panel flex flex-col items-center gap-3 p-10 text-center">
+              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <Receipt className="h-5 w-5" aria-hidden="true" />
+              </span>
+              <p className="text-sm font-medium">No activity yet</p>
+              <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
+                Payments, conversions and Naira transfers will appear here as you make them.
+              </p>
+            </div>
+          )}
         </section>
       </Reveal>
     </div>
