@@ -146,7 +146,60 @@ impl PostgresLedgerStore {
         Ok(holds)
     }
 
-    /// Credits a user with money that arrived from outside EngiPay.
+    /// Sum of all user-owned balances (available + held) for every asset.
+    ///
+    /// This is the total that the ledger says EngiPay owes its users. It is
+    /// compared against the on-chain custody balance during reconciliation.
+    ///
+    /// Returns one `(Asset, total)` pair per asset that has at least one user
+    /// posting. Assets with no postings are omitted; callers should treat them
+    /// as zero.
+    pub async fn total_liability_by_asset(&self) -> Result<Vec<(Asset, i128)>, LedgerError> {
+        let rows = sqlx::query(
+            "SELECT asset, SUM(amount)::text AS total \
+             FROM ledger_postings \
+             WHERE owner_kind = 'user' \
+             GROUP BY asset",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let symbol: String = row.get("asset");
+            let total_str: String = row.get("total");
+            let Ok(asset) = symbol.parse::<Asset>() else {
+                continue; // Unknown asset symbol — skip rather than failing the whole check.
+            };
+            let total = total_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            out.push((asset, total));
+        }
+        Ok(out)
+    }
+
+    /// Records the result of one reconciliation run in `reconciliation_runs`.
+    ///
+    /// `asset` is the asset symbol (e.g. `"XLM"`, `"USDC"`).
+    /// `ledger_liability` and `custody_balance` are in the asset's smallest unit.
+    pub async fn record_reconciliation_run(
+        &self,
+        asset: &str,
+        ledger_liability: i128,
+        custody_balance: i128,
+    ) -> Result<(), LedgerError> {
+        sqlx::query(
+            "INSERT INTO reconciliation_runs (asset, ledger_liability, custody_balance) \
+             VALUES ($1, $2::numeric, $3::numeric)",
+        )
+        .bind(asset)
+        .bind(ledger_liability.to_string())
+        .bind(custody_balance.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
     ///
     /// If `reference` was already used with identical parameters, returns
     /// the original [`Receipt`] with `replayed: true` and moves nothing.

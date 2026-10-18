@@ -21,6 +21,7 @@ use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY};
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
 use engipay_chain::stellar::{StellarClient, StellarConfig, StellarNetwork};
+use engipay_chain::workers::reconcile::{ReconcileWorker, DEFAULT_INTERVAL as RECONCILE_INTERVAL};
 use engipay_chain::workers::withdrawal::{
     DEFAULT_POLL_INTERVAL, StellarWithdrawalSender, WithdrawalWorker,
 };
@@ -200,10 +201,36 @@ async fn watch() -> anyhow::Result<()> {
     let mut seen_order: VecDeque<String> = VecDeque::new();
     let mut ticker = tokio::time::interval(poll);
 
+    // Spin up the daily reconciliation worker if we have a database pool.
+    // It runs as a separate task so it never blocks the deposit watcher.
+    let reconcile_shutdown = CancellationToken::new();
+    if let Some(ref p) = pool {
+        let reconcile_interval = env::var("RECONCILE_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(RECONCILE_INTERVAL);
+
+        // Build a fresh StellarClient for the reconciler (StellarClient is not
+        // Clone, and the deposit watcher needs its own to avoid shared state).
+        if let Ok(Some(reconcile_stellar)) = stellar_client() {
+            let worker = ReconcileWorker::new(p.clone(), reconcile_stellar);
+            let token = reconcile_shutdown.clone();
+            tokio::spawn(async move {
+                worker.run(reconcile_interval, token).await;
+            });
+            info!(
+                interval_secs = reconcile_interval.as_secs(),
+                "reconciliation worker started"
+            );
+        }
+    }
+
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 info!("shutting down");
+                reconcile_shutdown.cancel();
                 return Ok(());
             }
             _ = ticker.tick() => {}
