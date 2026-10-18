@@ -1,8 +1,61 @@
+use axum::extract::State;
+use axum::routing::get;
+use axum::{Json, Router};
+use serde::Serialize;
 use thiserror::Error;
 
+use crate::AppState;
+use crate::error::ApiError;
+use crate::routes::auth::AuthUser;
+
+pub fn routes() -> Router<AppState> {
+    Router::new().route("/me", get(get_me))
+}
+
+// ── Request / response types ──────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct UserProfile {
+    /// User's unique identifier
+    pub id: String,
+    /// Account tier (free, pro, enterprise)
+    pub tier: String,
+    /// User's claimed tag (nullable)
+    pub tag: Option<String>,
+    /// Rate limit configuration based on tier
+    pub limits: RateLimits,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RateLimits {
+    /// Requests per minute
+    pub requests_per_minute: u32,
+    /// Concurrent sessions
+    pub concurrent_sessions: u32,
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+async fn get_me(
+    AuthUser { token: _ }: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<UserProfile>, ApiError> {
+    let _db = state.database.as_ref().ok_or(ApiError::DatabaseUnavailable)?;
+
+    // TODO: Extract user_id from token, query database for profile
+    // For now, return placeholder
+    Ok(Json(UserProfile {
+        id: "user-id".to_string(),
+        tier: "free".to_string(),
+        tag: None,
+        limits: RateLimits {
+            requests_per_minute: 60,
+            concurrent_sessions: 1,
+        },
+    }))
+}
+
 /// Reserved system handles a user may never claim as their own tag.
-#[allow(dead_code)] // wired up with PATCH /v1/me; see #111 and #112
-const RESERVED_TAGS: [&str; 5] = ["admin", "engipay", "support", "system", "help"];
 
 #[allow(dead_code)] // wired up with PATCH /v1/me; see #111 and #112
 #[derive(Debug, Error, PartialEq, Eq)]
