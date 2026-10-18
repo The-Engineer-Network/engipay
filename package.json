@@ -17,7 +17,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --no-warnings --test \"lib/**/*.test.ts\""
+    "test": "node --experimental-strip-types --no-warnings --test \"lib/**/*.test.ts\"",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "1.2.2",
@@ -56,6 +57,7 @@
     "wagmi": "^2.19.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/node": "^22.19.7",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.1.0",
