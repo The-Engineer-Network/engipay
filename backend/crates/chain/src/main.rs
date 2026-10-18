@@ -4,6 +4,9 @@
 //!   engipay-chain serve                            internal HTTP API
 //!   engipay-chain stellar-send <to> <amount> <asset>  testnet payment
 //!   engipay-chain withdrawals                       broadcast pending withdrawals (testnet signer)
+//!   engipay-chain dlq list                         list pending uncredited deposits
+//!   engipay-chain dlq reprocess <id>               reprocess one uncredited deposit
+//!   engipay-chain dlq resolve <id> "<note>"        mark one uncredited deposit resolved
 //!
 //! Configuration comes from the environment; see backend/.env.example.
 
@@ -17,7 +20,7 @@ use engipay_chain::deposit_creditor::DepositCreditor;
 use engipay_chain::routes;
 use engipay_chain::routes::estimate_fee::FeeQuotes;
 use engipay_chain::routes::router;
-use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY};
+use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY, cursor_to_ledger};
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
 use engipay_chain::stellar::{StellarClient, StellarConfig, StellarNetwork};
@@ -49,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
         Some("serve") => serve().await,
         Some("stellar-send") => stellar_send(&args[1..]).await,
         Some("withdrawals") => withdrawals().await,
+        Some("dlq") => dlq_command(&args[1..]).await,
         Some(other) => bail!("unknown command {other:?}; see the top of crates/chain/src/main.rs"),
     }
 }
@@ -176,11 +180,15 @@ async fn watch() -> anyhow::Result<()> {
                 // The saved cursor is a TOID; recover the ledger by shifting
                 // the top 32 bits back out. This is a conservative estimate —
                 // we will re-process the same ledger rather than miss it.
-                saved_cursor
-                    .parse::<i64>()
-                    .ok()
-                    .and_then(|toid| u64::try_from(toid >> 32).ok())
-                    .unwrap_or(0)
+                //
+                // If the cursor is unparsable or corrupt, refuse to start.
+                // Falling back to ledger 0 would replay the entire chain and
+                // cause duplicate credits.
+                cursor_to_ledger(&saved_cursor).with_context(|| {
+                    format!(
+                        "stored cursor {saved_cursor:?} is invalid; fix or delete the chain_cursors row"
+                    )
+                })?
             }
             None => stellar.latest_height().await?,
         }
@@ -348,5 +356,82 @@ async fn withdrawals() -> anyhow::Result<()> {
         on_signal.cancel();
     });
     worker.run(DEFAULT_POLL_INTERVAL, shutdown).await;
+    Ok(())
+}
+
+/// Manages the Dead-Letter Queue (uncredited deposits).
+///
+///   engipay-chain dlq list                   List pending deposits
+///   engipay-chain dlq reprocess <id>         Reprocess one deposit
+///   engipay-chain dlq resolve <id> "<note>"  Mark one deposit resolved
+async fn dlq_command(args: &[String]) -> anyhow::Result<()> {
+    let pool = db_pool()
+        .await?
+        .context("set DATABASE_URL to manage the DLQ")?;
+
+    match args.first().map(String::as_str) {
+        Some("list") => dlq_list(&pool).await,
+        Some("reprocess") => {
+            let id = args
+                .get(1)
+                .context("usage: dlq reprocess <id>")?
+                .parse()
+                .context("id must be an integer")?;
+            dlq_reprocess(&pool, id).await
+        }
+        Some("resolve") => {
+            let id = args
+                .get(1)
+                .context("usage: dlq resolve <id> \"<note>\"")?
+                .parse()
+                .context("id must be an integer")?;
+            let note = args.get(2).context("usage: dlq resolve <id> \"<note>\"")?;
+            dlq_resolve(&pool, id, note).await
+        }
+        Some(other) => bail!("unknown dlq subcommand {other:?}; try list, reprocess, or resolve"),
+        None => bail!("usage: dlq <list|reprocess|resolve>"),
+    }
+}
+
+async fn dlq_list(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    use engipay_chain::dlq_commands;
+
+    let rows = dlq_commands::list(pool).await?;
+    if rows.is_empty() {
+        println!("No pending uncredited deposits.");
+        return Ok(());
+    }
+
+    println!("Pending uncredited deposits ({} total):\n", rows.len());
+    for row in &rows {
+        println!("  ID:         {}", row.id);
+        println!("  Created:    {}", row.created_at);
+        println!("  Reason:     {}", row.reason);
+        println!("  Reference:  {}", row.raw_payload["reference"].as_str().unwrap_or("?"));
+        println!("  Address:    {}", row.raw_payload["address"].as_str().unwrap_or("?"));
+        println!("  Amount:     {} (minor units)", row.raw_payload["amount_minor"].as_i64().unwrap_or(0));
+        println!("  Asset:      {}", row.raw_payload["asset"].as_str().unwrap_or("?"));
+        println!();
+    }
+    Ok(())
+}
+
+async fn dlq_reprocess(pool: &sqlx::PgPool, id: i64) -> anyhow::Result<()> {
+    use engipay_chain::deposit_creditor::DepositCreditor;
+    use engipay_chain::dlq_commands;
+
+    info!(id, "reprocessing uncredited deposit");
+    let creditor = DepositCreditor::new(pool.clone());
+    dlq_commands::reprocess(pool, id, &creditor).await?;
+    println!("Uncredited deposit {id} reprocessed successfully.");
+    Ok(())
+}
+
+async fn dlq_resolve(pool: &sqlx::PgPool, id: i64, note: &str) -> anyhow::Result<()> {
+    use engipay_chain::dlq_commands;
+
+    info!(id, note, "marking uncredited deposit as resolved");
+    dlq_commands::resolve(pool, id, note).await?;
+    println!("Uncredited deposit {id} marked as resolved.");
     Ok(())
 }
