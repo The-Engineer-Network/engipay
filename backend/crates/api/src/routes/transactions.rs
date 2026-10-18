@@ -43,6 +43,12 @@ pub struct TransactionsQuery {
     pub cursor: Option<String>,
     pub asset: Option<String>,
     pub r#type: Option<String>,
+    /// Filter by transaction kind (e.g., 'transfer', 'conversion', 'ramp_order')
+    pub kind: Option<String>,
+    /// Filter transactions from this date (RFC 3339 format, e.g., 2026-01-15)
+    pub from_date: Option<String>,
+    /// Filter transactions until this date (RFC 3339 format, e.g., 2026-01-31)
+    pub to_date: Option<String>,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -104,6 +110,18 @@ async fn get_transactions(
         param_count += 1;
         query_with_filters.push_str(&format!(" AND direction = ${}", param_count));
     }
+    if params.kind.is_some() {
+        param_count += 1;
+        query_with_filters.push_str(&format!(" AND direction = ${}", param_count));
+    }
+    if params.from_date.is_some() {
+        param_count += 1;
+        query_with_filters.push_str(&format!(" AND created_at >= ${}::TIMESTAMPTZ", param_count));
+    }
+    if params.to_date.is_some() {
+        param_count += 1;
+        query_with_filters.push_str(&format!(" AND created_at < ${}::TIMESTAMPTZ", param_count));
+    }
 
     if !cursor_created_at.is_empty() {
         param_count += 1;
@@ -138,6 +156,15 @@ async fn get_transactions(
     }
     if let Some(tx_type) = params.r#type {
         query = query.bind(tx_type);
+    }
+    if let Some(kind) = params.kind {
+        query = query.bind(kind);
+    }
+    if let Some(from_date) = params.from_date {
+        query = query.bind(from_date);
+    }
+    if let Some(to_date) = params.to_date {
+        query = query.bind(to_date);
     }
     if !cursor_created_at.is_empty() {
         query = query.bind(&cursor_created_at).bind(&cursor_tx_id);

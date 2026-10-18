@@ -6,6 +6,7 @@ pub mod buy;
 pub mod deposits;
 pub mod health;
 pub mod me;
+pub mod openapi;
 pub mod requests;
 pub mod transactions;
 pub mod transfers;

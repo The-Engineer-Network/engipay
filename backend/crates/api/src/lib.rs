@@ -33,6 +33,7 @@ pub struct AppState {
 pub fn router(state: AppState, config: &Config) -> Router {
     Router::new()
         .merge(routes::health::routes())
+        .merge(routes::openapi::routes())
         .nest("/v1", routes::v1())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -60,6 +61,6 @@ fn cors(config: &Config) -> CorsLayer {
 
     CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods([Method::GET, Method::POST, Method::PATCH])
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
 }
