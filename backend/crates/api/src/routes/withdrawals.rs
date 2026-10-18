@@ -16,7 +16,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/withdrawals", post(create_withdrawal))
-        .route("/withdrawals/:id", get(get_withdrawal))
+        .route("/withdrawals/{id}", get(get_withdrawal))
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,24 +94,33 @@ pub async fn create_withdrawal(
         .checked_add(payload.estimated_network_fee)
         .ok_or(LedgerError::InvalidAmount)?;
 
-    let available = state
+    let db = state
         .database
         .as_ref()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
-    // NOTE: The full hold / on-chain broadcast pipeline is wired up in the
-    // postgres ledger layer. When the database is not configured we return 503
-    // above; the code below is reached only in the real service.
-    let _ = (required, available); // suppress unused-variable warnings until postgres wiring is added
+    let withdrawal_id = Uuid::new_v4();
+    let hold_ref = withdrawal_hold_reference(withdrawal_id);
 
-    // TODO: wire up postgres ledger hold and withdrawal persistence once the
-    // LedgerService trait implementation is available in the postgres module.
-    // For now we return a placeholder so the route compiles and the custody
-    // check is exercised.
+    // Store the withdrawal with its hold reference
+    sqlx::query(
+        "INSERT INTO withdrawals (id, user_id, amount, estimated_network_fee, destination, hold_reference, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending')"
+    )
+    .bind(withdrawal_id)
+    .bind(payload.user_id)
+    .bind(payload.amount)
+    .bind(payload.estimated_network_fee)
+    .bind(&payload.destination)
+    .bind(&hold_ref)
+    .execute(db)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to create withdrawal: {}", e)))?;
+
     Ok((
         StatusCode::CREATED,
         Json(WithdrawalResponse {
-            id: Uuid::new_v4(),
+            id: withdrawal_id,
             user_id: payload.user_id,
             amount: payload.amount,
             estimated_network_fee: payload.estimated_network_fee,

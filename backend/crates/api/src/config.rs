@@ -20,6 +20,9 @@ pub struct Config {
     /// Shared Bitcoin custody address. When unset the Bitcoin deposit-address
     /// endpoint returns 503.
     pub bitcoin_custody_address: Option<String>,
+    /// Daily transaction limit for tier 0 (in USDC minor units, 7 decimals).
+    /// Higher tiers scale by (tier + 1). Default: 500 USDC.
+    pub tier_0_daily_limit_minor: i128,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +42,14 @@ impl Config {
                 reason: format!("expected a whole number, got {value:?}"),
             })?,
             Err(_) => 10,
+        };
+
+        let tier_0_daily_limit_minor = match env::var("TIER_0_DAILY_LIMIT_MINOR") {
+            Ok(value) => value.parse().map_err(|_| ConfigError {
+                name: "TIER_0_DAILY_LIMIT_MINOR",
+                reason: format!("expected a whole number, got {value:?}"),
+            })?,
+            Err(_) => 500 * 10_000_000, // Default: 500 USDC
         };
 
         Ok(Self {
@@ -69,6 +80,7 @@ impl Config {
             bitcoin_custody_address: env::var("BITCOIN_CUSTODY_ADDRESS")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
+            tier_0_daily_limit_minor,
         })
     }
 
@@ -85,6 +97,7 @@ impl Config {
             stellar_custody_account: None,
             base_custody_address: None,
             bitcoin_custody_address: None,
+            tier_0_daily_limit_minor: 500 * 10_000_000,
         }
     }
 }
