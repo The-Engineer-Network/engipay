@@ -161,6 +161,42 @@ impl StellarClient {
             .map_err(|_| ChainError::Unavailable("Horizon returned a bad sequence".to_owned()))
     }
 
+    /// The Stellar assets held by the custody account as `(Asset, stroops)` pairs.
+    ///
+    /// Only XLM and USDC (from Circle's canonical issuer on this network) are
+    /// returned; balances for unknown or untrusted tokens are silently ignored
+    /// because the ledger does not track them.
+    ///
+    /// Amounts are in stroops (10^-7 of the base unit), matching the ledger's
+    /// internal representation for `Asset::Xlm` and `Asset::Usdc` on Stellar.
+    pub async fn custody_balances(&self) -> Result<Vec<(engipay_core::Asset, i128)>, ChainError> {
+        use engipay_core::Asset;
+        let account: Account = self
+            .get(&format!("/accounts/{}", self.config.custody_account))
+            .await?;
+        let mut out = Vec::new();
+        for bal in &account.balances {
+            let stroops = horizon::parse_stroops(&bal.balance).ok_or_else(|| {
+                ChainError::Unavailable(format!(
+                    "Horizon returned unparseable balance {:?}",
+                    bal.balance
+                ))
+            })?;
+            match bal.asset_type.as_str() {
+                "native" => out.push((Asset::Xlm, i128::from(stroops))),
+                "credit_alphanum4" => {
+                    if bal.asset_code.as_deref() == Some("USDC")
+                        && bal.asset_issuer.as_deref() == Some(self.config.network.usdc_issuer())
+                    {
+                        out.push((Asset::Usdc, i128::from(stroops)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
     /// The p90 fee charged per operation in Horizon's last ledger, in stroops,
     /// clamped to [`payment::BASE_FEE`]..=[`payment::MAX_FEE`]. Falls back to
     /// [`payment::BASE_FEE`] if the endpoint is unavailable or returns
