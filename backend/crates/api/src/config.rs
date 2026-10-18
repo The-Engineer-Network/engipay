@@ -23,6 +23,11 @@ pub struct Config {
     /// Daily transaction limit for tier 0 (in USDC minor units, 7 decimals).
     /// Higher tiers scale by (tier + 1). Default: 500 USDC.
     pub tier_0_daily_limit_minor: i128,
+    /// Kobo that buy one whole USDC, for Naira buy quotes (`BUY_KOBO_PER_USDC`).
+    /// Unset means no quote can be made: the rate is never invented.
+    pub buy_kobo_per_usdc: Option<i128>,
+    /// Fee on Naira buys in basis points (`BUY_FEE_BPS`). Unset means no quote.
+    pub buy_fee_bps: Option<u32>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +55,26 @@ impl Config {
                 reason: format!("expected a whole number, got {value:?}"),
             })?,
             Err(_) => 500 * 10_000_000, // Default: 500 USDC
+        };
+
+        let buy_kobo_per_usdc = match env::var("BUY_KOBO_PER_USDC") {
+            Ok(value) if !value.trim().is_empty() => {
+                Some(value.trim().parse().map_err(|_| ConfigError {
+                    name: "BUY_KOBO_PER_USDC",
+                    reason: format!("expected a whole number of kobo, got {value:?}"),
+                })?)
+            }
+            _ => None,
+        };
+
+        let buy_fee_bps = match env::var("BUY_FEE_BPS") {
+            Ok(value) if !value.trim().is_empty() => {
+                Some(value.trim().parse().map_err(|_| ConfigError {
+                    name: "BUY_FEE_BPS",
+                    reason: format!("expected basis points (0-9999), got {value:?}"),
+                })?)
+            }
+            _ => None,
         };
 
         Ok(Self {
@@ -81,6 +106,8 @@ impl Config {
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
             tier_0_daily_limit_minor,
+            buy_kobo_per_usdc,
+            buy_fee_bps,
         })
     }
 
@@ -98,6 +125,8 @@ impl Config {
             base_custody_address: None,
             bitcoin_custody_address: None,
             tier_0_daily_limit_minor: 500 * 10_000_000,
+            buy_kobo_per_usdc: None,
+            buy_fee_bps: None,
         }
     }
 }

@@ -1,12 +1,14 @@
 //! Wallet sign-in.
 //!
-//! `evm.rs` and `stellar.rs` are temporarily out of the build. They were merged
-//! without compiling: they target an older `stellar-xdr` API (`TxV1`,
-//! `MemoNone`, `KeyTypeEd25519`, `Transaction::time_bounds`), misuse
-//! `ed25519-dalek` and `k256`, and use `sqlx::query!` macros, which need a live
-//! database at build time that CI does not provide. The files are kept so the
-//! work is not lost; see issues #99-#105 for the rewrite.
+//! Live: sign-in with an Ethereum wallet (`nonce.rs` issues a single-use nonce,
+//! `siwe.rs` verifies the signed message and issues a session token).
+//!
+//! Not live: `stellar.rs` (SEP-10) and the older `evm.rs` are out of the build.
+//! They target an older `stellar-xdr` API and use `sqlx::query!` macros, which
+//! need a live database at build time that CI does not provide. The files are
+//! kept so the work is not lost; see issues #99-#105 for the rewrite.
 mod nonce;
+mod siwe;
 mod user;
 
 pub use user::AuthUser;
@@ -19,6 +21,7 @@ use axum::Router;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(nonce::routes())
+        .merge(siwe::routes())
         .route("/auth/logout", post(logout))
 }
 

@@ -20,6 +20,9 @@ pub enum ApiError {
     DatabaseUnavailable,
     #[error("{0}")]
     LimitExceeded(String),
+    /// A feature is not available yet (for example, pricing is not configured).
+    #[error("{0}")]
+    Unavailable(String),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -63,6 +66,7 @@ impl ApiError {
                 (StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
             }
             ApiError::LimitExceeded(_) => (StatusCode::FORBIDDEN, "limit_exceeded"),
+            ApiError::Unavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }

@@ -555,6 +555,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
     use crate::{AppState, router};
 
     fn app() -> axum::Router {
