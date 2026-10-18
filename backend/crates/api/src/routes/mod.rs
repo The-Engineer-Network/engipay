@@ -4,6 +4,7 @@ pub mod balances;
 pub mod deposits;
 pub mod health;
 pub mod me;
+pub mod payment_requests;
 pub mod requests;
 pub mod transactions;
 pub mod transfers;
@@ -21,5 +22,6 @@ pub fn v1() -> Router<AppState> {
         .merge(deposits::routes())
         .merge(transactions::routes())
         .merge(requests::routes())
+        .merge(payment_requests::routes())
         .merge(transfers::routes())
 }

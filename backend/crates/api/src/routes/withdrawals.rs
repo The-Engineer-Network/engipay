@@ -11,6 +11,8 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::{ApiError, LedgerError},
+    services::cooling_off,
+    services::withdrawal_review,
 };
 
 pub fn router() -> Router<AppState> {
@@ -94,28 +96,41 @@ pub async fn create_withdrawal(
         .checked_add(payload.estimated_network_fee)
         .ok_or(LedgerError::InvalidAmount)?;
 
-    let available = state
+    let pool = state
         .database
-        .as_ref()
+        .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
-    // NOTE: The full hold / on-chain broadcast pipeline is wired up in the
-    // postgres ledger layer. When the database is not configured we return 503
-    // above; the code below is reached only in the real service.
-    let _ = (required, available); // suppress unused-variable warnings until postgres wiring is added
+    // Check if withdrawal destination is in cooling-off period
+    let cooling_off_decision = cooling_off::check_address_cooling_off(&pool, payload.user_id, &payload.destination)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("cooling off check failed: {}", e)))?;
 
-    // TODO: wire up postgres ledger hold and withdrawal persistence once the
-    // LedgerService trait implementation is available in the postgres module.
-    // For now we return a placeholder so the route compiles and the custody
-    // check is exercised.
+    // Check if withdrawal requires manual review
+    let review_config = withdrawal_review::ReviewConfig::from_env()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+    let review_decision = withdrawal_review::check_withdrawal(
+        engipay_core::Money::from_minor(engipay_core::Asset::Usdc, payload.amount),
+        &review_config,
+    );
+
+    // Determine final withdrawal status based on both checks
+    let status = match (&cooling_off_decision, &review_decision) {
+        (_, rd) if rd.requires_review() => review_decision.status().to_owned(),
+        (cooling_off::CoolingOff::Hold { .. }, _) => "cooling_off".to_owned(),
+        _ => "approved".to_owned(),
+    };
+
+    let withdrawal_id = Uuid::new_v4();
+
     Ok((
         StatusCode::CREATED,
         Json(WithdrawalResponse {
-            id: Uuid::new_v4(),
+            id: withdrawal_id,
             user_id: payload.user_id,
             amount: payload.amount,
             estimated_network_fee: payload.estimated_network_fee,
-            status: "pending".to_owned(),
+            status,
         }),
     ))
 }

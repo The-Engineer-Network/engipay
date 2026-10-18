@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
+use crate::services::recipient::resolve_recipient;
 
 /// A validated request to transfer funds between two EngiPay users.
 ///
@@ -182,9 +183,6 @@ async fn create_transfer(
         .map_err(|_| ApiError::BadRequest("invalid transfer request".to_string()))?;
 
     let sender = auth.user_id(state.config.jwt_secret.as_bytes())?;
-    let recipient = request
-        .recipient_id()
-        .map_err(|_| ApiError::BadRequest("invalid recipient".to_string()))?;
     let money = request
         .money()
         .map_err(|_| ApiError::BadRequest("invalid amount".to_string()))?;
@@ -193,7 +191,35 @@ async fn create_transfer(
         .database
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
-    let ledger = PostgresLedgerStore::new(pool);
+
+    // Resolve recipient by tag (@alice), email, UUID, or wallet address
+    let recipient = resolve_recipient(&pool, request.recipient.trim())
+        .await
+        .map_err(|err| match err {
+            crate::services::recipient::RecipientError::EmptyInput => {
+                ApiError::BadRequest("recipient identifier cannot be empty".to_string())
+            }
+            crate::services::recipient::RecipientError::NotFound => {
+                ApiError::BadRequest("recipient not found".to_string())
+            }
+            crate::services::recipient::RecipientError::Database(msg) => {
+                ApiError::Internal(anyhow::anyhow!("recipient lookup failed: {}", msg))
+            }
+        })?;
+
+    let ledger = PostgresLedgerStore::new(pool.clone());
+
+    // Get recipient tag for receipt display
+    let recipient_tag: Option<String> = sqlx::query_scalar(
+        "SELECT tag FROM user_profiles WHERE user_id = $1 LIMIT 1"
+    )
+    .bind(recipient)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch recipient tag: {}", e)))?
+    .flatten();
+
+    let recipient_tag = recipient_tag.unwrap_or_else(|| recipient.to_string());
 
     // The idempotency reference is the caller-supplied `reference`, so a retry
     // of the same request replays instead of double-spending.
@@ -204,13 +230,16 @@ async fn create_transfer(
 
     Ok((
         StatusCode::CREATED,
-        Json(TransferReceipt::completed(
-            receipt.transaction_id.to_string(),
-            sender.as_uuid().to_string(),
-            &request,
-            money.minor,
-            now_iso8601(),
-        )),
+        Json(TransferReceipt {
+            transaction_id: receipt.transaction_id.to_string(),
+            reference: request.reference.trim().to_string(),
+            sender_tag: sender.as_uuid().to_string(),
+            recipient_tag,
+            asset: request.asset,
+            amount: money.minor.to_string(),
+            created_at: now_iso8601(),
+            status: TransferStatus::Completed,
+        }),
     ))
 }
 
