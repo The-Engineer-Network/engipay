@@ -6,10 +6,15 @@
 
 pub mod confirmations;
 pub mod cursor;
+pub mod sender;
 pub mod utxo;
 
 pub use confirmations::{MIN_BITCOIN_CONFIRMATIONS, is_bitcoin_confirmed};
 pub use cursor::{BITCOIN_CHAIN_ID, BitcoinCursor, BitcoinCursorError};
+pub use sender::{
+    BitcoinNetwork, BitcoinSenderError, BitcoinSigner, BitcoinWithdrawalSender, LocalTestSigner,
+    PreparedTransaction, SenderConfig, Utxo, WithdrawalRequest,
+};
 pub use utxo::{
     ConfirmedTransaction, DetectedUtxo, ScriptPubKey, TxOutput, Txid, UtxoWatchError, UtxoWatcher,
     sats_to_money,
