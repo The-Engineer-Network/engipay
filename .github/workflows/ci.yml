@@ -88,7 +88,7 @@ jobs:
   database:
     name: Ledger guarantees (Postgres)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: backend
@@ -96,6 +96,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
 
       - name: Start Postgres
         run: |
@@ -108,7 +114,10 @@ jobs:
       - name: Database refuses ledger corruption
         run: bash ./scripts/test-db-guarantees.sh
 
-      - name: PostgreSQL ledger operations
-        run: cargo test -p engipay-ledger postgres_queries_settlement_and_sender_locking
+      - name: Database-backed tests
+        # --include-ignored runs the 50+ tests marked #[ignore = "requires DATABASE_URL"].
+        # Tests use UUID-keyed rows so they are logically isolated and safe to
+        # run in parallel under cargo's default multi-threaded test runner.
+        run: cargo test --workspace --locked -- --include-ignored
         env:
           DATABASE_URL: postgres://engipay:ci-only-not-a-secret@localhost:5432/engipay
