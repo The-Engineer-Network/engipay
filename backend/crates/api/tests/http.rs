@@ -42,6 +42,28 @@ async fn health_reports_ok_without_a_database() {
 }
 
 #[tokio::test]
+async fn sign_in_endpoints_report_no_database_instead_of_pretending() {
+    let verify_body = r#"{"message":"Sign in\nNonce: abcdef1234","signature":"0x00","address":"0x0000000000000000000000000000000000000001"}"#;
+    for (path, body) in [
+        ("/v1/auth/nonce", ""),
+        ("/v1/auth/verify-evm", verify_body),
+    ] {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+    }
+}
+
+#[tokio::test]
 async fn me_requires_a_bearer_token() {
     let response = app()
         .oneshot(Request::builder().uri("/v1/me").body(Body::empty()).unwrap())
