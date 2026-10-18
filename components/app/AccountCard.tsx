@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PendingServiceNote } from "@/components/app/PendingServiceNote"
+import { useWallet } from "@/contexts/WalletContext"
+import { useEvmSignIn } from "@/hooks/use-evm-sign-in"
 import { useToast } from "@/hooks/use-toast"
 import { ApiRequestError, apiRequest, readSessionToken } from "@/lib/api"
 import { checkTag } from "@/lib/tags"
@@ -21,17 +23,22 @@ interface Profile {
 
 /**
  * The Account section of Settings: the user's tag, KYC tier and daily limit,
- * with a form to set the tag. Shows a sign-in note when there is no session.
+ * with a form to set the tag. With no session it offers to sign in with the
+ * connected Ethereum wallet.
  */
 export function AccountCard() {
   const queryClient = useQueryClient()
   const { toast } = useToast()
+  const { evmAddress, connectWallet } = useWallet()
+  const { signIn, isSigning } = useEvmSignIn()
   const [hasSession, setHasSession] = useState(false)
+  const [signInError, setSignInError] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
   const [serverError, setServerError] = useState<string | null>(null)
 
-  // The session lives in localStorage, so it is only known after mount.
-  useEffect(() => setHasSession(readSessionToken() !== null), [])
+  // The session lives in localStorage, so it is only known after mount. It is
+  // re-read when the wallet changes, because disconnecting clears it.
+  useEffect(() => setHasSession(readSessionToken() !== null), [evmAddress])
 
   const profile = useQuery({
     queryKey: ["profile"],
@@ -39,6 +46,13 @@ export function AccountCard() {
     enabled: hasSession,
     retry: false,
   })
+
+  // An expired session comes back as 401: fall back to the sign-in prompt.
+  useEffect(() => {
+    if (profile.error instanceof ApiRequestError && profile.error.status === 401) {
+      setHasSession(false)
+    }
+  }, [profile.error])
 
   const saveTag = useMutation({
     mutationFn: (tag: string) =>
@@ -70,6 +84,22 @@ export function AccountCard() {
     saveTag.mutate(check.tag)
   }
 
+  async function handleSignIn() {
+    if (!evmAddress) return
+    setSignInError(null)
+    try {
+      await signIn(evmAddress)
+      setHasSession(true)
+      void queryClient.invalidateQueries({ queryKey: ["profile"] })
+    } catch (error) {
+      setSignInError(
+        error instanceof ApiRequestError
+          ? error.message
+          : "Sign-in did not finish. Check your wallet and try again."
+      )
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -77,9 +107,37 @@ export function AccountCard() {
       </CardHeader>
       <CardContent className="space-y-4">
         {!hasSession ? (
-          <PendingServiceNote>
-            Sign in to see your tag, tier and daily limit. Signing in is not connected to this app yet.
-          </PendingServiceNote>
+          evmAddress ? (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Sign in with your wallet to see your tag, tier and daily limit. Your wallet will ask
+                you to sign a message. This does not send anything.
+              </p>
+              <Button
+                type="button"
+                className="w-full"
+                onClick={handleSignIn}
+                disabled={isSigning}
+              >
+                {isSigning ? "Waiting for your wallet…" : "Sign in with your wallet"}
+              </Button>
+              {signInError && (
+                <p role="alert" className="text-xs text-destructive">
+                  {signInError}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <PendingServiceNote>
+                Sign in with an Ethereum wallet to see your tag, tier and daily limit. Stellar sign-in
+                is not available yet.
+              </PendingServiceNote>
+              <Button type="button" variant="outline" className="w-full" onClick={connectWallet}>
+                Connect a wallet
+              </Button>
+            </div>
+          )
         ) : profile.isPending ? (
           <div className="space-y-3" aria-busy="true" aria-label="Loading your account">
             <Skeleton className="h-5 w-full" />

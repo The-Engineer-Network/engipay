@@ -27,22 +27,31 @@ export function readSessionToken(): string | null {
   }
 }
 
-/**
- * Calls the EngiPay API as the signed-in user. Throws an ApiRequestError with
- * the API's own message, so screens can show it as it is. Returns undefined
- * for 204 No Content.
- */
-export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T | undefined> {
-  const token = readSessionToken()
-  if (!token) {
-    throw new ApiRequestError(401, "unauthorized", "Sign in to continue.")
+/** Keeps the session token after a successful sign-in. */
+export function writeSessionToken(token: string): void {
+  try {
+    window.localStorage.setItem(SESSION_TOKEN_KEY, token)
+  } catch {
+    // Storage is unavailable (private mode, blocked). The user stays signed out.
   }
+}
+
+/** Forgets the session token. */
+export function clearSessionToken(): void {
+  try {
+    window.localStorage.removeItem(SESSION_TOKEN_KEY)
+  } catch {
+    // Nothing to clear if storage is unavailable.
+  }
+}
+
+async function send<T>(path: string, init: RequestInit, token: string | null): Promise<T | undefined> {
   if (!API_BASE_URL) {
     throw new ApiRequestError(503, "api_not_configured", "The EngiPay API is not configured for this build.")
   }
 
   const headers = new Headers(init.headers)
-  headers.set("Authorization", `Bearer ${token}`)
+  if (token) headers.set("Authorization", `Bearer ${token}`)
   if (init.body !== undefined) headers.set("Content-Type", "application/json")
 
   const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers })
@@ -50,6 +59,9 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
     if (response.status === 204) return undefined
     return (await response.json()) as T
   }
+
+  // An expired or revoked session: forget it, so the screen asks to sign in again.
+  if (response.status === 401 && token) clearSessionToken()
 
   let code = "request_failed"
   let message = `The request failed (${response.status}).`
@@ -61,4 +73,22 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
     // The body was not JSON; keep the generic message.
   }
   throw new ApiRequestError(response.status, code, message)
+}
+
+/**
+ * Calls the EngiPay API as the signed-in user. Throws an ApiRequestError with
+ * the API's own message, so screens can show it as it is. Returns undefined
+ * for 204 No Content.
+ */
+export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T | undefined> {
+  const token = readSessionToken()
+  if (!token) {
+    throw new ApiRequestError(401, "unauthorized", "Sign in to continue.")
+  }
+  return send<T>(path, init, token)
+}
+
+/** Calls an endpoint that needs no session, such as the sign-in steps. */
+export async function apiPublicRequest<T>(path: string, init: RequestInit = {}): Promise<T | undefined> {
+  return send<T>(path, init, null)
 }
