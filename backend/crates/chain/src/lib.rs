@@ -16,6 +16,7 @@ pub mod bitcoin;
 pub mod creditor;
 pub mod deposit_creditor;
 pub mod dlq;
+pub mod dlq_commands;
 pub mod evm;
 pub mod routes;
 pub mod services;
