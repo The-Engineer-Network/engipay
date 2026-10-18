@@ -26,6 +26,44 @@ pub const STELLAR_CHAIN_KEY: &str = "stellar";
 pub enum CursorError {
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
+    #[error("cursor value {cursor:?} is not a valid TOID")]
+    InvalidFormat { cursor: String },
+}
+
+/// Converts a Horizon paging token (TOID) to the ledger sequence number it belongs to.
+///
+/// Stellar TOIDs store the ledger number in the top 32 bits. This function
+/// extracts and validates it, returning an error for unparsable or invalid cursors
+/// rather than silently falling back to ledger 0 (which would replay the entire chain).
+///
+/// # Errors
+///
+/// - Returns [`CursorError::InvalidFormat`] when `cursor` cannot be parsed as an `i64`
+/// - Returns [`CursorError::InvalidFormat`] when the extracted ledger number is negative
+///
+/// # Examples
+///
+/// ```ignore
+/// // Valid cursor: ledger 100, TOID = 100 << 32 = 429496729600
+/// assert_eq!(cursor_to_ledger("429496729600")?, 100);
+///
+/// // Garbage input: refuse to start
+/// assert!(cursor_to_ledger("not-a-number").is_err());
+/// assert!(cursor_to_ledger("").is_err());
+/// ```
+pub fn cursor_to_ledger(cursor: &str) -> Result<u64, CursorError> {
+    let toid = cursor
+        .parse::<i64>()
+        .map_err(|_| CursorError::InvalidFormat {
+            cursor: cursor.to_owned(),
+        })?;
+
+    // Extract ledger from the top 32 bits. Negative TOIDs are structurally
+    // invalid (Horizon never produces them), so refuse them explicitly.
+    let ledger = toid >> 32;
+    u64::try_from(ledger).map_err(|_| CursorError::InvalidFormat {
+        cursor: cursor.to_owned(),
+    })
 }
 
 /// Reads and writes the Stellar watcher's resume cursor from/to Postgres.
@@ -179,5 +217,70 @@ mod tests {
         let recovered: i64 = loaded.parse().unwrap();
         assert_eq!(recovered, toid);
         assert_eq!(recovered >> 32, ledger);
+    }
+
+    // ── cursor_to_ledger ─────────────────────────────────────────────────────
+
+    use super::cursor_to_ledger;
+
+    #[test]
+    fn valid_cursor_extracts_ledger_number() {
+        // Ledger 100: 100 << 32 = 429496729600
+        assert_eq!(cursor_to_ledger("429496729600").unwrap(), 100);
+        // Ledger 1: 1 << 32 = 4294967296
+        assert_eq!(cursor_to_ledger("4294967296").unwrap(), 1);
+        // Ledger 0: 0 << 32 = 0
+        assert_eq!(cursor_to_ledger("0").unwrap(), 0);
+    }
+
+    #[test]
+    fn unparsable_cursor_returns_error() {
+        assert!(cursor_to_ledger("not-a-number").is_err());
+        assert!(cursor_to_ledger("").is_err());
+        assert!(cursor_to_ledger("abc123").is_err());
+        assert!(cursor_to_ledger("12.34").is_err());
+    }
+
+    #[test]
+    fn garbage_cursor_refuses_to_start() {
+        // The key behavior: garbage must error, not silently fall back to 0.
+        let result = cursor_to_ledger("corrupt_data_from_db");
+        assert!(result.is_err(), "garbage cursor must be refused");
+    }
+
+    #[test]
+    fn negative_toid_is_invalid() {
+        // Negative TOIDs are structurally impossible in Horizon.
+        assert!(cursor_to_ledger("-1").is_err());
+        assert!(cursor_to_ledger("-429496729600").is_err());
+    }
+
+    #[test]
+    fn empty_cursor_is_invalid() {
+        // An empty string is not a valid TOID.
+        assert!(cursor_to_ledger("").is_err());
+    }
+
+    #[test]
+    fn cursor_with_decimal_point_is_invalid() {
+        // TOIDs are integers, not floats.
+        assert!(cursor_to_ledger("123.456").is_err());
+    }
+
+    #[test]
+    fn large_ledger_number_is_valid() {
+        // Ledger 14,000,000: 14_000_000 << 32 = 60_129_542_144_000_000
+        assert_eq!(cursor_to_ledger("60129542144000000").unwrap(), 14_000_000);
+    }
+
+    #[test]
+    fn cursor_to_ledger_error_message_names_bad_value() {
+        // Operators need to see what the bad cursor was to diagnose it.
+        let err = cursor_to_ledger("bad_cursor").unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("bad_cursor"),
+            "error message should quote the bad cursor value: {message}"
+        );
     }
 }
