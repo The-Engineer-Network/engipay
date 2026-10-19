@@ -13,6 +13,7 @@ pub mod notifications;
 pub mod openapi;
 pub mod payment_requests;
 pub mod requests;
+pub mod scheduled_transfers;
 pub mod transactions;
 pub mod transfers;
 pub mod withdrawals;
@@ -38,5 +39,6 @@ pub fn v1() -> Router<AppState> {
         .merge(requests::routes())
         .merge(payment_requests::routes())
         .merge(transfers::routes())
+        .merge(scheduled_transfers::routes())
         .merge(withdrawals::router())
 }
