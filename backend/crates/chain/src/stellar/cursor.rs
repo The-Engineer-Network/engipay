@@ -1,9 +1,12 @@
-//! Persistent cursor storage for the Stellar deposit watcher.
+//! Persistent cursor storage for the deposit watchers.
 //!
-//! When the chain service restarts it must resume watching Stellar payments
-//! from the exact Horizon paging token it had reached, not from the current
-//! ledger tip. Without this, deposits that arrived while the service was
-//! offline are silently skipped.
+//! When the chain service restarts it must resume watching payments from the
+//! exact position it had reached, not from the current tip. Without this,
+//! deposits that arrived while the service was offline are silently skipped.
+//!
+//! Each watcher keeps its own row: Stellar stores the Horizon TOID of the last
+//! processed ledger under the `stellar` key, and the Base watcher stores a
+//! block number under the `base` key (see [`crate::watch`]).
 //!
 //! # Schema
 //! One row per chain in `chain_cursors (chain TEXT PK, cursor TEXT, updated_at
@@ -66,7 +69,7 @@ pub fn cursor_to_ledger(cursor: &str) -> Result<u64, CursorError> {
     })
 }
 
-/// Reads and writes the Stellar watcher's resume cursor from/to Postgres.
+/// Reads and writes a watcher's resume cursor from/to Postgres.
 #[derive(Clone)]
 pub struct CursorStore {
     pool: PgPool,

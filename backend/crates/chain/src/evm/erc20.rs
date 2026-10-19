@@ -5,11 +5,11 @@ use std::collections::HashSet;
 
 use engipay_core::{Asset, Chain, Money};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::confirmations::confirmations_u32;
-use super::{Skipped, normalize_address, parse_u64};
-use crate::ObservedDeposit;
+use super::{normalize_address, parse_u64, Skipped};
+use crate::{ChainError, ObservedDeposit};
 
 /// `keccak256("Transfer(address,address,uint256)")`.
 pub const TRANSFER_TOPIC: &str =
@@ -22,6 +22,22 @@ pub enum BaseNetwork {
 }
 
 impl BaseNetwork {
+    /// Parses a network name as accepted by `BASE_NETWORK` (`mainnet` or
+    /// `sepolia`), case-insensitively.
+    ///
+    /// # Errors
+    /// Returns [`ChainError::Config`] for anything else, so a typo refuses to
+    /// start rather than silently watching the wrong USDC contract.
+    pub fn from_name(name: &str) -> Result<Self, ChainError> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "mainnet" => Ok(BaseNetwork::Mainnet),
+            "sepolia" => Ok(BaseNetwork::Sepolia),
+            other => Err(ChainError::Config(format!(
+                "{other:?} is not a Base network; use mainnet or sepolia"
+            ))),
+        }
+    }
+
     /// Circle's native USDC, lowercased. Any other `Transfer` emitter is ignored.
     pub const fn usdc_contract(self) -> &'static str {
         match self {
@@ -183,6 +199,31 @@ mod tests {
 
     fn usdc_log() -> Log {
         log("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+    }
+
+    #[test]
+    fn parses_network_names_from_the_environment() {
+        assert!(matches!(
+            BaseNetwork::from_name("mainnet"),
+            Ok(BaseNetwork::Mainnet)
+        ));
+        assert!(matches!(
+            BaseNetwork::from_name("Sepolia"),
+            Ok(BaseNetwork::Sepolia)
+        ));
+        assert!(matches!(
+            BaseNetwork::from_name(" sepolia "),
+            Ok(BaseNetwork::Sepolia)
+        ));
+    }
+
+    #[test]
+    fn refuses_unknown_network_names() {
+        let error = BaseNetwork::from_name("goerli").expect_err("must refuse");
+        assert!(
+            error.to_string().contains("mainnet or sepolia"),
+            "unexpected message: {error}"
+        );
     }
 
     #[test]

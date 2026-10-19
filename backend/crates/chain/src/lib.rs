@@ -21,6 +21,7 @@ pub mod evm;
 pub mod routes;
 pub mod services;
 pub mod stellar;
+pub mod watch;
 pub mod withdrawals;
 pub mod workers;
 

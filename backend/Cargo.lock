@@ -528,6 +528,7 @@ dependencies = [
  "engipay-ledger",
  "futures-core",
  "futures-util",
+ "hex",
  "lru",
  "reqwest",
  "serde",

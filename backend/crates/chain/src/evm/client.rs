@@ -8,8 +8,8 @@ use engipay_core::Chain;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::erc20::{BaseNetwork, deposits_from_logs};
-use super::watcher::{BlockWatcher, FinalizedHeight, WatcherConfig};
+use super::erc20::{deposits_from_logs, BaseNetwork};
+use super::watcher::{BlockWatcher, FinalizedHeight};
 use crate::{ChainClient, ChainError, ObservedDeposit};
 
 /// Base JSON-RPC client for USDC deposit detection.
@@ -53,9 +53,8 @@ impl BaseClient {
         let normalized: Result<HashSet<String>, ChainError> = deposit_addresses
             .iter()
             .map(|addr| {
-                super::normalize_address(addr).ok_or_else(|| {
-                    ChainError::Config(format!("invalid deposit address: {addr}"))
-                })
+                super::normalize_address(addr)
+                    .ok_or_else(|| ChainError::Config(format!("invalid deposit address: {addr}")))
             })
             .collect();
 
@@ -79,6 +78,17 @@ impl BaseClient {
     pub fn with_watcher(mut self, watcher: &BlockWatcher) -> Self {
         self.finalized_height = Some(watcher.height().clone());
         self
+    }
+
+    /// The network this client watches; decides which USDC contract counts.
+    pub const fn network(&self) -> BaseNetwork {
+        self.network
+    }
+
+    /// The deposit addresses this client matches `Transfer` logs against,
+    /// normalized to lowercase.
+    pub fn deposit_addresses(&self) -> &HashSet<String> {
+        &self.deposit_addresses
     }
 
     /// Queries `eth_getLogs` for USDC Transfer events in the given block range.
@@ -269,7 +279,10 @@ mod tests {
 
         let deposits = client.deposits_since(100).await.unwrap();
         assert_eq!(deposits.len(), 1);
-        assert_eq!(deposits[0].money, Money::from_minor(Asset::Usdc, 25_000_000));
+        assert_eq!(
+            deposits[0].money,
+            Money::from_minor(Asset::Usdc, 25_000_000)
+        );
         assert_eq!(deposits[0].address, USER);
         assert_eq!(deposits[0].reference, "base:0xfeed:5");
         assert_eq!(deposits[0].confirmations, 11);
@@ -353,7 +366,11 @@ mod tests {
 
     #[test]
     fn malformed_deposit_address_is_config_error() {
-        let result = BaseClient::new(BaseNetwork::Mainnet, "http://localhost", &["invalid".to_owned()]);
+        let result = BaseClient::new(
+            BaseNetwork::Mainnet,
+            "http://localhost",
+            &["invalid".to_owned()],
+        );
         assert!(matches!(result, Err(ChainError::Config(_))));
     }
 
@@ -395,6 +412,10 @@ mod tests {
             BaseClient::new(BaseNetwork::Mainnet, server.uri(), &[USER.to_owned()]).unwrap();
 
         let deposits = client.deposits_since(100).await.unwrap();
-        assert_eq!(deposits.len(), 0, "zero-value transfers must not be credited");
+        assert_eq!(
+            deposits.len(),
+            0,
+            "zero-value transfers must not be credited"
+        );
     }
 }

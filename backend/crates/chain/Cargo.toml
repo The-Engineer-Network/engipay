@@ -15,6 +15,7 @@ anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
 ed25519-dalek.workspace = true
+hex.workspace = true
 lru.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
@@ -22,7 +23,8 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-sqlx.workspace = true
+# `json` is required by the JSONB columns selected in `dlq_commands.rs`.
+sqlx = { workspace = true, features = ["json"] }
 stellar-strkey.workspace = true
 stellar-xdr.workspace = true
 thiserror.workspace = true
