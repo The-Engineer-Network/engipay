@@ -32,11 +32,7 @@ async fn setup() -> (axum::Router, sqlx::PgPool) {
     config.buy_kobo_per_usdc = Some(KOBO_PER_USDC);
     config.buy_fee_bps = Some(FEE_BPS);
     let app = router(
-        AppState {
-            database: Some(pool.clone()),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        },
+        AppState::with_fakes(Some(pool.clone()), config.clone(), RateLimiter::new()),
         &config,
     );
     (app, pool)

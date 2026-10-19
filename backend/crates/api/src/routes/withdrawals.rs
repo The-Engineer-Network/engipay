@@ -183,16 +183,16 @@ mod tests {
         base: Option<&str>,
         bitcoin: Option<&str>,
     ) -> AppState {
-        AppState {
-            database: None,
-            config: Config {
+        AppState::with_fakes(
+            None,
+            Config {
                 stellar_custody_account: stellar.map(str::to_owned),
                 base_custody_address: base.map(str::to_owned),
                 bitcoin_custody_address: bitcoin.map(str::to_owned),
                 ..Config::for_tests()
             },
-            rate_limiter: RateLimiter::new(),
-        }
+            RateLimiter::new(),
+        )
     }
 
     // ── is_custody_address ────────────────────────────────────────────────────

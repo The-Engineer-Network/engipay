@@ -13,11 +13,7 @@ use tower::ServiceExt;
 fn app() -> axum::Router {
     let config = Config::for_tests();
     router(
-        AppState {
-            database: None,
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        },
+        AppState::with_fakes(None, config.clone(), RateLimiter::new()),
         &config,
     )
 }
