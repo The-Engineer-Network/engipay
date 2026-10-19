@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod metrics;
 pub mod middleware;
 mod routes;
 pub mod services;
@@ -60,6 +61,9 @@ pub fn router(state: AppState, config: &Config) -> Router {
     Router::new()
         .merge(routes::health::routes())
         .merge(routes::openapi::routes())
+        // `/metrics` is outside `/v1` so it is never reachable through the
+        // public API prefix.
+        .merge(routes::metrics::routes())
         .nest("/v1", routes::v1())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -67,6 +71,8 @@ pub fn router(state: AppState, config: &Config) -> Router {
         ))
         .layer(cors(config))
         .layer(TraceLayer::new_for_http())
+        // Track per-prefix request counts and latency for the /metrics endpoint.
+        .layer(axum::middleware::from_fn(track_request_metrics))
         // Structured JSON request logging with correlation IDs. Placed inside
         // CatchPanic so panics are still converted to problem+json 500s, and
         // outside the routes so every request is logged exactly once.
@@ -75,6 +81,30 @@ pub fn router(state: AppState, config: &Config) -> Router {
         // inner layers and handlers. It returns RFC 7807 problem+json 500s.
         .layer(CatchPanicLayer::new())
         .with_state(state)
+}
+
+/// Middleware that increments per-prefix request counters and accumulates
+/// latency so the `/metrics` endpoint has something to report.
+async fn track_request_metrics(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use std::sync::atomic::Ordering;
+
+    let is_v1 = request.uri().path().starts_with("/v1/");
+    let start = std::time::Instant::now();
+    let response = next.run(request).await;
+    let elapsed_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+    if is_v1 {
+        metrics::REQUESTS_V1.fetch_add(1, Ordering::Relaxed);
+        metrics::DURATION_US_V1.fetch_add(elapsed_us, Ordering::Relaxed);
+    } else {
+        metrics::REQUESTS_OTHER.fetch_add(1, Ordering::Relaxed);
+        metrics::DURATION_US_OTHER.fetch_add(elapsed_us, Ordering::Relaxed);
+    }
+
+    response
 }
 
 /// Only the configured web origins may call the API from a browser.
