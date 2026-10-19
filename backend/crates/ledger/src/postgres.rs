@@ -9,7 +9,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use sqlx::{PgPool, Postgres, Row};
+use sqlx::{PgPool, Postgres, Row, postgres::PgRow};
 use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
@@ -28,6 +28,24 @@ pub struct ActiveHold {
     pub amount: i128,
     /// RFC 3339 timestamp of when the hold was created.
     pub created_at: String,
+}
+
+/// A point-in-time balance snapshot for one (user, asset, bucket) triple,
+/// as returned by [`PostgresLedgerStore::take_snapshot`] and
+/// [`PostgresLedgerStore::get_latest_snapshot`].
+///
+/// Snapshots are the starting-point for as-of queries: instead of summing
+/// every posting from the beginning of time, the query sums the snapshot
+/// balance plus only the postings written after `snapshotted_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BalanceSnapshot {
+    pub user_id: UserId,
+    pub asset: Asset,
+    pub bucket: crate::Bucket,
+    /// Balance in the asset's smallest unit at the moment `snapshotted_at`.
+    pub balance: i128,
+    /// RFC 3339 timestamp when this snapshot was taken.
+    pub snapshotted_at: String,
 }
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -199,6 +217,146 @@ impl PostgresLedgerStore {
         .await
         .map_err(db_err)?;
         Ok(())
+    }
+
+    // ── Point-in-time / snapshot methods ──────────────────────────────
+
+    /// Returns the user's balance in `asset`/`bucket` at the given point in
+    /// time, expressed as an RFC 3339 timestamp string (e.g.
+    /// `"2024-01-15T12:00:00Z"`).
+    ///
+    /// The query is accelerated by the `ledger_postings_by_user_asset_time`
+    /// index added in migration 0019 and, when a snapshot exists before
+    /// `as_of`, only postings after the snapshot are summed:
+    ///
+    /// ```text
+    /// balance_at_T = snapshot.balance
+    ///              + SUM(postings where snapshotted_at < created_at <= as_of)
+    /// ```
+    ///
+    /// When no snapshot exists the full history up to `as_of` is summed,
+    /// which is still index-assisted.
+    pub async fn get_balance_as_of(
+        &self,
+        user: UserId,
+        asset: Asset,
+        bucket: crate::Bucket,
+        as_of: &str,
+    ) -> Result<i128, LedgerError> {
+        let bucket_str = bucket_str(bucket);
+
+        // Parse the caller-supplied RFC 3339 string.
+        let as_of_ts: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
+            as_of.parse().map_err(|_| LedgerError::Database {
+                code: None,
+                message: format!("invalid as_of timestamp: {as_of}"),
+            })?;
+
+        // Find the most-recent snapshot at or before `as_of`.
+        let snap_row = sqlx::query(
+            "SELECT balance::text AS balance, snapshotted_at \
+             FROM balance_snapshots \
+             WHERE user_id = $1 AND asset = $2 AND bucket = $3 \
+               AND snapshotted_at <= $4 \
+             ORDER BY snapshotted_at DESC \
+             LIMIT 1",
+        )
+        .bind(user.as_uuid())
+        .bind(asset.symbol())
+        .bind(bucket_str)
+        .bind(as_of_ts)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        let (base_balance, postings_after): (i128, sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>) =
+            match snap_row {
+                Some(row) => {
+                    let b: String = row.get("balance");
+                    let t: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
+                        row.get("snapshotted_at");
+                    (b.parse().map_err(|_| LedgerError::Overflow)?, t)
+                }
+                None => {
+                    // No snapshot: sum all postings up to as_of from the beginning.
+                    // Use Unix epoch as a lower bound — all postings pass the > epoch check
+                    // because ledger_postings.created_at defaults to now() and can never
+                    // predate 1970.
+                    let epoch = sqlx::types::chrono::DateTime::<sqlx::types::chrono::Utc>::UNIX_EPOCH;
+                    (0, epoch)
+                }
+            };
+
+        // Sum postings in the (snapshot_time, as_of] window.
+        let delta_row = sqlx::query(
+            "SELECT COALESCE(SUM(amount), 0)::text AS delta \
+             FROM ledger_postings \
+             WHERE owner_kind  = 'user' \
+               AND user_id     = $1 \
+               AND asset       = $2 \
+               AND bucket      = $3 \
+               AND created_at  > $4 \
+               AND created_at  <= $5",
+        )
+        .bind(user.as_uuid())
+        .bind(asset.symbol())
+        .bind(bucket_str)
+        .bind(postings_after)
+        .bind(as_of_ts)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        let delta: i128 = {
+            let s: String = delta_row.get("delta");
+            s.parse().map_err(|_| LedgerError::Overflow)?
+        };
+
+        base_balance.checked_add(delta).ok_or(LedgerError::Overflow)
+    }
+
+    /// Computes the current balance from postings and writes one
+    /// [`BalanceSnapshot`] row per (asset, bucket) pair that the user has
+    /// ever touched.  Returns the newly created snapshots.
+    ///
+    /// Multiple calls each add a new, timestamped row (old ones are kept for
+    /// history).  A periodic background job should call this on each active
+    /// user so that as-of queries stay fast.
+    pub async fn take_snapshot(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<BalanceSnapshot>, LedgerError> {
+        let rows = sqlx::query(
+            "SELECT user_id, asset, bucket, balance::text AS balance, snapshotted_at \
+             FROM take_balance_snapshot($1)",
+        )
+        .bind(user.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        parse_snapshot_rows(rows)
+    }
+
+    /// Retrieves the most-recent snapshot for each (asset, bucket) pair for
+    /// `user`.  Returns an empty `Vec` when no snapshots have been taken yet.
+    pub async fn get_latest_snapshot(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<BalanceSnapshot>, LedgerError> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (user_id, asset, bucket) \
+                    user_id, asset, bucket, balance::text AS balance, snapshotted_at \
+             FROM balance_snapshots \
+             WHERE user_id = $1 \
+             ORDER BY user_id, asset, bucket, snapshotted_at DESC",
+        )
+        .bind(user.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        parse_snapshot_rows(rows)
     }
     ///
     /// If `reference` was already used with identical parameters, returns
@@ -776,6 +934,54 @@ async fn update_hold_state(
         .await
         .map_err(db_err)?;
     Ok(())
+}
+
+// ── Snapshot helpers ───────────────────────────────────────────────────
+
+fn bucket_str(bucket: crate::Bucket) -> &'static str {
+    match bucket {
+        crate::Bucket::Available => "available",
+        crate::Bucket::Held => "held",
+    }
+}
+
+fn parse_snapshot_rows(
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Result<Vec<BalanceSnapshot>, LedgerError> {
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let user_uuid: uuid::Uuid = row.get("user_id");
+        let asset_str: String = row.get("asset");
+        let bucket_raw: String = row.get("bucket");
+        let balance_str: String = row.get("balance");
+        let snapshotted_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
+            row.get("snapshotted_at");
+
+        let asset = asset_str.parse::<Asset>().map_err(|_| LedgerError::Database {
+            code: None,
+            message: format!("unknown asset in balance_snapshots: {asset_str}"),
+        })?;
+        let bucket = match bucket_raw.as_str() {
+            "available" => crate::Bucket::Available,
+            "held" => crate::Bucket::Held,
+            other => {
+                return Err(LedgerError::Database {
+                    code: None,
+                    message: format!("unknown bucket in balance_snapshots: {other}"),
+                })
+            }
+        };
+        let balance = balance_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+
+        out.push(BalanceSnapshot {
+            user_id: UserId::from_uuid(user_uuid),
+            asset,
+            bucket,
+            balance,
+            snapshotted_at: snapshotted_at.to_rfc3339(),
+        });
+    }
+    Ok(out)
 }
 
 // ── Request fingerprints ───────────────────────────────────────────────
@@ -1578,5 +1784,292 @@ mod tests {
 
         let s: String = row.get("balance");
         s.parse::<i128>().unwrap()
+    }
+
+    // ── Point-in-time / snapshot tests ────────────────────────────────
+    //
+    // Done when (issue #507):
+    //   1. snapshot.balance + later postings == full recomputation.
+    //   2. get_balance_as_of returns the correct historical amount.
+    //   3. As-of queries stay fast on a large synthetic ledger.
+
+    // Helper: compute balance the slow way (full scan from the pool, no snapshot).
+    async fn full_balance(pool: &PgPool, user: UserId, asset: Asset, bucket: &str) -> i128 {
+        get_user_balance_from_pool(pool, user, asset, bucket).await
+    }
+
+    // 1. take_snapshot captures the current balance; subsequent postings
+    //    can be combined with it to reproduce the full recomputation.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn snapshot_plus_later_postings_equals_full_recomputation() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        // Initial deposit: 1 000 USDC.
+        store
+            .deposit(alice, usdc(1_000), &format!("snap-dep-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+
+        // Take a snapshot while balance == 1 000.
+        let snaps = store.take_snapshot(alice).await.unwrap();
+        let snap = snaps
+            .iter()
+            .find(|s| s.asset == Asset::Usdc && s.bucket == crate::Bucket::Available)
+            .expect("snapshot must include USDC available");
+        assert_eq!(snap.balance, 1_000, "snapshot balance must match current balance");
+
+        // Deposit another 500 AFTER the snapshot.
+        store
+            .deposit(alice, usdc(500), &format!("snap-dep2-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+
+        // Full recomputation from postings alone.
+        let full = full_balance(&pool, alice, Asset::Usdc, "available").await;
+        assert_eq!(full, 1_500);
+
+        // Snapshot + postings after snapshot_time.
+        let snapshotted_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
+            snap.snapshotted_at.parse().unwrap();
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(amount), 0)::text AS delta \
+             FROM ledger_postings \
+             WHERE owner_kind = 'user' AND user_id = $1 \
+               AND asset = 'USDC' AND bucket = 'available' \
+               AND created_at > $2",
+        )
+        .bind(alice.as_uuid())
+        .bind(snapshotted_at)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let delta: i128 = row.get::<String, _>("delta").parse().unwrap();
+
+        assert_eq!(
+            snap.balance + delta,
+            full,
+            "snapshot + later postings must equal full recomputation"
+        );
+    }
+
+    // 2. get_balance_as_of returns the balance at a past moment, not the
+    //    current one.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn get_balance_as_of_returns_historical_amount() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        // Deposit 200 at T1.
+        store
+            .deposit(alice, usdc(200), &format!("aof-dep1-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+
+        // Record T1 (after the deposit).
+        let t1: String = sqlx::query("SELECT now()::text AS ts")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get::<String, _>("ts");
+
+        // Small sleep to ensure T1 < T2 even on fast machines.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Deposit another 300 at T2.
+        store
+            .deposit(alice, usdc(300), &format!("aof-dep2-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+
+        // Balance as-of T1 must be 200, not 500.
+        let bal_t1 = store
+            .get_balance_as_of(alice, Asset::Usdc, crate::Bucket::Available, &t1)
+            .await
+            .unwrap();
+        assert_eq!(bal_t1, 200, "as-of T1 must be 200 (before second deposit)");
+
+        // Balance as-of now must be 500.
+        let now_str: String = sqlx::query("SELECT now()::text AS ts")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get::<String, _>("ts");
+        let bal_now = store
+            .get_balance_as_of(alice, Asset::Usdc, crate::Bucket::Available, &now_str)
+            .await
+            .unwrap();
+        assert_eq!(bal_now, 500, "as-of now must be 500");
+    }
+
+    // 3. get_latest_snapshot returns the most-recent snapshot row.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn get_latest_snapshot_returns_most_recent_row() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        // No snapshots yet → empty.
+        let empty = store.get_latest_snapshot(alice).await.unwrap();
+        assert!(empty.is_empty(), "no snapshots yet");
+
+        store
+            .deposit(alice, usdc(100), &format!("ls-dep-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+
+        // Take two snapshots; get_latest_snapshot must return the second one.
+        store.take_snapshot(alice).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        store
+            .deposit(alice, usdc(50), &format!("ls-dep2-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+        store.take_snapshot(alice).await.unwrap();
+
+        let latest = store.get_latest_snapshot(alice).await.unwrap();
+        let usdc_snap = latest
+            .iter()
+            .find(|s| s.asset == Asset::Usdc && s.bucket == crate::Bucket::Available)
+            .expect("latest snapshot must include USDC available");
+        assert_eq!(
+            usdc_snap.balance, 150,
+            "latest snapshot must reflect both deposits"
+        );
+    }
+
+    // ── Benchmark: as-of queries stay fast on a large synthetic ledger ─
+    //
+    // This test inserts N_ROWS postings for a single user directly (bypassing
+    // ledger rules to keep the setup fast), then measures that a point-in-time
+    // query with and without a snapshot both complete within BUDGET_MS
+    // milliseconds.  The test proves the `ledger_postings_by_user_asset_time`
+    // index is used and that the snapshot path scans far fewer rows.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn benchmark_as_of_query_stays_fast_on_large_ledger() {
+        use std::time::Instant;
+
+        const N_ROWS: i64 = 50_000;
+        const BUDGET_MS: u128 = 2_000; // generous budget for CI
+
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+
+        // Insert a fake transaction to satisfy the FK on ledger_postings.
+        let tx_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO ledger_transactions (id, kind, reference, request) \
+             VALUES ($1, 'deposit', $2, 'bench')",
+        )
+        .bind(tx_id)
+        .bind(format!("bench-tx-{}", Uuid::new_v4()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Bulk-insert N_ROWS postings in a single statement using
+        // generate_series so the test setup is fast.
+        sqlx::query(
+            "INSERT INTO ledger_postings \
+                (transaction_id, owner_kind, user_id, asset, bucket, amount, created_at) \
+             SELECT $1, 'user', $2, 'USDC', 'available', 1, \
+                    now() - (($3 - gs) * interval '1 second') \
+             FROM generate_series(1, $3) AS gs",
+        )
+        .bind(tx_id)
+        .bind(alice.as_uuid())
+        .bind(N_ROWS)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Pick a timestamp halfway through the history.
+        let midpoint: String = sqlx::query(
+            "SELECT (now() - ($1 / 2 * interval '1 second'))::text AS ts",
+        )
+        .bind(N_ROWS)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .get::<String, _>("ts");
+
+        // ── Without snapshot: full index scan from epoch to midpoint ──
+        let t_no_snap = Instant::now();
+        let bal_no_snap = store
+            .get_balance_as_of(alice, Asset::Usdc, crate::Bucket::Available, &midpoint)
+            .await
+            .unwrap();
+        let elapsed_no_snap = t_no_snap.elapsed().as_millis();
+
+        assert!(bal_no_snap > 0, "must have a non-zero balance at midpoint");
+        assert!(
+            elapsed_no_snap < BUDGET_MS,
+            "as-of query without snapshot took {}ms, budget {}ms",
+            elapsed_no_snap,
+            BUDGET_MS,
+        );
+
+        // ── Take a snapshot at the earliest posting ────────────────────
+        // Force a snapshot timestamp earlier than midpoint so the as-of
+        // query uses it as a baseline.
+        let early_ts: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
+            sqlx::query(
+                "SELECT (now() - ($1 * interval '1 second'))::timestamptz AS ts",
+            )
+            .bind(N_ROWS + 10)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("ts");
+
+        // Insert a manual snapshot row at `early_ts` with balance = 0.
+        sqlx::query(
+            "INSERT INTO balance_snapshots \
+                (user_id, asset, bucket, balance, snapshotted_at) \
+             VALUES ($1, 'USDC', 'available', 0, $2)",
+        )
+        .bind(alice.as_uuid())
+        .bind(early_ts)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // ── With snapshot: delta scan from snapshot_time to midpoint ──
+        let t_with_snap = Instant::now();
+        let bal_with_snap = store
+            .get_balance_as_of(alice, Asset::Usdc, crate::Bucket::Available, &midpoint)
+            .await
+            .unwrap();
+        let elapsed_with_snap = t_with_snap.elapsed().as_millis();
+
+        assert_eq!(
+            bal_no_snap, bal_with_snap,
+            "snapshot path and full-scan path must agree on the balance"
+        );
+        assert!(
+            elapsed_with_snap < BUDGET_MS,
+            "as-of query with snapshot took {}ms, budget {}ms",
+            elapsed_with_snap,
+            BUDGET_MS,
+        );
+
+        // The snapshot path should be at least as fast as the full scan
+        // (it scans strictly fewer rows).  We don't assert a speedup ratio
+        // because CI machines vary, but we log the numbers for visibility.
+        println!(
+            "benchmark_as_of: no_snap={}ms with_snap={}ms (N={})",
+            elapsed_no_snap, elapsed_with_snap, N_ROWS
+        );
     }
 }

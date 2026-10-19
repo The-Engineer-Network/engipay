@@ -128,6 +128,12 @@ pub struct Balance {
 #[cfg(feature = "postgres")]
 pub use postgres::ActiveHold;
 
+/// A point-in-time balance snapshot.  The concrete definition lives in
+/// [`crate::postgres::BalanceSnapshot`] and is re-exported from there;
+/// the `postgres` feature must be enabled.
+#[cfg(feature = "postgres")]
+pub use postgres::BalanceSnapshot;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HoldState {
