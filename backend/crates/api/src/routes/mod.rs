@@ -8,6 +8,7 @@ pub mod deposits;
 pub mod health;
 pub mod kyc;
 pub mod me;
+pub mod metrics;
 pub mod openapi;
 pub mod payment_requests;
 pub mod requests;
