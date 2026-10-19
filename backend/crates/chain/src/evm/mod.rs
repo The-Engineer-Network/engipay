@@ -1,8 +1,10 @@
 //! EVM (Base) chain support.
 //!
-//! Currently provides a block header polling loop ([`watcher`]) that tracks
-//! the latest finalized block on Base. Deposit watching and transaction signing
-//! will follow once the finalized-height plumbing is in place.
+//! Provides the Base JSON-RPC client ([`client`]), the USDC and native-ETH
+//! deposit parsing it is built on ([`erc20`], [`eth`]), and a finalized-height
+//! polling loop ([`watcher`]) the client can attach to. [`BaseClient`]
+//! implements [`crate::ChainClient`], so `engipay-chain watch` polls it
+//! alongside Stellar (see [`crate::watch`]).
 
 pub mod client;
 pub mod confirmations;
@@ -12,6 +14,9 @@ pub mod watcher;
 
 pub use client::BaseClient;
 pub use erc20::BaseNetwork;
+
+/// `chain_cursors.chain` value under which the Base watcher stores its cursor.
+pub const BASE_CHAIN_KEY: &str = "base";
 
 /// Why a transfer or event was not turned into a deposit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +44,9 @@ impl Skipped {
 /// Returns `None` for addresses that are not 42-character `0x`-prefixed hex.
 /// Checksum validation is not performed (all valid checksums become lowercase).
 pub fn normalize_address(address: &str) -> Option<String> {
-    let stripped = address.strip_prefix("0x").or_else(|| address.strip_prefix("0X"))?;
+    let stripped = address
+        .strip_prefix("0x")
+        .or_else(|| address.strip_prefix("0X"))?;
     if stripped.len() != 40 || !stripped.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
@@ -94,17 +101,26 @@ mod tests {
     fn normalize_address_rejects_wrong_length() {
         assert_eq!(normalize_address("0x123"), None);
         assert_eq!(normalize_address("0xabcdef"), None);
-        assert_eq!(normalize_address("0xabc000000000000000000000000000000000000011"), None);
+        assert_eq!(
+            normalize_address("0xabc000000000000000000000000000000000000011"),
+            None
+        );
     }
 
     #[test]
     fn normalize_address_rejects_non_hex() {
-        assert_eq!(normalize_address("0xZZZ0000000000000000000000000000000000001"), None);
+        assert_eq!(
+            normalize_address("0xZZZ0000000000000000000000000000000000001"),
+            None
+        );
     }
 
     #[test]
     fn normalize_address_rejects_missing_prefix() {
-        assert_eq!(normalize_address("abc0000000000000000000000000000000000001"), None);
+        assert_eq!(
+            normalize_address("abc0000000000000000000000000000000000001"),
+            None
+        );
     }
 
     #[test]
@@ -112,7 +128,10 @@ mod tests {
         assert_eq!(parse_quantity("0x0"), Some(0));
         assert_eq!(parse_quantity("0x1"), Some(1));
         assert_eq!(parse_quantity("0xff"), Some(255));
-        assert_eq!(parse_quantity("0xde0b6b3a7640000"), Some(1_000_000_000_000_000_000));
+        assert_eq!(
+            parse_quantity("0xde0b6b3a7640000"),
+            Some(1_000_000_000_000_000_000)
+        );
     }
 
     #[test]
