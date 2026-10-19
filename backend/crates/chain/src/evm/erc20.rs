@@ -5,10 +5,10 @@ use std::collections::HashSet;
 
 use engipay_core::{Asset, Chain, Money};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::confirmations::confirmations_u32;
-use super::{normalize_address, parse_u64, Skipped};
+use super::{Skipped, normalize_address, parse_u64};
 use crate::{ChainError, ObservedDeposit};
 
 /// `keccak256("Transfer(address,address,uint256)")`.
