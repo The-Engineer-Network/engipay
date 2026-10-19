@@ -75,13 +75,30 @@ impl StellarConfig {
     }
 }
 
+/// A Stellar HTTP client that can be cheaply cloned.
+///
+/// `Clone` shares the same underlying `reqwest::Client` connection pool and
+/// the same in-process transaction cache, so multiple workers (e.g. the
+/// broadcast sender and the finality poller) can be constructed from a single
+/// original without redundant round-trips.
 pub struct StellarClient {
     config: StellarConfig,
     http: reqwest::Client,
     /// Short-lived cache for `GET /transactions/{hash}` responses.
-    /// Wrapped in a `Mutex` so `deposits_since` (which takes `&self` via the
-    /// trait) can populate the cache without needing `&mut self`.
-    transaction_cache: Mutex<TransactionCache>,
+    /// Wrapped in `Arc<Mutex<…>>` so the cache is shared across clones and
+    /// `deposits_since` (which takes `&self` via the trait) can populate it
+    /// without needing `&mut self`.
+    transaction_cache: Arc<Mutex<TransactionCache>>,
+}
+
+impl Clone for StellarClient {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            http: self.http.clone(),
+            transaction_cache: Arc::clone(&self.transaction_cache),
+        }
+    }
 }
 
 impl StellarClient {
@@ -94,7 +111,7 @@ impl StellarClient {
         Ok(Self {
             config,
             http,
-            transaction_cache: Mutex::new(TransactionCache::new()),
+            transaction_cache: Arc::new(Mutex::new(TransactionCache::new())),
         })
     }
 

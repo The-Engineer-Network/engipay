@@ -74,20 +74,23 @@ impl StellarWatcher {
     /// 2. Fetches the current Horizon tip.
     /// 3. Fetches all payments from `next_ledger` onwards.
     /// 4. For each creditable, unseen deposit, calls `on_deposit`.
-    /// 5. Advances the cursor to the fetched tip (overlap-by-one is the
-    ///    reason we use the *previous* `next_ledger` in step 3).
+    /// 5. Advances the cursor to `tip` and calls `on_tick(tip)` so callers
+    ///    can persist the cursor position.
     ///
-    /// `on_deposit` receives every new creditable deposit.  Errors it returns
-    /// are surfaced to the caller as the `Err` variant of the run result so
-    /// the supervisor can decide whether to restart.
-    pub async fn run<F, Fut>(
+    /// `on_deposit` receives every new creditable deposit.
+    /// `on_tick` is called once per successful poll with the current `tip`.
+    /// It is not called when the Horizon request fails (the cursor stays put).
+    pub async fn run<F, Fut, T, Tfut>(
         &self,
         start_ledger: u64,
         cancel: CancellationToken,
         mut on_deposit: F,
+        mut on_tick: T,
     ) where
         F: FnMut(ObservedDeposit) -> Fut,
         Fut: std::future::Future<Output = ()>,
+        T: FnMut(u64) -> Tfut,
+        Tfut: std::future::Future<Output = ()>,
     {
         let mut next_ledger = start_ledger;
         let mut seen: HashSet<String> = HashSet::new();
@@ -159,6 +162,8 @@ impl StellarWatcher {
             // deposit that arrived in this exact ledger but was not yet
             // confirmed is naturally retried.
             next_ledger = tip;
+            // Notify the caller of the new tip so it can persist the cursor.
+            on_tick(tip).await;
         }
     }
 }
@@ -260,7 +265,7 @@ mod tests {
                 async move {
                     collected.lock().unwrap().push(deposit);
                 }
-            })
+            }, |_| async {})
             .await;
         });
 
@@ -324,7 +329,7 @@ mod tests {
                 async move {
                     *count.lock().unwrap() += 1;
                 }
-            })
+            }, |_| async {})
             .await;
         });
 
@@ -363,7 +368,7 @@ mod tests {
         let cancel_clone = cancel.clone();
 
         let handle = tokio::spawn(async move {
-            w.run(10, cancel_clone, |_| async {}).await;
+            w.run(10, cancel_clone, |_| async {}, |_| async {}).await;
         });
 
         // Give it enough time to retry and succeed.
@@ -386,7 +391,7 @@ mod tests {
         let cancel_clone = cancel.clone();
 
         let handle = tokio::spawn(async move {
-            w.run(5, cancel_clone, |_| async {}).await;
+            w.run(5, cancel_clone, |_| async {}, |_| async {}).await;
         });
 
         // Cancel almost immediately.

@@ -10,7 +10,6 @@
 //!
 //! Configuration comes from the environment; see backend/.env.example.
 
-use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,14 +28,11 @@ use engipay_chain::workers::reconcile::{ReconcileWorker, DEFAULT_INTERVAL as REC
 use engipay_chain::workers::withdrawal::{
     DEFAULT_POLL_INTERVAL, StellarWithdrawalSender, WithdrawalWorker,
 };
-use engipay_chain::{ChainClient, is_creditable};
+use engipay_chain::ChainClient;
 use engipay_core::{Asset, Money};
 use sqlx::postgres::PgPoolOptions;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-
-/// References remembered to avoid reporting a deposit twice when polls overlap.
-const SEEN_CAPACITY: usize = 10_000;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -294,10 +290,6 @@ async fn watch() -> anyhow::Result<()> {
         "watching stellar deposits"
     );
 
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut seen_order: VecDeque<String> = VecDeque::new();
-    let mut ticker = tokio::time::interval(poll);
-
     // Spin up the daily reconciliation worker if we have a database pool.
     // It runs as a separate task so it never blocks the deposit watcher.
     let reconcile_shutdown = CancellationToken::new();
@@ -308,8 +300,6 @@ async fn watch() -> anyhow::Result<()> {
             .map(Duration::from_secs)
             .unwrap_or(RECONCILE_INTERVAL);
 
-        // Build a fresh StellarClient for the reconciler (StellarClient is not
-        // Clone, and the deposit watcher needs its own to avoid shared state).
         if let Ok(Some(reconcile_stellar)) = stellar_client() {
             let worker = ReconcileWorker::new(p.clone(), reconcile_stellar);
             let token = reconcile_shutdown.clone();
@@ -323,6 +313,61 @@ async fn watch() -> anyhow::Result<()> {
         }
     }
 
+    // Delegate polling and deduplication to StellarWatcher.
+    // Dedup, overlap-by-one, and interval timing are all handled inside the
+    // watcher; we only need to supply the deposit and tick callbacks.
+    let watcher =
+        engipay_chain::stellar::watcher::StellarWatcher::new(stellar, poll);
+    let watcher_creditor = creditor;
+    let watcher_cursor: Option<Arc<engipay_chain::stellar::cursor::CursorStore>> =
+        cursor_store.map(Arc::new);
+    let watcher_shutdown = shutdown.clone();
+    let mut watcher_handle = tokio::spawn(async move {
+        watcher
+            .run(
+                next_ledger,
+                watcher_shutdown,
+                |deposit| {
+                    let creditor = watcher_creditor.clone();
+                    async move {
+                        match &creditor {
+                            Some(c) => {
+                                c.process(deposit).await;
+                                engipay_chain::metrics::DEPOSITS_CREDITED
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            None => {
+                                info!(
+                                    amount    = %deposit.money,
+                                    reference = %deposit.reference,
+                                    address   = %deposit.address,
+                                    "stellar deposit creditable (no database configured — not credited)"
+                                );
+                            }
+                        }
+                    }
+                },
+                |tip| {
+                    let store = watcher_cursor.clone();
+                    async move {
+                        engipay_chain::metrics::LAST_PROCESSED_LEDGER
+                            .store(tip, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(s) = &store {
+                            let cursor_value = cursor_for_ledger(tip)
+                                .map(|c| c.to_string())
+                                .unwrap_or_else(|| tip.to_string());
+                            if let Err(error) =
+                                s.save(STELLAR_CHAIN_KEY, &cursor_value).await
+                            {
+                                warn!(%error, "could not persist cursor; will retry next poll");
+                            }
+                        }
+                    }
+                },
+            )
+            .await;
+    });
+
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -331,84 +376,24 @@ async fn watch() -> anyhow::Result<()> {
                 reconcile_shutdown.cancel();
                 // Wait for the HTTP server to drain in-flight requests.
                 let _ = (&mut server_handle).await;
+                let _ = (&mut watcher_handle).await;
                 return Ok(());
             }
             result = &mut server_handle => {
                 // The HTTP server stopped on its own — this is unexpected.
                 reconcile_shutdown.cancel();
+                shutdown.cancel();
+                let _ = (&mut watcher_handle).await;
                 return match result {
                     Ok(Ok(())) => bail!("internal HTTP server stopped unexpectedly"),
                     Ok(Err(e)) => Err(anyhow::anyhow!("internal HTTP server error: {e}")),
                     Err(e) => Err(anyhow::anyhow!("internal HTTP server task panicked: {e}")),
                 };
             }
-            _ = ticker.tick() => {}
-        }
-
-        // Read the tip first, then everything from the last tip onwards. Polls
-        // overlap by one ledger on purpose; `seen` drops the repeats.
-        let tip = match stellar.latest_height().await {
-            Ok(tip) => tip,
-            Err(error) => {
-                warn!(%error, "horizon unavailable; retrying");
-                continue;
-            }
-        };
-        let deposits = match stellar.deposits_since(next_ledger).await {
-            Ok(deposits) => deposits,
-            Err(error) => {
-                warn!(%error, "could not read deposits; retrying");
-                continue;
-            }
-        };
-
-        for deposit in deposits {
-            if !is_creditable(&stellar, &deposit) || seen.contains(&deposit.reference) {
-                continue;
-            }
-
-            // Deduplicate before calling the creditor so the in-memory `seen`
-            // set short-circuits the overlap-by-one without a database round-trip.
-            seen.insert(deposit.reference.clone());
-            seen_order.push_back(deposit.reference.clone());
-            while seen_order.len() > SEEN_CAPACITY {
-                if let Some(oldest) = seen_order.pop_front() {
-                    seen.remove(&oldest);
-                }
-            }
-
-            match &creditor {
-                Some(c) => {
-                    // Credit the ledger. The creditor handles DLQ routing for
-                    // unresolvable addresses and ledger errors; it never panics
-                    // or returns an error that would crash this loop.
-                    c.process(deposit).await;
-                    engipay_chain::metrics::DEPOSITS_CREDITED
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                None => {
-                    // No database: log what would have been credited.
-                    info!(
-                        amount    = %deposit.money,
-                        reference = %deposit.reference,
-                        address   = %deposit.address,
-                        "stellar deposit creditable (no database configured — not credited)"
-                    );
-                }
-            }
-        }
-
-        // Advance cursor. Persist it atomically so a restart resumes here.
-        next_ledger = tip;
-        engipay_chain::metrics::LAST_PROCESSED_LEDGER
-            .store(tip, std::sync::atomic::Ordering::Relaxed);
-
-        if let Some(store) = &cursor_store {
-            let cursor_value = cursor_for_ledger(tip)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| tip.to_string());
-            if let Err(error) = store.save(STELLAR_CHAIN_KEY, &cursor_value).await {
-                warn!(%error, "could not persist cursor; will retry next poll");
+            _ = &mut watcher_handle => {
+                // Watcher ended (typically after cancellation).
+                reconcile_shutdown.cancel();
+                return Ok(());
             }
         }
     }
@@ -463,13 +448,16 @@ async fn withdrawals() -> anyhow::Result<()> {
         on_signal.cancel();
     });
 
-    // Wire finality polling and settlement into the withdrawals command
+    // Wire finality polling and settlement into the withdrawals command.
+    // Each row in `broadcast_accepted` is polled until Horizon confirms it
+    // landed in a closed ledger (or times out), then `apply_finality` settles
+    // the hold or releases it, and advances the status to `completed`/`failed`.
     let finality_shutdown = shutdown.clone();
     let finality_pool = pool.clone();
     let finality_client = client.clone();
     tokio::spawn(async move {
         use engipay_chain::withdrawals::PgWithdrawalStore;
-        use engipay_chain::stellar::broadcast::FinalityPoller;
+        use engipay_chain::stellar::broadcast::{FinalityPoller, poll_transaction_finality};
         use engipay_chain::stellar::settlement::apply_finality;
         use engipay_ledger::postgres::PostgresLedgerStore;
 
@@ -479,12 +467,14 @@ async fn withdrawals() -> anyhow::Result<()> {
 
         while !finality_shutdown.is_cancelled() {
             if let Ok(rows) = sqlx::query_as::<_, (uuid::Uuid, String)>(
-                "SELECT id, tx_hash FROM withdrawals WHERE status = 'broadcast_accepted' AND tx_hash IS NOT NULL LIMIT 10"
+                "SELECT id, tx_hash FROM withdrawals \
+                 WHERE status = 'broadcast_accepted' AND tx_hash IS NOT NULL \
+                 LIMIT 10"
             )
             .fetch_all(&finality_pool)
             .await {
                 for (id, tx_hash) in rows {
-                    let outcome = poller.poll(&finality_client, &tx_hash).await;
+                    let outcome = poll_transaction_finality(&finality_client, &tx_hash, &poller).await;
                     let _ = apply_finality(&store, &ledger, id, outcome).await;
                 }
             }
