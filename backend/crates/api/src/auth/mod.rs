@@ -3,8 +3,10 @@
 //! rules that decide whether a caller is who they claim to be can be unit
 //! tested without a database or a running server.
 
+pub mod admin_jwt;
 pub mod jwt;
 pub mod stellar;
+pub mod totp;
 
 pub use jwt::{AuthError, Claims};
 pub use stellar::validate_challenge;

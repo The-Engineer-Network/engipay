@@ -28,6 +28,9 @@ pub struct Config {
     pub buy_kobo_per_usdc: Option<i128>,
     /// Fee on Naira buys in basis points (`BUY_FEE_BPS`). Unset means no quote.
     pub buy_fee_bps: Option<u32>,
+    /// HMAC-SHA256 signing key for admin session JWTs (see `auth::admin_jwt`).
+    /// When unset the entire `/admin` namespace returns 503.
+    pub admin_jwt_secret: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +111,9 @@ impl Config {
             tier_0_daily_limit_minor,
             buy_kobo_per_usdc,
             buy_fee_bps,
+            admin_jwt_secret: env::var("ADMIN_JWT_SECRET")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
         })
     }
 
@@ -127,6 +133,7 @@ impl Config {
             tier_0_daily_limit_minor: 500 * 10_000_000,
             buy_kobo_per_usdc: None,
             buy_fee_bps: None,
+            admin_jwt_secret: Some("admin-test-secret-do-not-use-in-production".to_owned()),
         }
     }
 }

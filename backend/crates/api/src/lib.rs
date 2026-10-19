@@ -64,6 +64,9 @@ pub fn router(state: AppState, config: &Config) -> Router {
         // `/metrics` is outside `/v1` so it is never reachable through the
         // public API prefix.
         .merge(routes::metrics::routes())
+        // `/admin` is outside `/v1` — it is a completely separate namespace
+        // with its own JWT signing key and mandatory TOTP second factor.
+        .merge(routes::admin::routes())
         .nest("/v1", routes::v1())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
