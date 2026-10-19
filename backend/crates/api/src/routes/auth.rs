@@ -8,7 +8,7 @@
 //! need a live database at build time that CI does not provide. The files are
 //! kept so the work is not lost; see issues #99-#105 for the rewrite.
 mod nonce;
-mod siwe;
+pub(crate) mod siwe;
 mod user;
 
 pub use user::AuthUser;

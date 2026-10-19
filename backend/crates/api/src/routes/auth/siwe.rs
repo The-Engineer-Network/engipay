@@ -79,11 +79,21 @@ async fn verify_evm(
         ));
     }
 
-    let existing = sqlx::query("SELECT id FROM users WHERE wallet_address = $1")
-        .bind(&claimed)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| db_error("failed to look up user", e))?;
+    // A wallet can sign in whether it is the account's first wallet or one
+    // linked later. A linked wallet that has been unlinked past its removal
+    // time no longer counts.
+    let existing = sqlx::query(
+        "SELECT id FROM users WHERE wallet_address = $1 \
+         UNION ALL \
+         SELECT user_id AS id FROM user_wallets \
+         WHERE chain = 'evm' AND address = $1 \
+           AND (removal_effective_at IS NULL OR removal_effective_at > now()) \
+         LIMIT 1",
+    )
+    .bind(&claimed)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| db_error("failed to look up user", e))?;
 
     let user_id = match existing {
         Some(row) => row
@@ -122,7 +132,7 @@ fn db_error(context: &str, error: sqlx::Error) -> ApiError {
 
 /// Returns the address as lowercase `0x` plus 40 hex digits, or None when the
 /// input is not an address.
-fn normalise_address(input: &str) -> Option<String> {
+pub(crate) fn normalise_address(input: &str) -> Option<String> {
     let hex = input
         .strip_prefix("0x")
         .or_else(|| input.strip_prefix("0X"))?;
@@ -133,7 +143,7 @@ fn normalise_address(input: &str) -> Option<String> {
 }
 
 /// The nonce is the text after `Nonce: ` on the message's own line.
-fn nonce_from_message(message: &str) -> Option<String> {
+pub(crate) fn nonce_from_message(message: &str) -> Option<String> {
     let nonce = message
         .lines()
         .find_map(|line| line.strip_prefix("Nonce: "))?
@@ -162,7 +172,7 @@ fn address_of(key: &VerifyingKey) -> String {
 
 /// Recovers the lowercase address that signed `message`, or None when the
 /// signature is malformed or does not recover to any key.
-fn recover_address(message: &str, signature_hex: &str) -> Option<String> {
+pub(crate) fn recover_address(message: &str, signature_hex: &str) -> Option<String> {
     let bytes = hex::decode(signature_hex.strip_prefix("0x").unwrap_or(signature_hex)).ok()?;
     if bytes.len() != 65 {
         return None;

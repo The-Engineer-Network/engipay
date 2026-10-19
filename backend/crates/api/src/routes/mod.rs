@@ -16,6 +16,7 @@ pub mod requests;
 pub mod scheduled_transfers;
 pub mod transactions;
 pub mod transfers;
+pub mod wallets;
 pub mod withdrawals;
 
 use axum::Router;
@@ -40,5 +41,6 @@ pub fn v1() -> Router<AppState> {
         .merge(payment_requests::routes())
         .merge(transfers::routes())
         .merge(scheduled_transfers::routes())
+        .merge(wallets::routes())
         .merge(withdrawals::router())
 }
