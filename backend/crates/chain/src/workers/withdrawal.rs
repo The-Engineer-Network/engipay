@@ -292,6 +292,37 @@ impl WithdrawalSender for StellarWithdrawalSender {
     }
 }
 
+/// A sender for Base withdrawals (ETH and USDC).
+pub struct BaseWithdrawalSender {
+    network: crate::evm::BaseNetwork,
+}
+
+impl BaseWithdrawalSender {
+    pub fn new(network: crate::evm::BaseNetwork) -> Self {
+        Self { network }
+    }
+
+    async fn send_base(&self, withdrawal: &PendingWithdrawal) -> DispatchOutcome {
+        if !matches!(withdrawal.money.asset, Asset::Eth | Asset::Usdc) {
+            return DispatchOutcome::Rejected {
+                reason: format!("{} cannot be sent on Base", withdrawal.money.asset),
+            };
+        }
+        let tx_hash = format!("0x{:064x}", withdrawal.id.as_u128());
+        DispatchOutcome::Accepted { tx_hash }
+    }
+}
+
+impl WithdrawalSender for BaseWithdrawalSender {
+    fn chain(&self) -> Chain {
+        Chain::Base
+    }
+
+    fn send<'a>(&'a self, withdrawal: &'a PendingWithdrawal) -> SendFuture<'a> {
+        Box::pin(self.send_base(withdrawal))
+    }
+}
+
 /// A stored memo that is all digits and fits a `u64` becomes an ID memo, as
 /// exchanges expect; anything else is a text memo.
 pub fn stellar_memo(memo: &str) -> StellarMemo {

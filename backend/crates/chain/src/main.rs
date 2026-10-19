@@ -375,10 +375,14 @@ async fn withdrawals() -> anyhow::Result<()> {
     drop(secret);
     info!(from = %signer.account(), "withdrawal worker starting");
 
-    let worker = WithdrawalWorker::new(pool).with_sender(Arc::new(StellarWithdrawalSender::new(
-        client,
-        Arc::new(signer),
-    )));
+    let worker = WithdrawalWorker::new(pool)
+        .with_sender(Arc::new(StellarWithdrawalSender::new(
+            client,
+            Arc::new(signer),
+        )))
+        .with_sender(Arc::new(engipay_chain::workers::withdrawal::BaseWithdrawalSender::new(
+            engipay_chain::evm::BaseNetwork::Sepolia,
+        )));
     let shutdown = CancellationToken::new();
     let on_signal = shutdown.clone();
     tokio::spawn(async move {
