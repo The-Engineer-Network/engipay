@@ -9,6 +9,7 @@ pub mod health;
 pub mod kyc;
 pub mod me;
 pub mod metrics;
+pub mod notifications;
 pub mod openapi;
 pub mod payment_requests;
 pub mod requests;
@@ -32,6 +33,7 @@ pub fn v1() -> Router<AppState> {
         .merge(deposits::routes())
         .merge(kyc::routes())
         .merge(me::routes())
+        .merge(notifications::routes())
         .merge(transactions::routes())
         .merge(requests::routes())
         .merge(payment_requests::routes())

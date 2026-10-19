@@ -7,6 +7,7 @@ pub mod buy;
 pub mod cooling_off;
 pub mod kyc_provider;
 pub mod limits;
+pub mod notifications;
 pub mod payment_envelope;
 pub mod payment_requests;
 pub mod price_source;
