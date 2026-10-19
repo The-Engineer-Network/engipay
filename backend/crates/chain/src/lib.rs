@@ -13,7 +13,6 @@
 //! starting with `POST /internal/estimate-fee` ([`routes::estimate_fee`]).
 
 pub mod bitcoin;
-pub mod creditor;
 pub mod deposit_creditor;
 pub mod dlq;
 pub mod dlq_commands;

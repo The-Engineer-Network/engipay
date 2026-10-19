@@ -375,8 +375,9 @@ async fn withdrawals() -> anyhow::Result<()> {
     drop(secret);
     info!(from = %signer.account(), "withdrawal worker starting");
 
-    let worker = WithdrawalWorker::new(pool).with_sender(Arc::new(StellarWithdrawalSender::new(
-        client,
+    let worker_pool = pool.clone();
+    let worker = WithdrawalWorker::new(worker_pool).with_sender(Arc::new(StellarWithdrawalSender::new(
+        client.clone(),
         Arc::new(signer),
     )));
     let shutdown = CancellationToken::new();
@@ -385,6 +386,36 @@ async fn withdrawals() -> anyhow::Result<()> {
         let _ = tokio::signal::ctrl_c().await;
         on_signal.cancel();
     });
+
+    // Wire finality polling and settlement into the withdrawals command
+    let finality_shutdown = shutdown.clone();
+    let finality_pool = pool.clone();
+    let finality_client = client.clone();
+    tokio::spawn(async move {
+        use engipay_chain::withdrawals::PgWithdrawalStore;
+        use engipay_chain::stellar::broadcast::FinalityPoller;
+        use engipay_chain::stellar::settlement::apply_finality;
+        use engipay_ledger::postgres::PostgresLedgerStore;
+
+        let poller = FinalityPoller::new();
+        let store = PgWithdrawalStore::new(finality_pool.clone());
+        let ledger = PostgresLedgerStore::new(finality_pool.clone());
+
+        while !finality_shutdown.is_cancelled() {
+            if let Ok(rows) = sqlx::query_as::<_, (uuid::Uuid, String)>(
+                "SELECT id, tx_hash FROM withdrawals WHERE status = 'broadcast_accepted' AND tx_hash IS NOT NULL LIMIT 10"
+            )
+            .fetch_all(&finality_pool)
+            .await {
+                for (id, tx_hash) in rows {
+                    let outcome = poller.poll(&finality_client, &tx_hash).await;
+                    let _ = apply_finality(&store, &ledger, id, outcome).await;
+                }
+            }
+            tokio::time::sleep(DEFAULT_POLL_INTERVAL).await;
+        }
+    });
+
     worker.run(DEFAULT_POLL_INTERVAL, shutdown).await;
     Ok(())
 }

@@ -9,6 +9,7 @@ pub mod horizon;
 pub mod network;
 pub mod payment;
 pub mod settlement;
+pub mod watcher;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
