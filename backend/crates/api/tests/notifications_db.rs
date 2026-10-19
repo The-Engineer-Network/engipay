@@ -14,7 +14,7 @@ use engipay_api::services::notifications::{NewNotification, record};
 use engipay_api::{AppState, config::Config, router};
 use engipay_core::UserId;
 use http_body_util::BodyExt;
-use serde_json::{Value, json};
+use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 use uuid::Uuid;
