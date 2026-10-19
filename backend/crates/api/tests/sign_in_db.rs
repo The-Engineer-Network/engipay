@@ -27,11 +27,7 @@ async fn app() -> axum::Router {
         .unwrap();
     let config = Config::for_tests();
     router(
-        AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        },
+        AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
         &config,
     )
 }

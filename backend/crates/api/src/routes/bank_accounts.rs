@@ -1,9 +1,11 @@
 //! Payout bank accounts: the Nigerian accounts that receive Naira from sales.
 //!
-//! An account is only saved once the payout partner has confirmed its name
-//! (the `account_name` column is required). That lookup is not connected yet,
-//! so adding an account returns 503. Listing and removing work on accounts
-//! that already exist.
+//! An account is saved only after the payout partner confirms the account name
+//! (the NUBAN name enquiry). The name check is performed by the configured
+//! [`BankNameCheck`] provider — in development and tests a fake always succeeds.
+//!
+//! The full account number is never returned in list responses: only the last
+//! four digits are included, as `account_number_last4`.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -16,6 +18,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
+use crate::services::bank_name_check::NameCheckError;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -61,14 +64,12 @@ pub struct AddAccountRequest {
 pub struct BankAccountResponse {
     pub id: Uuid,
     pub bank_code: String,
+    /// Last 4 digits only — the full number is never returned.
     pub account_number_last4: String,
     /// The name the payout partner confirmed for this account.
     pub account_name: String,
     pub verified: bool,
 }
-
-const NAME_CHECK_NOT_CONNECTED: &str =
-    "Adding a bank account needs the account name check, which is not connected yet.";
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -83,7 +84,8 @@ async fn list_accounts(
         .ok_or(ApiError::DatabaseUnavailable)?;
 
     let rows = sqlx::query(
-        "SELECT id, bank_code, account_number, account_name, verified FROM bank_accounts \
+        "SELECT id, bank_code, account_number, account_name, verified \
+         FROM bank_accounts \
          WHERE user_id = $1 ORDER BY created_at",
     )
     .bind(user_id)
@@ -111,13 +113,62 @@ async fn add_account(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<AddAccountRequest>,
-) -> Result<StatusCode, ApiError> {
-    // Authenticate first, then check the input, then report the missing name check.
-    let _user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
+) -> Result<(StatusCode, Json<BankAccountResponse>), ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?.as_uuid();
+    let db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
     validate_bank_code(&req.bank_code)?;
     validate_account_number(&req.account_number)?;
 
-    Err(ApiError::Unavailable(NAME_CHECK_NOT_CONNECTED.to_string()))
+    // Name enquiry with the configured provider. Logs only the last 4 digits.
+    let account_name = state
+        .bank_name_check
+        .lookup(&req.bank_code, &req.account_number)
+        .map_err(|e| match e {
+            NameCheckError::NotFound => ApiError::BadRequest(
+                "Account not found: check the bank code and account number.".to_string(),
+            ),
+            NameCheckError::Unavailable => {
+                ApiError::Unavailable("Bank name check is temporarily unavailable.".to_string())
+            }
+            NameCheckError::Provider(msg) => {
+                ApiError::Internal(anyhow::anyhow!("name check provider error: {msg}"))
+            }
+        })?
+        .name;
+
+    let row = sqlx::query(
+        "INSERT INTO bank_accounts \
+             (id, user_id, bank_code, account_number, account_name, verified) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, true) \
+         ON CONFLICT (user_id, bank_code, account_number) \
+         DO UPDATE SET account_name = EXCLUDED.account_name, verified = true \
+         RETURNING id",
+    )
+    .bind(user_id)
+    .bind(&req.bank_code)
+    .bind(&req.account_number)
+    .bind(&account_name)
+    .fetch_one(db)
+    .await
+    .map_err(db_error)?;
+
+    let id: Uuid = row.try_get("id").map_err(db_error)?;
+    let last4 = req.account_number[req.account_number.len() - 4..].to_string();
+
+    Ok((
+        StatusCode::CREATED,
+        Json(BankAccountResponse {
+            id,
+            bank_code: req.bank_code,
+            account_number_last4: last4,
+            account_name,
+            verified: true,
+        }),
+    ))
 }
 
 async fn remove_account(

@@ -32,11 +32,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState {
-        database,
-        config: config.clone(),
-        rate_limiter: RateLimiter::new(),
-    };
+    let state = AppState::with_fakes(database, config.clone(), RateLimiter::new());
     let app = router(state, &config);
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)

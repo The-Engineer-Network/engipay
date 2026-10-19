@@ -415,11 +415,7 @@ mod tests {
     fn app() -> axum::Router {
         let config = Config::for_tests();
         router(
-            AppState {
-                database: None,
-                config: config.clone(),
-                rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(None, config.clone(), RateLimiter::new()),
             &config,
         )
     }
@@ -530,11 +526,7 @@ mod tests {
         let mut config = Config::for_tests();
         config.stellar_custody_account = Some(custody.to_owned());
         router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-                rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
     }
@@ -543,11 +535,7 @@ mod tests {
         let mut config = Config::for_tests();
         config.base_custody_address = Some(address.to_owned());
         router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-                rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
     }
@@ -556,11 +544,7 @@ mod tests {
         let mut config = Config::for_tests();
         config.bitcoin_custody_address = Some(address.to_owned());
         router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-                rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
     }

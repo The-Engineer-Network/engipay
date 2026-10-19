@@ -561,11 +561,7 @@ mod tests {
     fn app() -> axum::Router {
         let config = Config::for_tests();
         router(
-            AppState {
-                database: None,
-                config: config.clone(),
-                rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(None, config.clone(), RateLimiter::new()),
             &config,
         )
     }
@@ -690,11 +686,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -810,11 +802,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
         let token = crate::auth::jwt::create_token(
             user.as_uuid(),
@@ -871,11 +859,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -949,11 +933,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -1053,11 +1033,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -1129,11 +1105,7 @@ mod tests {
         .unwrap();
 
         let response = router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-                rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
         .oneshot(
@@ -1191,11 +1163,7 @@ mod tests {
         .unwrap();
 
         let response = router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-                rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
         .oneshot(

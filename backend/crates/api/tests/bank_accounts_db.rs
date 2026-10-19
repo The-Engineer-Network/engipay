@@ -26,11 +26,7 @@ async fn setup() -> (axum::Router, sqlx::PgPool) {
         .unwrap();
     let config = Config::for_tests();
     let app = router(
-        AppState {
-            database: Some(pool.clone()),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        },
+        AppState::with_fakes(Some(pool.clone()), config.clone(), RateLimiter::new()),
         &config,
     );
     (app, pool)
@@ -79,29 +75,13 @@ async fn send(
     )
 }
 
-/// Stores an account the way the payout partner's name check would: with a
-/// confirmed name. Adding through the API is not possible until that check exists.
-async fn verified_account(pool: &sqlx::PgPool, user_id: Uuid, number: &str) -> String {
-    let id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO bank_accounts (id, user_id, bank_code, account_number, account_name, verified) \
-         VALUES ($1, $2, '044', $3, 'TEST ACCOUNT HOLDER', true)",
-    )
-    .bind(id)
-    .bind(user_id)
-    .bind(number)
-    .execute(pool)
-    .await
-    .unwrap();
-    id.to_string()
-}
-
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
-async fn adding_an_account_waits_for_the_name_check() {
+async fn add_list_and_remove_a_bank_account() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
 
+    // Add an account — FakeBankNameCheck always succeeds.
     let (status, body) = send(
         &app,
         "POST",
@@ -110,23 +90,19 @@ async fn adding_an_account_waits_for_the_name_check() {
         Some(json!({ "bank_code": "044", "account_number": "0123456789" })),
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    assert_eq!(body["error"]["code"], "unavailable");
-}
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["account_number_last4"], "6789");
+    assert!(!body["account_name"].as_str().unwrap().is_empty());
+    assert_eq!(body["verified"], true);
+    let id = body["id"].as_str().unwrap().to_string();
 
-#[tokio::test]
-#[ignore = "requires DATABASE_URL"]
-async fn a_verified_account_is_listed_and_removed() {
-    let (app, pool) = setup().await;
-    let (user_id, token) = user(&pool).await;
-    let id = verified_account(&pool, user_id, "0123456789").await;
-
+    // List — only the last 4 digits are returned.
     let (status, list) = send(&app, "GET", "/v1/bank-accounts", &token, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list[0]["account_number_last4"], "6789");
-    assert_eq!(list[0]["account_name"], "TEST ACCOUNT HOLDER");
-    assert_eq!(list[0]["verified"], true);
+    assert_eq!(list[0]["account_name"], body["account_name"]);
 
+    // Remove.
     let (status, _) = send(
         &app,
         "DELETE",
@@ -136,6 +112,61 @@ async fn a_verified_account_is_listed_and_removed() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Gone.
+    let (_, empty) = send(&app, "GET", "/v1/bank-accounts", &token, None).await;
+    assert!(empty.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn full_account_number_never_returned() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+
+    send(
+        &app,
+        "POST",
+        "/v1/bank-accounts",
+        &token,
+        Some(json!({ "bank_code": "044", "account_number": "9876543210" })),
+    )
+    .await;
+
+    let (_, list) = send(&app, "GET", "/v1/bank-accounts", &token, None).await;
+    let item = &list[0];
+    // Only last4 key exists; no full number in response.
+    assert!(item.get("account_number").is_none());
+    assert_eq!(item["account_number_last4"], "3210");
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn invalid_account_number_is_rejected() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+
+    // Too short
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/v1/bank-accounts",
+        &token,
+        Some(json!({ "bank_code": "044", "account_number": "012345678" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // Letters
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/v1/bank-accounts",
+        &token,
+        Some(json!({ "bank_code": "044", "account_number": "012345678a" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
 #[tokio::test]
@@ -144,7 +175,18 @@ async fn another_users_account_cannot_be_removed() {
     let (app, pool) = setup().await;
     let (owner_id, _) = user(&pool).await;
     let (_, stranger) = user(&pool).await;
-    let id = verified_account(&pool, owner_id, "1111111111").await;
+
+    // Insert directly so we don't depend on add flow.
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO bank_accounts (id, user_id, bank_code, account_number, account_name, verified) \
+         VALUES ($1, $2, '044', '1111111111', 'TEST ACCOUNT HOLDER', true)",
+    )
+    .bind(id)
+    .bind(owner_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let (status, _) = send(
         &app,
@@ -156,6 +198,55 @@ async fn another_users_account_cannot_be_removed() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
+    // The owner's list is unaffected.
     let (_, list) = send(&app, "GET", "/v1/bank-accounts", &stranger, None).await;
     assert!(list.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn a_user_sees_only_their_own_accounts() {
+    let (app, pool) = setup().await;
+    let (user1_id, token1) = user(&pool).await;
+    let (user2_id, token2) = user(&pool).await;
+
+    // Insert one account per user directly.
+    for (uid, num) in [(user1_id, "1111111111"), (user2_id, "2222222222")] {
+        sqlx::query(
+            "INSERT INTO bank_accounts (id, user_id, bank_code, account_number, account_name, verified) \
+             VALUES (gen_random_uuid(), $1, '044', $2, 'TEST', true)",
+        )
+        .bind(uid)
+        .bind(num)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let (_, list1) = send(&app, "GET", "/v1/bank-accounts", &token1, None).await;
+    let (_, list2) = send(&app, "GET", "/v1/bank-accounts", &token2, None).await;
+
+    assert_eq!(list1.as_array().unwrap().len(), 1);
+    assert_eq!(list2.as_array().unwrap().len(), 1);
+    assert_eq!(list1[0]["account_number_last4"], "1111");
+    assert_eq!(list2[0]["account_number_last4"], "2222");
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn adding_same_account_twice_is_idempotent() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+
+    let req = json!({ "bank_code": "044", "account_number": "0123456789" });
+
+    let (s1, _) = send(&app, "POST", "/v1/bank-accounts", &token, Some(req.clone())).await;
+    let (s2, _) = send(&app, "POST", "/v1/bank-accounts", &token, Some(req)).await;
+
+    assert_eq!(s1, StatusCode::CREATED);
+    // ON CONFLICT DO UPDATE returns the same row — CREATED or OK both acceptable.
+    assert!(s2 == StatusCode::CREATED || s2 == StatusCode::OK, "second add: {s2}");
+
+    let (_, list) = send(&app, "GET", "/v1/bank-accounts", &token, None).await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "must not duplicate");
 }
