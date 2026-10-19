@@ -2,11 +2,22 @@
 //!
 //! `engipay-chain watch` (the default subcommand of the binary) starts one of
 //! these loops per configured network - Stellar today, Base alongside it as of
-//! #382. Each loop polls its [`ChainClient`] for the latest height, scans from
-//! the last height it processed, credits deposits through the
-//! [`DepositCreditor`], and persists its position in `chain_cursors` so a
-//! restart resumes where it left off instead of skipping everything that
-//! arrived while the process was down.
+//! #382. Each loop delegates polling to a [`ReorgSafeWatcher`], which reads
+//! the latest height, verifies the block headers the chain can report (Base
+//! can; Stellar's ledgers are final, so it reports none), scans from the last
+//! height it processed, gates deposits behind `required_confirmations`, and
+//! credits them through the [`DepositCreditor`]. The processed position is
+//! persisted in `chain_cursors` so a restart resumes where it left off
+//! instead of skipping everything that arrived while the process was down.
+//!
+//! # Chain reorganisations (#381)
+//! A Base block that no longer links to the recorded chain by parent hash
+//! makes the watcher rewind to the common ancestor and re-scan everything
+//! above it. Deposits are only emitted at or beyond the confirmation depth,
+//! and the ledger's reference idempotency is the durable backstop, so a
+//! deposit that a reorg (or a restart) makes visible twice is never credited
+//! twice. See [`crate::reorg`] for the machinery and the simulated-reorg
+//! tests in `tests/reorg_simulation.rs` for the end-to-end proof.
 //!
 //! # Cursor encoding
 //! `chain_cursors.cursor` is a plain string so each chain stores the value its
@@ -16,11 +27,10 @@
 //!
 //! # Overlap, not gaps
 //! The loop deliberately re-scans the last processed height on every poll
-//! (polls overlap by one height) and drops repeats through the in-memory
-//! `seen` ring. Overlapping is safe - duplicates are cheap - while a gap would
-//! silently lose a deposit.
+//! (polls overlap by one height) and drops repeats through the watcher's
+//! in-memory `seen` ring. Overlapping is safe - duplicates are cheap - while
+//! a gap would silently lose a deposit.
 
-use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,13 +38,11 @@ use anyhow::Context;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::ChainClient;
 use crate::deposit_creditor::DepositCreditor;
-use crate::stellar::cursor::{cursor_to_ledger, CursorError, CursorStore};
+use crate::reorg::ReorgSafeWatcher;
+use crate::stellar::cursor::{CursorError, CursorStore, cursor_to_ledger};
 use crate::stellar::horizon::cursor_for_ledger;
-use crate::{is_creditable, ChainClient};
-
-/// References remembered per loop to drop deposits seen by two overlapping polls.
-const SEEN_CAPACITY: usize = 10_000;
 
 /// How a chain's height is written to and read back from `chain_cursors`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,7 +142,7 @@ where
     // 1. Explicit override from the environment (backfills).
     // 2. Persisted cursor from the database (normal restart path).
     // 3. Current tip (first-ever run with no database).
-    let mut next_height: u64 = match cfg.start_override {
+    let next_height: u64 = match cfg.start_override {
         Some(height) => height,
         None => {
             let saved = match cursor_store.as_ref() {
@@ -159,8 +167,7 @@ where
         "watching deposits"
     );
 
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut seen_order: VecDeque<String> = VecDeque::new();
+    let mut watcher = ReorgSafeWatcher::new(client, next_height);
     let mut ticker = tokio::time::interval(cfg.poll);
 
     loop {
@@ -171,43 +178,38 @@ where
             _ = ticker.tick() => {}
         }
 
-        // Read the tip first, then everything from the last tip onwards. Polls
-        // overlap by one height on purpose; `seen` drops the repeats.
-        let tip = match client.latest_height().await {
-            Ok(tip) => tip,
+        // One poll: verify the block headers the chain can report (Base),
+        // rewind to the common ancestor when they stop linking by parent
+        // hash (#381), and return only deposits that passed the
+        // `required_confirmations` gate and are not repeats of an earlier
+        // poll. On chains without headers the poll degrades to the
+        // confirmation gate alone, which is exactly what Stellar needs.
+        let report = match watcher.poll_once().await {
+            Ok(report) => report,
             Err(error) => {
-                warn!(chain = cfg.chain_key, %error, "could not read the chain tip; retrying");
-                continue;
-            }
-        };
-        let deposits = match client.deposits_since(next_height).await {
-            Ok(deposits) => deposits,
-            Err(error) => {
-                warn!(chain = cfg.chain_key, %error, "could not read deposits; retrying");
+                warn!(chain = cfg.chain_key, %error, "could not read the chain; retrying");
                 continue;
             }
         };
 
-        for deposit in deposits {
-            if !is_creditable(&*client, &deposit) || seen.contains(&deposit.reference) {
-                continue;
-            }
+        if let Some(ancestor) = report.rewound_to {
+            warn!(
+                chain = cfg.chain_key,
+                ancestor,
+                tip = report.tip,
+                "chain reorganised; rewound to the common ancestor and rescanning"
+            );
+        }
 
-            // Deduplicate before calling the creditor so the in-memory `seen`
-            // ring short-circuits the overlap-by-one without a database round-trip.
-            seen.insert(deposit.reference.clone());
-            seen_order.push_back(deposit.reference.clone());
-            while seen_order.len() > SEEN_CAPACITY {
-                if let Some(oldest) = seen_order.pop_front() {
-                    seen.remove(&oldest);
-                }
-            }
-
+        for deposit in report.emitted {
             match &creditor {
                 Some(c) => {
                     // Credit the deposit. The creditor handles DLQ routing for
                     // unresolvable addresses and ledger errors; it never panics
-                    // or returns an error that would crash this loop.
+                    // or returns an error that would crash this loop. The
+                    // ledger's reference idempotency stops a deposit that a
+                    // reorg (or a restart) makes visible twice from being
+                    // credited twice.
                     c.process(deposit).await;
                 }
                 None => {
@@ -223,10 +225,11 @@ where
             }
         }
 
-        // Advance cursor. Persist it atomically so a restart resumes here.
-        next_height = tip;
+        // Persist the watcher's own cursor so a restart resumes exactly where
+        // the scan stopped - for Base below the tip, keeping the
+        // not-yet-final window inside the reorg-checkable range.
         if let Some(store) = &cursor_store {
-            let cursor_value = cfg.format.encode(tip);
+            let cursor_value = cfg.format.encode(watcher.cursor());
             if let Err(error) = store.save(cfg.chain_key, &cursor_value).await {
                 warn!(chain = cfg.chain_key, %error, "could not persist cursor; will retry next poll");
             }

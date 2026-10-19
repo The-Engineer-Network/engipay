@@ -18,6 +18,7 @@ pub mod dlq;
 pub mod dlq_commands;
 pub mod evm;
 pub mod metrics;
+pub mod reorg;
 pub mod routes;
 pub mod services;
 pub mod stellar;
@@ -94,6 +95,22 @@ pub trait ChainClient: Send + Sync {
     }
 
     fn latest_height(&self) -> impl std::future::Future<Output = Result<u64, ChainError>> + Send;
+
+    /// The header of the block at `height`, if the chain can report one.
+    ///
+    /// Reorg detection compares each new block's `parent_hash` with the
+    /// previously recorded hash for its parent's height (see
+    /// [`crate::reorg::ReorgTracker`]). Chains that finalize instantly and
+    /// never reorg — Stellar, for example — can keep the default, which
+    /// reports no headers; the watcher then relies on confirmation depth
+    /// alone. Base overrides this with `eth_getBlockByNumber`.
+    fn block_record(
+        &self,
+        _height: u64,
+    ) -> impl std::future::Future<Output = Result<Option<reorg::BlockRecord>, ChainError>> + Send
+    {
+        async { Ok(None) }
+    }
 
     fn deposits_since(
         &self,

@@ -8,7 +8,7 @@ use engipay_core::Chain;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::erc20::{deposits_from_logs, BaseNetwork};
+use super::erc20::{BaseNetwork, deposits_from_logs};
 use super::watcher::{BlockWatcher, FinalizedHeight};
 use crate::{ChainClient, ChainError, ObservedDeposit};
 
@@ -191,6 +191,85 @@ impl BaseClient {
             ChainError::Unavailable(format!("invalid block number: {}", block.number))
         })
     }
+
+    /// Fetches one block header by height via `eth_getBlockByNumber`, for
+    /// reorg detection in [`crate::reorg::ReorgSafeWatcher`].
+    ///
+    /// Returns `Ok(None)` when the node reports no block at that height
+    /// (pruned or not yet produced).
+    async fn fetch_block_record(
+        &self,
+        height: u64,
+    ) -> Result<Option<crate::reorg::BlockRecord>, ChainError> {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getBlockByNumber",
+            "params": [format!("{height:#x}"), false],
+            "id": 1
+        });
+
+        let response = self
+            .http
+            .post(&self.rpc_url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| ChainError::Unavailable(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(ChainError::Unavailable(format!(
+                "Base RPC returned HTTP {}",
+                response.status()
+            )));
+        }
+
+        #[derive(Deserialize)]
+        struct Header {
+            number: String,
+            hash: String,
+            #[serde(rename = "parentHash")]
+            parent_hash: String,
+        }
+
+        /// Same shape as [`RpcResponse`], but non-generic: the shared struct's
+        /// `#[serde(default)]` would demand `Header: Default`.
+        #[derive(Deserialize)]
+        struct HeaderResponse {
+            #[serde(default)]
+            result: Option<Header>,
+            #[serde(default)]
+            error: Option<RpcError>,
+        }
+
+        let rpc: HeaderResponse = response
+            .json()
+            .await
+            .map_err(|e| ChainError::Unavailable(format!("could not parse RPC response: {e}")))?;
+
+        if let Some(error) = rpc.error {
+            return Err(ChainError::Unavailable(format!(
+                "eth_getBlockByNumber error {}: {}",
+                error.code, error.message
+            )));
+        }
+
+        // A missing `result` means the node has no block at that height.
+        let Some(header) = rpc.result else {
+            return Ok(None);
+        };
+        let Some(parsed_height) = super::parse_u64(&header.number) else {
+            return Err(ChainError::Unavailable(format!(
+                "invalid block number: {}",
+                header.number
+            )));
+        };
+
+        Ok(Some(crate::reorg::BlockRecord {
+            height: parsed_height,
+            hash: header.hash.to_ascii_lowercase(),
+            parent_hash: header.parent_hash.to_ascii_lowercase(),
+        }))
+    }
 }
 
 impl ChainClient for BaseClient {
@@ -209,6 +288,13 @@ impl ChainClient for BaseClient {
         // Fall back to an explicit RPC call if no watcher is attached or it
         // hasn't seen a block yet.
         self.fetch_latest_finalized().await
+    }
+
+    async fn block_record(
+        &self,
+        height: u64,
+    ) -> Result<Option<crate::reorg::BlockRecord>, ChainError> {
+        self.fetch_block_record(height).await
     }
 
     async fn deposits_since(&self, height: u64) -> Result<Vec<ObservedDeposit>, ChainError> {
