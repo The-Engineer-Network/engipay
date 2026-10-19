@@ -92,10 +92,36 @@ impl Config {
             json_logs: env::var("LOG_FORMAT")
                 .is_ok_and(|format| format.eq_ignore_ascii_case("json")),
             stellar_server_secret: env::var("STELLAR_SERVER_SECRET").ok(),
-            jwt_secret: env::var("JWT_SECRET").map_err(|_| ConfigError {
-                name: "JWT_SECRET",
-                reason: "must be set to a random secret used to sign session tokens".to_owned(),
-            })?,
+                       jwt_secret: {
+                let secret = env::var("JWT_SECRET").map_err(|_| ConfigError {
+                    name: "JWT_SECRET",
+                    reason: "must be set to a random secret used to sign session tokens".to_owned(),
+                })?;
+
+                // Reject placeholder value
+                if secret == "change-me-to-a-long-random-string" {
+                    return Err(ConfigError {
+                        name: "JWT_SECRET",
+                        reason: "cannot use the placeholder value 'change-me-to-a-long-random-string'. \
+                                Generate a secure random secret of at least 32 bytes.".to_owned(),
+                    });
+                }
+
+                // Reject secrets shorter than 32 bytes
+                if secret.len() < 32 {
+                    return Err(ConfigError {
+                        name: "JWT_SECRET",
+                        reason: format!(
+                            "must be at least 32 bytes long for security (got {} bytes). \
+                            Generate a secure random secret.",
+                            secret.len()
+                        ),
+                    });
+                }
+
+                secret
+            },
+
             stellar_custody_account: env::var("STELLAR_CUSTODY_ACCOUNT")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
@@ -128,5 +154,72 @@ impl Config {
             buy_kobo_per_usdc: None,
             buy_fee_bps: None,
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    fn clear_env_vars() {
+        env::remove_var("JWT_SECRET");
+        env::remove_var("BIND_ADDR");
+        env::remove_var("DATABASE_URL");
+        env::remove_var("DB_MAX_CONNECTIONS");
+        env::remove_var("ALLOWED_ORIGINS");
+        env::remove_var("LOG_FORMAT");
+        env::remove_var("STELLAR_SERVER_SECRET");
+        env::remove_var("STELLAR_CUSTODY_ACCOUNT");
+        env::remove_var("BASE_CUSTODY_ADDRESS");
+        env::remove_var("BITCOIN_CUSTODY_ADDRESS");
+        env::remove_var("TIER_0_DAILY_LIMIT_MINOR");
+        env::remove_var("BUY_KOBO_PER_USDC");
+        env::remove_var("BUY_FEE_BPS");
+    }
+
+    #[test]
+    fn test_jwt_secret_too_short() {
+        clear_env_vars();
+        env::set_var("JWT_SECRET", "short");
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.name, "JWT_SECRET");
+        assert!(err.reason.contains("at least 32 bytes"));
+    }
+
+    #[test]
+    fn test_jwt_secret_placeholder() {
+        clear_env_vars();
+        env::set_var("JWT_SECRET", "change-me-to-a-long-random-string");
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.name, "JWT_SECRET");
+        assert!(err.reason.contains("placeholder"));
+    }
+
+    #[test]
+    fn test_jwt_secret_valid() {
+        clear_env_vars();
+        env::set_var("JWT_SECRET", "this-is-a-valid-secret-with-32-plus-bytes");
+
+        let result = Config::from_env();
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.jwt_secret, "this-is-a-valid-secret-with-32-plus-bytes");
+    }
+
+    #[test]
+    fn test_jwt_secret_exactly_32_bytes() {
+        clear_env_vars();
+        env::set_var("JWT_SECRET", "12345678901234567890123456789012"); // exactly 32 bytes
+
+        let result = Config::from_env();
+        assert!(result.is_ok());
     }
 }

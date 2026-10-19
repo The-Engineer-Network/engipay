@@ -15,8 +15,12 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
 use sqlx::PgPool;
+use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use tower_http::timeout::TimeoutLayer;
+use tower_http::limit::RequestBodyLimitLayer;
+
 
 use crate::config::Config;
 use crate::middleware::logging::log_requests;
@@ -57,6 +61,8 @@ impl AppState {
 }
 
 pub fn router(state: AppState, config: &Config) -> Router {
+    use crate::middleware::request_limits::{REQUEST_TIMEOUT, BODY_LIMIT};
+
     Router::new()
         .merge(routes::health::routes())
         .merge(routes::openapi::routes())
@@ -67,6 +73,10 @@ pub fn router(state: AppState, config: &Config) -> Router {
         ))
         .layer(cors(config))
         .layer(TraceLayer::new_for_http())
+        // Request body size limit (must be before timeout)
+        .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
+        // Request timeout (408 on timeout)
+        .layer(TimeoutLayer::new(REQUEST_TIMEOUT))
         // Structured JSON request logging with correlation IDs. Placed inside
         // CatchPanic so panics are still converted to problem+json 500s, and
         // outside the routes so every request is logged exactly once.
@@ -76,6 +86,7 @@ pub fn router(state: AppState, config: &Config) -> Router {
         .layer(CatchPanicLayer::new())
         .with_state(state)
 }
+
 
 /// Only the configured web origins may call the API from a browser.
 fn cors(config: &Config) -> CorsLayer {

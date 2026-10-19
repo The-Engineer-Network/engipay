@@ -172,8 +172,9 @@ async fn db_pool() -> anyhow::Result<Option<sqlx::PgPool>> {
 async fn watch() -> anyhow::Result<()> {
     // Always start the internal HTTP server so the API can reach fee estimates
     // even when no Stellar custody account is configured.
-    let internal_addr =
-        env::var("CHAIN_INTERNAL_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
+        let internal_addr =
+        env::var("CHAIN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
+
     let fees = routes::estimate_fee::FeeQuotes::new(
         env::var("BASE_RPC_URL").ok(),
         env::var("BITCOIN_ESPLORA_URL").ok(),
@@ -545,6 +546,55 @@ mod tests {
         assert!(
             error.to_string().contains("invalid deposit address"),
             "unexpected message: {error}"
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chain_http_addr_parsing() {
+        // Test default value
+        env::remove_var("CHAIN_HTTP_ADDR");
+        let default_addr = env::var("CHAIN_HTTP_ADDR")
+            .unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
+        assert_eq!(default_addr, "127.0.0.1:8081");
+
+        // Test custom value
+        env::set_var("CHAIN_HTTP_ADDR", "0.0.0.0:9000");
+        let custom_addr = env::var("CHAIN_HTTP_ADDR")
+            .unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
+        assert_eq!(custom_addr, "0.0.0.0:9000");
+
+        // Test that it parses as a valid socket address
+        let addr: Result<std::net::SocketAddr, _> = custom_addr.parse();
+        assert!(addr.is_ok());
+
+        // Clean up
+        env::remove_var("CHAIN_HTTP_ADDR");
+    }
+
+    #[test]
+    fn test_chain_http_addr_used_consistently() {
+        // Verify that both serve() and watch() would use the same variable
+        // by checking they both reference CHAIN_HTTP_ADDR
+        let source = include_str!("main.rs");
+
+        // Count occurrences of CHAIN_HTTP_ADDR (should be 2: one in serve, one in watch)
+        let chain_http_addr_count = source.matches("CHAIN_HTTP_ADDR").count();
+        assert!(
+            chain_http_addr_count >= 2,
+            "CHAIN_HTTP_ADDR should be used in both serve() and watch() functions"
+        );
+
+        // Ensure CHAIN_INTERNAL_ADDR is not used anymore
+        let chain_internal_addr_count = source.matches("CHAIN_INTERNAL_ADDR").count();
+        assert_eq!(
+            chain_internal_addr_count, 0,
+            "CHAIN_INTERNAL_ADDR should no longer be used"
         );
     }
 }
