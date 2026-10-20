@@ -1,0 +1,46 @@
+[package]
+name = "engipay-api"
+description = "EngiPay HTTP API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+engipay-core.workspace = true
+engipay-ledger = { workspace = true, features = ["postgres"] }
+anyhow.workspace = true
+axum.workspace = true
+# Standard base64, used to encode the pagination cursor.
+base64.workspace = true
+csv = "1.3"
+futures-core.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+jsonwebtoken.workspace = true
+chrono.workspace = true
+# Wallet sign-in: SEP-10 on Stellar and SIWE on EVM.
+stellar-strkey.workspace = true
+stellar-xdr.workspace = true
+ed25519-dalek.workspace = true
+k256.workspace = true
+elliptic-curve.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+hex.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+serde_json.workspace = true
