@@ -15,9 +15,118 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Runs before any install or build step. Scans tracked config files for the
+  # supply-chain attack pattern seen in May and September 2026: a very long
+  # padded line appended to a build config, obfuscated JS loaders, font files
+  # that are not fonts, and VS Code tasks set to run on folder open.
+  scan-config:
+    name: Scan config files for injected loaders
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check for injected loader patterns
+        shell: bash
+        run: |
+          set -euo pipefail
+          FAILED=0
+
+          # --- 1. Lines over 1 000 characters in tracked config files ----------
+          CONFIG_FILES=(
+            postcss.config.mjs
+            next.config.mjs
+            tailwind.config.js
+            .eslintrc.js
+            .eslintrc.cjs
+            .eslintrc.mjs
+            babel.config.js
+            babel.config.cjs
+            vite.config.ts
+            vite.config.js
+            jest.config.ts
+            jest.config.js
+            webpack.config.js
+          )
+          for f in "${CONFIG_FILES[@]}"; do
+            [ -f "$f" ] || continue
+            while IFS= read -r line; do
+              if [ "${#line}" -gt 1000 ]; then
+                echo "FAIL: long line (${#line} chars) in $f"
+                FAILED=1
+              fi
+            done < "$f"
+          done
+
+          # --- 2. Obfuscation markers in JS/TS/MJS source files ---------------
+          # These patterns are characteristic of the loader that was injected in 2026.
+          OBFUSCATION_PATTERNS=(
+            'global\.i\s*='
+            '_0x[0-9a-fA-F]\{4,\}'
+          )
+          for pat in "${OBFUSCATION_PATTERNS[@]}"; do
+            if grep -rE --include='*.js' --include='*.mjs' --include='*.cjs' \
+               --include='*.ts' --include='*.tsx' \
+               --exclude-dir=node_modules --exclude-dir=.next \
+               "$pat" . 2>/dev/null; then
+              echo "FAIL: obfuscation marker '$pat' found"
+              FAILED=1
+            fi
+          done
+
+          # --- 3. Font files that are not real fonts ---------------------------
+          # A font file whose first bytes are not a recognised font magic number
+          # may be a disguised script. Check woff2 (magic: wOF2) and woff (wOFF).
+          while IFS= read -r -d '' font; do
+            magic=$(head -c 4 "$font" | cat -v 2>/dev/null || true)
+            case "$magic" in
+              wOF2|wOFF|OTTO|'   '*)
+                # Valid: WOFF2, WOFF, CFF/OTF (OTTO), TrueType (starts with 0x00010000)
+                ;;
+              *)
+                # TrueType true-type magic is 0x74727565 ("true") or 0x00010000
+                first4hex=$(head -c 4 "$font" | xxd -p 2>/dev/null | head -c 8 || true)
+                if [[ "$first4hex" != "00010000" && "$first4hex" != "74727565" ]]; then
+                  echo "FAIL: font file $font does not start with a recognised font magic number ($first4hex)"
+                  FAILED=1
+                fi
+                ;;
+            esac
+          done < <(find . -path ./node_modules -prune -o -path ./.next -prune -o \
+            \( -name '*.woff' -o -name '*.woff2' -o -name '*.ttf' -o -name '*.otf' \) \
+            -print0)
+
+          # --- 4. VS Code tasks configured to run on folder open ---------------
+          if [ -f ".vscode/tasks.json" ]; then
+            if python3 -c "
+          import json, sys
+          data = json.load(open('.vscode/tasks.json'))
+          tasks = data.get('tasks', [])
+          bad = [t for t in tasks if isinstance(t.get('runOptions',{}).get('runOn',''), str)
+                 and t['runOptions']['runOn'] == 'folderOpen']
+          if bad:
+              print('FAIL: VS Code task(s) with runOn=folderOpen:', [t.get('label') for t in bad])
+              sys.exit(1)
+          " 2>&1; then
+              :
+            else
+              FAILED=1
+            fi
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "One or more security checks failed. See output above."
+            exit 1
+          fi
+          echo "All config file checks passed."
+
   web:
     name: Web app
     runs-on: ubuntu-latest
+    needs: scan-config
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -45,12 +154,21 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
 
+      - name: Install Chromium for browser tests
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser smoke tests (production build)
+        run: npm run test:e2e
+        env:
+          CI: "true"
+
       - name: Dependency audit
         run: npm audit --audit-level=high
 
   backend:
     name: Backend (Rust)
     runs-on: ubuntu-latest
+    needs: scan-config
     timeout-minutes: 30
     defaults:
       run:
@@ -77,10 +195,20 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+      # Dependency audit: deny.toml documents every exception so nothing is
+      # silently ignored. Fails CI if a vulnerable, unsound, or yanked crate
+      # appears in the lockfile.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version "^0.16"
+
+      - name: Dependency audit
+        run: cargo deny check
+
   database:
     name: Ledger guarantees (Postgres)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    needs: scan-config
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: backend
@@ -89,10 +217,27 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
       - name: Start Postgres
         run: |
           echo "POSTGRES_PASSWORD=ci-only-not-a-secret" > .env
           docker compose up -d --wait postgres
 
+      - name: Verify migrations are idempotent
+        run: bash ./scripts/verify-migrations.sh
+
       - name: Database refuses ledger corruption
         run: bash ./scripts/test-db-guarantees.sh
+
+      - name: Database-backed tests
+        # --include-ignored runs the 50+ tests marked #[ignore = "requires DATABASE_URL"].
+        # Tests use UUID-keyed rows so they are logically isolated and safe to
+        # run in parallel under cargo's default multi-threaded test runner.
+        run: cargo test --workspace --locked -- --include-ignored
+        env:
+          DATABASE_URL: postgres://engipay:ci-only-not-a-secret@localhost:5432/engipay

@@ -1,4 +1,10 @@
 pub mod assets;
+pub mod auth;
+pub mod balances;
+pub mod bank_accounts;
+pub mod buy;
+pub mod convert;
+pub mod deposits;
 pub mod health;
 pub mod quotes;
 pub mod settles;

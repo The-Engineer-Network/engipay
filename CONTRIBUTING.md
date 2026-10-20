@@ -42,6 +42,56 @@ docker compose build toolbox
 docker compose run --rm toolbox cargo test
 ```
 
+### Git hooks (required)
+
+EngiPay's repository was compromised three times in 2026 through malicious code appended to build config files. The hooks in `scripts/hooks/` run the same checks as CI, locally, before you commit or push.
+
+Enable them with one command:
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+This works on macOS, Linux and **Git Bash on Windows**. The hooks are plain POSIX shell and have no dependencies.
+
+What the hooks do:
+
+| Hook | When | What it blocks |
+| --- | --- | --- |
+| `pre-commit` | Before every commit | Lines > 1 000 chars in config files; JS obfuscation markers (`global.i =`, `_0x…`) |
+| `pre-push` | Before every push | Same checks across all commits in the push |
+| `post-merge` | After `git pull` or merge | Warns (does not block) if the merged code contains the same patterns |
+| `post-checkout` | After switching branches | Warns if the branch contains the same patterns |
+
+The hooks never run `npm install` or build steps, so they are safe to keep enabled permanently.
+
+## 🌿 Branching & Pull Request Workflow
+
+### Development Branch: `main`
+`main` is the only long-lived branch. Fork the repository, branch from `main`, and open your pull request against `main`.
+
+### How to Contribute
+1. **Fork and branch**:
+   ```bash
+   git checkout main
+   git pull origin main
+   git checkout -b feature/your-feature-name
+   ```
+2. **Make your changes**: Write atomic commits using [Conventional Commits](https://www.conventionalcommits.org/). Every change MUST include tests.
+3. **Run local CI checks** (see [DEVELOPMENT.md](DEVELOPMENT.md)):
+   - `npm run typecheck && npm test && npm run build`
+   - `cd backend && cargo clippy && cargo test`
+4. **Open a Pull Request targeting `main`**:
+   - Ensure the base branch is **`main`**.
+   - Your PR description MUST contain at least one line linking the issue:
+     ```markdown
+     closes #<issue number>
+     ```
+     *(e.g., `Closes #42`)*.
+5. **Review**:
+   - CI must pass before a maintainer looks at the pull request.
+   - A maintainer reviews and merges it. Nothing is merged automatically.
+
 ## Before you open a pull request
 
 Run what CI runs. A pull request that fails CI is not reviewed until it passes.

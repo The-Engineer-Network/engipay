@@ -4,13 +4,18 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use engipay_api::middleware::rate_limit::RateLimiter;
 use engipay_api::{AppState, config::Config, router};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
-    router(AppState { database: None }, &Config::for_tests())
+    let config = Config::for_tests();
+    router(
+        AppState::with_fakes(None, config.clone(), RateLimiter::new()),
+        &config,
+    )
 }
 
 async fn get_json(path: &str) -> (StatusCode, Value) {
@@ -30,6 +35,39 @@ async fn health_reports_ok_without_a_database() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
     assert_eq!(body["database"], "not_configured");
+}
+
+#[tokio::test]
+async fn sign_in_endpoints_report_no_database_instead_of_pretending() {
+    let verify_body = r#"{"message":"Sign in\nNonce: abcdef1234","signature":"0x00","address":"0x0000000000000000000000000000000000000001"}"#;
+    for (path, body) in [("/v1/auth/nonce", ""), ("/v1/auth/verify-evm", verify_body)] {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn me_requires_a_bearer_token() {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/me")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -97,4 +135,89 @@ async fn only_the_configured_web_origin_is_allowed() {
             .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
             .is_none()
     );
+}
+
+/// SEP-7: `web+stellar:pay?destination=<account>`.
+fn stellar_payment_uri(destination: &str) -> String {
+    format!("web+stellar:pay?destination={destination}")
+}
+
+/// EIP-681: `ethereum:<address>@<chain_id>`.
+fn base_payment_uri(address: &str) -> String {
+    format!("ethereum:{address}@8453")
+}
+
+/// BIP-21: `bitcoin:<address>`.
+fn bitcoin_payment_uri(address: &str) -> String {
+    format!("bitcoin:{address}")
+}
+
+#[test]
+fn stellar_payment_uri_follows_sep7() {
+    let uri = stellar_payment_uri("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ");
+    assert!(uri.starts_with("web+stellar:pay?"));
+    assert_eq!(
+        uri,
+        "web+stellar:pay?destination=GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
+    );
+}
+
+#[test]
+fn base_payment_uri_follows_eip681() {
+    let uri = base_payment_uri("0x4200000000000000000000000000000000000006");
+    assert!(uri.starts_with("ethereum:0x"));
+    assert!(uri.ends_with("@8453"));
+    assert_eq!(
+        uri,
+        "ethereum:0x4200000000000000000000000000000000000006@8453"
+    );
+}
+
+#[test]
+fn bitcoin_payment_uri_follows_bip21() {
+    let uri = bitcoin_payment_uri("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+    assert!(uri.starts_with("bitcoin:"));
+    assert_eq!(uri, "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+}
+
+#[tokio::test]
+async fn buy_quotes_require_a_bearer_token() {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/buy/quotes")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"naira_amount":"5000","asset":"USDC"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn buy_quotes_report_no_database_instead_of_pretending() {
+    // Without pricing configured, the check is the same: no quote is invented.
+    // The database check comes after auth, so use a signed token here.
+    let config = Config::for_tests();
+    let token = engipay_api::auth::jwt::create_token(
+        uuid::Uuid::new_v4(),
+        String::new(),
+        config.jwt_secret.as_bytes(),
+    )
+    .unwrap();
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/buy/quotes")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"naira_amount":"5000","asset":"USDC"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
