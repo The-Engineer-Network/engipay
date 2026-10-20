@@ -1,0 +1,76 @@
+#!/usr/bin/env sh
+# pre-push — warn before pushing commits that introduce supply-chain patterns.
+#
+# Install: git config core.hooksPath scripts/hooks
+#
+# Scans all commits being pushed (not yet on the remote) for the same markers
+# as pre-commit, so a stash-and-commit bypass is caught here.
+#
+# Works on macOS, Linux and Git Bash on Windows.
+
+set -eu
+
+FAILED=0
+RED='\033[0;31m'
+NC='\033[0m'
+
+OBFUS_PATTERNS="global\.i[[:space:]]*= _0x[0-9a-fA-F]{4,}"
+CONFIG_PATTERNS="postcss.config.* next.config.* tailwind.config.* \
+  .eslintrc.* babel.config.* vite.config.* jest.config.* webpack.config.*"
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  # Nothing to push (delete)
+  [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+
+  # Range of commits being pushed
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    RANGE="$local_sha"
+  else
+    RANGE="$remote_sha..$local_sha"
+  fi
+
+  # Files changed in the push range
+  CHANGED=$(git diff --name-only "$RANGE" 2>/dev/null || true)
+  [ -z "$CHANGED" ] && continue
+
+  for file in $CHANGED; do
+    # Skip deleted files
+    git show "$local_sha:$file" > /dev/null 2>&1 || continue
+
+    # Long lines in config files
+    MATCH=0
+    for pat in $CONFIG_PATTERNS; do
+      case "$file" in
+        $pat) MATCH=1; break ;;
+        */$pat) MATCH=1; break ;;
+      esac
+    done
+
+    if [ "$MATCH" -eq 1 ]; then
+      git show "$local_sha:$file" 2>/dev/null | while IFS= read -r line; do
+        len=${#line}
+        if [ "$len" -gt 1000 ]; then
+          printf "${RED}BLOCKED${NC}: $file has a line of $len chars in pushed commit.\n" >&2
+          exit 1
+        fi
+      done || { FAILED=1; }
+    fi
+
+    # Obfuscation markers in JS/TS
+    case "$file" in
+      *.js|*.mjs|*.cjs|*.ts|*.tsx)
+        for pat in $OBFUS_PATTERNS; do
+          if git show "$local_sha:$file" 2>/dev/null | grep -qE "$pat"; then
+            printf "${RED}BLOCKED${NC}: $file contains obfuscation marker in pushed commit: $pat\n" >&2
+            FAILED=1
+          fi
+        done
+        ;;
+    esac
+  done
+done
+
+if [ "$FAILED" -ne 0 ]; then
+  printf "\npre-push: push blocked due to security checks above.\n" >&2
+  exit 1
+fi
