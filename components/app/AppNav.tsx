@@ -2,16 +2,15 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Home, Receipt, Settings } from "lucide-react"
+import { Home, Receipt, Settings, Store } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /**
- * The three places you can always get back to. The money actions - send,
- * receive, scan, convert, buy, sell - are reached from the home screen tiles,
- * which keeps this bar short enough for a phone.
+ * Main navigation links across the application.
  */
 const LINKS = [
   { href: "/dashboard", label: "Home", icon: Home },
+  { href: "/pos", label: "POS Counter", icon: Store },
   { href: "/activity", label: "Activity", icon: Receipt },
   { href: "/settings", label: "Settings", icon: Settings },
 ] as const
