@@ -263,7 +263,9 @@ async fn execute_conversion(
     let source_money = Money::from_minor(asset_in, amount_in);
     let ledger = engipay_ledger::postgres::PostgresLedgerStore::new(db.clone());
 
-    let hold_result = ledger.create_hold(user_id_core, source_money, &hold_ref).await;
+    let hold_result = ledger
+        .create_hold(user_id_core, source_money, &hold_ref)
+        .await;
 
     let hold_err = match hold_result {
         Ok(_) => None,
@@ -280,9 +282,16 @@ async fn execute_conversion(
     }
 
     // ── 4. Atomic settle + credit ─────────────────────────────────────────────
-    let settle_result =
-        settle_conversion_atomic(db, user_id_core, &hold_ref, asset_in, asset_out, fee, amount_out)
-            .await;
+    let settle_result = settle_conversion_atomic(
+        db,
+        user_id_core,
+        &hold_ref,
+        asset_in,
+        asset_out,
+        fee,
+        amount_out,
+    )
+    .await;
 
     match settle_result {
         Ok(()) => {
@@ -383,9 +392,7 @@ fn map_ledger_error(err: engipay_ledger::LedgerError) -> ApiError {
             requested,
         } => ApiError::BadRequest(format!(
             "Insufficient {}: have {}, need {}",
-            available.asset,
-            available.minor,
-            requested.minor
+            available.asset, available.minor, requested.minor
         )),
         LedgerError::NonPositiveAmount => {
             ApiError::BadRequest("Amount must be positive.".to_string())

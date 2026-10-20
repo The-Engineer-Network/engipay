@@ -76,12 +76,11 @@ async fn verified_outcome_raises_tier() {
     let (user_id, token) = user(&pool).await;
 
     // Start at tier 0.
-    let tier_before: i32 =
-        sqlx::query_scalar("SELECT tier FROM user_profiles WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let tier_before: i32 = sqlx::query_scalar("SELECT tier FROM user_profiles WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(tier_before, 0);
 
     // FakeKycProvider returns Verified { tier: 1 }.
@@ -91,12 +90,11 @@ async fn verified_outcome_raises_tier() {
     assert_eq!(body["tier"], 1);
 
     // Database tier should be updated.
-    let tier_after: i32 =
-        sqlx::query_scalar("SELECT tier FROM user_profiles WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let tier_after: i32 = sqlx::query_scalar("SELECT tier FROM user_profiles WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(tier_after, 1);
 
     // Audit record written without PII.
@@ -116,8 +114,8 @@ async fn verified_outcome_raises_tier() {
 #[ignore = "requires DATABASE_URL"]
 async fn tier_only_changes_on_verified_outcome() {
     // Swap in a failing provider by building a custom state.
-    use std::sync::Arc;
     use engipay_api::services::kyc_provider::FakeKycProviderFails;
+    use std::sync::Arc;
 
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPoolOptions::new()
@@ -141,8 +139,12 @@ async fn tier_only_changes_on_verified_outcome() {
         .execute(&pool)
         .await
         .unwrap();
-    let token =
-        create_token(user_id, String::new(), Config::for_tests().jwt_secret.as_bytes()).unwrap();
+    let token = create_token(
+        user_id,
+        String::new(),
+        Config::for_tests().jwt_secret.as_bytes(),
+    )
+    .unwrap();
 
     let (status, body) = post_session(&app, &token).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");

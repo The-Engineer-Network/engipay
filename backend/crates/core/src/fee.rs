@@ -141,10 +141,7 @@ pub enum FeeError {
     #[error("gross amount must be greater than zero")]
     NonPositiveGross,
     #[error("fee schedule asset {schedule} does not match gross asset {gross}")]
-    AssetMismatch {
-        schedule: Asset,
-        gross: Asset,
-    },
+    AssetMismatch { schedule: Asset, gross: Asset },
     #[error("arithmetic overflow computing fee")]
     Overflow,
 }
@@ -171,9 +168,7 @@ impl FeeSchedule {
             0
         } else {
             let bps = i128::from(self.bps);
-            let numerator = gross_minor
-                .checked_mul(bps)
-                .ok_or(FeeError::Overflow)?;
+            let numerator = gross_minor.checked_mul(bps).ok_or(FeeError::Overflow)?;
             let divisor: i128 = 10_000;
             // ceil division: (n + d - 1) / d
             numerator

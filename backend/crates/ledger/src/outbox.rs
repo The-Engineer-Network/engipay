@@ -223,10 +223,7 @@ impl<S: OutboxStore> OutboxRelay<S> {
         Fut: std::future::Future<Output = Result<(), LedgerError>>,
     {
         let cursor = self.store.load_cursor(&self.relay_name).await?;
-        let events = self
-            .store
-            .fetch_pending(cursor, self.batch_size)
-            .await?;
+        let events = self.store.fetch_pending(cursor, self.batch_size).await?;
 
         if events.is_empty() {
             return Ok(0);
@@ -353,31 +350,26 @@ pub mod pg {
             Ok(out)
         }
 
-        async fn mark_published(
-            &self,
-            event_id: Uuid,
-            _sequence: i64,
-        ) -> Result<(), LedgerError> {
-            sqlx::query(
-                "UPDATE outbox_events SET published_at = now() WHERE id = $1",
-            )
-            .bind(event_id)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
+        async fn mark_published(&self, event_id: Uuid, _sequence: i64) -> Result<(), LedgerError> {
+            sqlx::query("UPDATE outbox_events SET published_at = now() WHERE id = $1")
+                .bind(event_id)
+                .execute(&self.pool)
+                .await
+                .map_err(db_err)?;
             Ok(())
         }
 
         async fn load_cursor(&self, relay_name: &str) -> Result<Option<i64>, LedgerError> {
-            let row = sqlx::query(
-                "SELECT last_sequence FROM outbox_relay_cursor WHERE relay_name = $1",
-            )
-            .bind(relay_name)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_err)?;
+            let row =
+                sqlx::query("SELECT last_sequence FROM outbox_relay_cursor WHERE relay_name = $1")
+                    .bind(relay_name)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(db_err)?;
 
-            Ok(row.map(|r| r.get::<Option<i64>, _>("last_sequence")).flatten())
+            Ok(row
+                .map(|r| r.get::<Option<i64>, _>("last_sequence"))
+                .flatten())
         }
 
         async fn save_cursor(
@@ -449,11 +441,10 @@ pub mod pg {
         event: &DomainEvent,
         ledger_ref: Option<&str>,
     ) -> Result<(), LedgerError> {
-        let payload =
-            serde_json::to_value(event).map_err(|e| LedgerError::Database {
-                code: None,
-                message: format!("failed to serialise domain event: {e}"),
-            })?;
+        let payload = serde_json::to_value(event).map_err(|e| LedgerError::Database {
+            code: None,
+            message: format!("failed to serialise domain event: {e}"),
+        })?;
 
         sqlx::query(
             "INSERT INTO outbox_events (id, aggregate_id, event_type, payload, ledger_ref) \
@@ -507,16 +498,9 @@ mod tests {
                 .collect())
         }
 
-        async fn mark_published(
-            &self,
-            event_id: Uuid,
-            _sequence: i64,
-        ) -> Result<(), LedgerError> {
+        async fn mark_published(&self, event_id: Uuid, _sequence: i64) -> Result<(), LedgerError> {
             // In the memory store we just remove the event from pending.
-            self.events
-                .lock()
-                .unwrap()
-                .retain(|e| e.id != event_id);
+            self.events.lock().unwrap().retain(|e| e.id != event_id);
             Ok(())
         }
 
@@ -613,10 +597,7 @@ mod tests {
         assert_eq!(cursor, Some(2));
 
         // No more events.
-        let n2 = relay
-            .run_once(|_e| async { Ok(()) })
-            .await
-            .unwrap();
+        let n2 = relay.run_once(|_e| async { Ok(()) }).await.unwrap();
         assert_eq!(n2, 0);
     }
 
@@ -655,7 +636,10 @@ mod tests {
         assert!(first, "first time should return true");
 
         let second = store.mark_consumed("webhook-svc", id).await.unwrap();
-        assert!(!second, "second time should return false (already consumed)");
+        assert!(
+            !second,
+            "second time should return false (already consumed)"
+        );
 
         assert!(store.is_consumed("webhook-svc", id).await.unwrap());
         assert!(!store.is_consumed("other-svc", id).await.unwrap());
@@ -672,7 +656,10 @@ mod tests {
             reference: "dep-1".into(),
         };
         let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"type\":\"funds_deposited\""), "type tag must be present");
+        assert!(
+            json.contains("\"type\":\"funds_deposited\""),
+            "type tag must be present"
+        );
 
         let round: DomainEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, round);

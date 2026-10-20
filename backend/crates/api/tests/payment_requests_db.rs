@@ -84,17 +84,20 @@ async fn send(
 }
 
 /// Create a payment request and return the response body.
-async fn create_request(
-    app: &axum::Router,
-    token: &str,
-    body: Value,
-) -> (StatusCode, Value) {
+async fn create_request(app: &axum::Router, token: &str, body: Value) -> (StatusCode, Value) {
     send(app, "POST", "/v1/payment-requests", Some(token), Some(body)).await
 }
 
 /// GET a payment request (unauthenticated – payer view).
 async fn get_request(app: &axum::Router, id: &str) -> (StatusCode, Value) {
-    send(app, "GET", &format!("/v1/payment-requests/{id}"), None, None).await
+    send(
+        app,
+        "GET",
+        &format!("/v1/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await
 }
 
 /// POST a payment against a request.
@@ -152,11 +155,19 @@ async fn exact_payment_marks_request_paid() {
     assert_eq!(pay_status, StatusCode::CREATED, "{pay_body}");
     assert_eq!(pay_body["request_status"], "paid");
     assert_eq!(
-        pay_body["amount_paid"].as_str().unwrap().parse::<i128>().unwrap(),
+        pay_body["amount_paid"]
+            .as_str()
+            .unwrap()
+            .parse::<i128>()
+            .unwrap(),
         requested_minor
     );
     assert_eq!(
-        pay_body["amount_remaining"].as_str().unwrap().parse::<i128>().unwrap(),
+        pay_body["amount_remaining"]
+            .as_str()
+            .unwrap()
+            .parse::<i128>()
+            .unwrap(),
         0
     );
 
@@ -230,7 +241,11 @@ async fn partial_payment_sets_partially_paid_status() {
     assert_eq!(pay2_status, StatusCode::CREATED, "{pay2_body}");
     assert_eq!(pay2_body["request_status"], "paid");
     assert_eq!(
-        pay2_body["amount_remaining"].as_str().unwrap().parse::<i128>().unwrap(),
+        pay2_body["amount_remaining"]
+            .as_str()
+            .unwrap()
+            .parse::<i128>()
+            .unwrap(),
         0
     );
 
@@ -273,10 +288,12 @@ async fn over_payment_is_rejected() {
     )
     .await;
     assert_eq!(pay_status, StatusCode::BAD_REQUEST, "{pay_body}");
-    assert!(pay_body["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("exceed"));
+    assert!(
+        pay_body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("exceed")
+    );
 
     // Request should still be open (pending).
     let (_, state_body) = get_request(&app, &id).await;
@@ -314,10 +331,12 @@ async fn late_payment_is_rejected_after_expiry() {
     )
     .await;
     assert_eq!(pay_status, StatusCode::BAD_REQUEST, "{pay_body}");
-    assert!(pay_body["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("expired"));
+    assert!(
+        pay_body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expired")
+    );
 
     // GET should show expired status.
     let (_, get_body) = get_request(&app, &id).await;
@@ -398,10 +417,12 @@ async fn payment_below_min_amount_is_rejected() {
     )
     .await;
     assert_eq!(pay_status, StatusCode::BAD_REQUEST, "{pay_body}");
-    assert!(pay_body["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("minimum"));
+    assert!(
+        pay_body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("minimum")
+    );
 }
 
 // ── #479: Duplicate tx_hash rejected ─────────────────────────────────────────
@@ -457,12 +478,8 @@ async fn merchant_can_list_their_own_requests() {
 
     // User A creates two requests.
     for amount in ["10.0000000", "20.0000000"] {
-        let (s, b) = create_request(
-            &app,
-            &token_a,
-            json!({ "asset": "USDC", "amount": amount }),
-        )
-        .await;
+        let (s, b) =
+            create_request(&app, &token_a, json!({ "asset": "USDC", "amount": amount })).await;
         assert_eq!(s, StatusCode::CREATED, "{b}");
     }
 
@@ -476,7 +493,8 @@ async fn merchant_can_list_their_own_requests() {
     assert_eq!(s, StatusCode::CREATED, "{b}");
 
     // User A's list should contain exactly 2 items.
-    let (list_status, list_body) = send(&app, "GET", "/v1/payment-requests", Some(&token_a), None).await;
+    let (list_status, list_body) =
+        send(&app, "GET", "/v1/payment-requests", Some(&token_a), None).await;
     assert_eq!(list_status, StatusCode::OK, "{list_body}");
     let items = list_body.as_array().unwrap();
     assert_eq!(items.len(), 2);
@@ -521,10 +539,15 @@ async fn list_reflects_partial_paid_amount() {
 
     // The list should show 30 paid and 50 remaining.
     let (_, list) = send(&app, "GET", "/v1/payment-requests", Some(&token), None).await;
-    let item = list.as_array().unwrap().iter().find(|i| i["id"] == id).unwrap();
+    let item = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == id)
+        .unwrap();
     let paid: i128 = item["amount_paid"].as_str().unwrap().parse().unwrap();
     let remaining: i128 = item["amount_remaining"].as_str().unwrap().parse().unwrap();
-    assert_eq!(paid, 300_000_000);      // 30 USDC
+    assert_eq!(paid, 300_000_000); // 30 USDC
     assert_eq!(remaining, 500_000_000); // 50 USDC
     assert_eq!(item["status"], "partially_paid");
 }

@@ -175,7 +175,10 @@ mod tests {
         let volume = calculate_24h_volume(&pool, user).await.unwrap();
         assert_eq!(volume, Money::zero(Asset::Usdc));
 
-        let over_limit = Money::from_minor(Asset::Usdc, tier_daily_limit(0, tier_0_limit_minor).minor + 1);
+        let over_limit = Money::from_minor(
+            Asset::Usdc,
+            tier_daily_limit(0, tier_0_limit_minor).minor + 1,
+        );
         let result = check_velocity_limits(&pool, user, 0, over_limit, tier_0_limit_minor).await;
         assert!(matches!(result, Err(LimitError::Exceeded { .. })));
 

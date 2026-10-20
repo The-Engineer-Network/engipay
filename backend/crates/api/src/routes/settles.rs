@@ -93,9 +93,10 @@ async fn settle_hold(
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
 
     if let Some(row) = existing {
-        let replayed_fee: i64 = row.fee_minor.parse().map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("fee_minor replay parse: {e}"))
-        })?;
+        let replayed_fee: i64 = row
+            .fee_minor
+            .parse()
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("fee_minor replay parse: {e}")))?;
         return Ok(Json(SettleResponse {
             replayed: true,
             quote_id: req.quote_id,
@@ -129,9 +130,10 @@ async fn settle_hold(
         )));
     }
 
-    let fee_minor: i64 = quote.fee_minor.parse().map_err(|e| {
-        ApiError::Internal(anyhow::anyhow!("fee_minor parse error: {e}"))
-    })?;
+    let fee_minor: i64 = quote
+        .fee_minor
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("fee_minor parse error: {e}")))?;
 
     let schedule_version = quote.schedule_version;
 
