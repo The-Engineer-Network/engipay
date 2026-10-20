@@ -13,6 +13,7 @@ use crate::{
     error::{ApiError, LedgerError},
     receipts::ReceiptSig,
     services::cooling_off,
+    services::destination_screen::ScreenResult,
     services::withdrawal_review,
 };
 
@@ -87,6 +88,15 @@ pub async fn create_withdrawal(
     }
     if payload.estimated_network_fee < 0 {
         return Err(ApiError::from(LedgerError::InvalidAmount));
+    }
+
+    // Screen the destination against the block list *before* any hold is
+    // placed. A blocked address is rejected with 400 Bad Request so no funds
+    // are ever locked for a disallowed destination.
+    if let ScreenResult::Blocked { reason } = state.destination_screen.screen(&payload.destination) {
+        return Err(ApiError::BadRequest(format!(
+            "withdrawal destination is blocked: {reason}"
+        )));
     }
 
     // Reject withdrawals that target EngiPay's own custody addresses. Sending
@@ -408,5 +418,43 @@ mod tests {
         assert!(is_custody_address(custody, &state));
         let api_err: ApiError = LedgerError::InvalidDestination.into();
         assert!(matches!(api_err, ApiError::BadRequest(_)));
+    }
+
+    // ── DestinationScreen integration ─────────────────────────────────────────
+
+    use crate::services::destination_screen::{ScreenResult, StaticBlockList};
+
+    fn state_with_blocked(addresses: &[&str]) -> AppState {
+        let mut state = AppState::with_fakes(None, Config::for_tests(), RateLimiter::new());
+        state.destination_screen = std::sync::Arc::new(StaticBlockList::new(
+            addresses.iter().map(|s| s.to_string()),
+        ));
+        state
+    }
+
+    #[test]
+    fn blocked_destination_is_refused_before_any_hold() {
+        let blocked = "0xdeadbeef00000000000000000000000000000001";
+        let state = state_with_blocked(&[blocked]);
+        let result = state.destination_screen.screen(blocked);
+        assert!(result.is_blocked(), "blocked address must be screened out");
+    }
+
+    #[test]
+    fn unlisted_destination_passes_the_screen() {
+        let state = state_with_blocked(&["0xdeadbeef00000000000000000000000000000001"]);
+        let result = state
+            .destination_screen
+            .screen("0xffffffff00000000000000000000000000000002");
+        assert_eq!(result, ScreenResult::Allowed);
+    }
+
+    #[test]
+    fn blocked_evm_address_case_insensitive() {
+        let lower = "0xdeadbeef00000000000000000000000000000001";
+        let mixed = "0xDeAdBeEf00000000000000000000000000000001";
+        let state = state_with_blocked(&[lower]);
+        assert!(state.destination_screen.screen(mixed).is_blocked());
+        assert!(state.destination_screen.screen(&lower.to_uppercase()).is_blocked());
     }
 }

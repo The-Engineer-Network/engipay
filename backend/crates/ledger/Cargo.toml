@@ -14,6 +14,7 @@ postgres = ["dep:sqlx", "dep:tokio", "dep:tracing", "dep:chrono"]
 [dependencies]
 engipay-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 

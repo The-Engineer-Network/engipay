@@ -26,6 +26,7 @@ use crate::middleware::rate_limit::RateLimiter;
 use crate::middleware::recovery::CatchPanicLayer;
 use crate::receipts::{ReceiptKeySet, ReceiptSigner, ReceiptVerifier};
 use crate::services::bank_name_check::{BankNameCheck, FakeBankNameCheck};
+use crate::services::destination_screen::{DestinationScreen, StaticBlockList};
 use crate::services::kyc_provider::{FakeKycProvider, KycProvider};
 use crate::services::price_source::{FakePriceSource, PriceSource};
 
@@ -48,6 +49,9 @@ pub struct AppState {
     /// Published verification keys (current + retired) for the
     /// `GET /v1/well-known/receipt-keys` endpoint.
     pub receipt_key_set: Arc<ReceiptKeySet>,
+    /// Withdrawal destination screener (static list now; swap for a real AML
+    /// API in production without touching the withdrawal handler).
+    pub destination_screen: Arc<dyn DestinationScreen>,
 }
 
 impl AppState {
@@ -126,6 +130,7 @@ fn add_retired_keys(key_set: &mut ReceiptKeySet, retired_keys: &[String]) {
             Err(err) => {
                 tracing::warn!(error = %err, entry = %entry, "RECEIPT_RETIRED_KEYS entry could not be parsed; skipping");
             }
+            destination_screen: Arc::new(StaticBlockList::empty()),
         }
     }
 }

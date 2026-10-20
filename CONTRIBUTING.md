@@ -42,6 +42,29 @@ docker compose build toolbox
 docker compose run --rm toolbox cargo test
 ```
 
+### Git hooks (required)
+
+EngiPay's repository was compromised three times in 2026 through malicious code appended to build config files. The hooks in `scripts/hooks/` run the same checks as CI, locally, before you commit or push.
+
+Enable them with one command:
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+This works on macOS, Linux and **Git Bash on Windows**. The hooks are plain POSIX shell and have no dependencies.
+
+What the hooks do:
+
+| Hook | When | What it blocks |
+| --- | --- | --- |
+| `pre-commit` | Before every commit | Lines > 1 000 chars in config files; JS obfuscation markers (`global.i =`, `_0x…`) |
+| `pre-push` | Before every push | Same checks across all commits in the push |
+| `post-merge` | After `git pull` or merge | Warns (does not block) if the merged code contains the same patterns |
+| `post-checkout` | After switching branches | Warns if the branch contains the same patterns |
+
+The hooks never run `npm install` or build steps, so they are safe to keep enabled permanently.
+
 ## 🌿 Branching & Pull Request Workflow
 
 ### Development Branch: `main`
