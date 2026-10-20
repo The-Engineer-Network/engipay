@@ -20,14 +20,14 @@ CREATE TYPE row_status AS ENUM (
 
 CREATE TABLE batch_payments (
     batch_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(user_id),
+    user_id UUID NOT NULL REFERENCES users(id),
     status batch_status NOT NULL DEFAULT 'pending',
     total_rows INTEGER NOT NULL CHECK (total_rows > 0),
     processed_rows INTEGER NOT NULL DEFAULT 0 CHECK (processed_rows >= 0 AND processed_rows <= total_rows),
     successful INTEGER NOT NULL DEFAULT 0 CHECK (successful >= 0),
     failed INTEGER NOT NULL DEFAULT 0 CHECK (failed >= 0),
     requires_approval BOOLEAN NOT NULL DEFAULT FALSE,
-    approved_by UUID REFERENCES users(user_id),
+    approved_by UUID REFERENCES users(id),
     approved_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -51,8 +51,8 @@ CREATE TABLE batch_payment_rows (
     tx_hash TEXT,
     error TEXT,
     -- Idempotency: tx_hash for the withdrawal or transfer that executed this row
-    withdrawal_id UUID REFERENCES withdrawals(withdrawal_id),
-    transfer_id UUID REFERENCES transfers(transfer_id),
+    withdrawal_id UUID REFERENCES withdrawals(id),
+    transfer_id UUID REFERENCES ledger_transactions(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     

@@ -222,7 +222,7 @@ mod tests {
     fn flat_fee_only() {
         // 0.10 USDC flat, no percentage.
         let s = schedule(USDC / 10, 0, 0, None);
-        let r = s.compute_fee(100 * USDC).unwrap();
+        let r = s.compute_fee(100 * USDC).expect("the test input is valid");
         assert_eq!(r.fee_minor, USDC / 10);
     }
 
@@ -231,7 +231,7 @@ mod tests {
         // 0.30 % = 30 bps, no flat, no floor, no cap.
         let s = schedule(0, 30, 0, None);
         // 100 USDC × 0.30 % = 0.30 USDC = 3_000_000 smallest units.
-        let r = s.compute_fee(100 * USDC).unwrap();
+        let r = s.compute_fee(100 * USDC).expect("the test input is valid");
         assert_eq!(r.fee_minor, 3 * USDC / 10);
     }
 
@@ -240,7 +240,7 @@ mod tests {
         // 30 bps on 1 smallest unit:
         // exact = 1 × 30 / 10_000 = 0.003  →  ceil = 1.
         let s = schedule(0, 30, 0, None);
-        let r = s.compute_fee(1).unwrap();
+        let r = s.compute_fee(1).expect("the test input is valid");
         assert_eq!(r.fee_minor, 1, "must round up, not down or to zero");
     }
 
@@ -248,7 +248,7 @@ mod tests {
     fn min_fee_applied_to_percentage_component() {
         // 0.30 % of 10 USDC = 0.03 USDC, but min is 0.50 USDC.
         let s = schedule(0, 30, USDC / 2, None);
-        let r = s.compute_fee(10 * USDC).unwrap();
+        let r = s.compute_fee(10 * USDC).expect("the test input is valid");
         assert_eq!(r.fee_minor, USDC / 2);
     }
 
@@ -256,7 +256,9 @@ mod tests {
     fn min_fee_not_applied_when_percentage_exceeds_it() {
         // 0.30 % of 1000 USDC = 3 USDC, which exceeds min of 0.50 USDC.
         let s = schedule(0, 30, USDC / 2, None);
-        let r = s.compute_fee(1_000 * USDC).unwrap();
+        let r = s
+            .compute_fee(1_000 * USDC)
+            .expect("the test input is valid");
         assert_eq!(r.fee_minor, 3 * USDC);
     }
 
@@ -264,7 +266,9 @@ mod tests {
     fn max_fee_caps_total() {
         // 0.30 % of 10_000 USDC = 30 USDC, but cap is 10 USDC.
         let s = schedule(0, 30, 0, Some(10 * USDC));
-        let r = s.compute_fee(10_000 * USDC).unwrap();
+        let r = s
+            .compute_fee(10_000 * USDC)
+            .expect("the test input is valid");
         assert_eq!(r.fee_minor, 10 * USDC);
     }
 
@@ -277,18 +281,20 @@ mod tests {
         // 1_500_000 < min_fee_minor (5_000_000), so clamped_pct = 5_000_000.
         // total = fixed(5_000_000) + clamped_pct(5_000_000) = 10_000_000.
         // 10_000_000 < cap(100_000_000) → final fee = 10_000_000.
-        let r = s.compute_fee(50 * USDC).unwrap();
+        let r = s.compute_fee(50 * USDC).expect("the test input is valid");
         assert_eq!(r.fee_minor, 10_000_000);
 
         // Very small amount (1 unit): pct = ceil(1×30/10_000) = 1.
         // Floored to min 5_000_000; total = 5_000_000 + 5_000_000 = 10_000_000.
-        let r_small = s.compute_fee(USDC).unwrap();
+        let r_small = s.compute_fee(USDC).expect("the test input is valid");
         assert_eq!(r_small.fee_minor, 10_000_000);
 
         // Large amount (5_000 USDC): pct = ceil(50_000_000_000×30/10_000) = 150_000_000.
         // 150_000_000 > min (5_000_000), so clamped_pct = 150_000_000.
         // total = 5_000_000 + 150_000_000 = 155_000_000 → exceeds cap (100_000_000).
-        let r_large = s.compute_fee(5_000 * USDC).unwrap();
+        let r_large = s
+            .compute_fee(5_000 * USDC)
+            .expect("the test input is valid");
         assert_eq!(r_large.fee_minor, 10 * USDC);
     }
 
@@ -311,25 +317,30 @@ mod tests {
             min_fee_minor: 0,
             max_fee_minor: None,
         };
-        let r = s.compute_fee(USDC).unwrap();
+        let r = s.compute_fee(USDC).expect("the test input is valid");
         assert_eq!(r.schedule_version, id);
     }
 
     #[test]
     fn product_roundtrips_str() {
         for p in Product::ALL {
-            assert_eq!(p.as_str().parse::<Product>().unwrap(), p);
+            assert_eq!(
+                p.as_str()
+                    .parse::<Product>()
+                    .expect("the test input is valid"),
+                p
+            );
         }
     }
 
     #[test]
     fn product_serializes_lowercase() {
         assert_eq!(
-            serde_json::to_string(&Product::Transfer).unwrap(),
+            serde_json::to_string(&Product::Transfer).expect("the test input is valid"),
             "\"transfer\""
         );
         assert_eq!(
-            serde_json::from_str::<Product>("\"withdrawal\"").unwrap(),
+            serde_json::from_str::<Product>("\"withdrawal\"").expect("the test input is valid"),
             Product::Withdrawal
         );
     }

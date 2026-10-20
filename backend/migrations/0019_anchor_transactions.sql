@@ -19,7 +19,7 @@ CREATE TYPE anchor_status AS ENUM (
 
 CREATE TABLE anchor_transactions (
     transaction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(user_id),
+    user_id UUID NOT NULL REFERENCES users(id),
     direction anchor_direction NOT NULL,
     
     -- Asset and amounts
@@ -47,9 +47,9 @@ CREATE TABLE anchor_transactions (
     
     -- Ledger integration
     -- For deposits: the transfer that credited the ledger when anchor sent funds
-    deposit_transfer_id UUID REFERENCES transfers(transfer_id),
+    deposit_transfer_id UUID REFERENCES ledger_transactions(id),
     -- For withdrawals: the withdrawal that debited the ledger when initiating
-    withdrawal_id UUID REFERENCES withdrawals(withdrawal_id),
+    withdrawal_id UUID REFERENCES withdrawals(id),
     
     -- Timestamps
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
