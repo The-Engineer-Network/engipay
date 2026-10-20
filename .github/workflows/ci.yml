@@ -116,6 +116,24 @@ jobs:
             fi
           fi
 
+          # --- 5. Source files saved as UTF-16 ---------------------------------
+          # Cargo, rustc and Postgres all require UTF-8. A file saved as UTF-16
+          # by an editor breaks the build in ways that are easy to miss, so it
+          # is refused here rather than discovered by the next person.
+          while IFS= read -r file; do
+            case "$file" in
+              *.rs|*.toml|*.sql|*.ts|*.tsx|*.js|*.mjs|*.cjs|*.json|*.md|*.sh|*.yml|*.yaml)
+                bom=$(head -c 2 "$file" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+                case "$bom" in
+                  fffe|feff)
+                    echo "FAIL: $file is UTF-16 encoded. The build needs UTF-8."
+                    FAILED=1
+                    ;;
+                esac
+                ;;
+            esac
+          done < <(git ls-files)
+
           if [ "$FAILED" -ne 0 ]; then
             echo ""
             echo "One or more security checks failed. See output above."
