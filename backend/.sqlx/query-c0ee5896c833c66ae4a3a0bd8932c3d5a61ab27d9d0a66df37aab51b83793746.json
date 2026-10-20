@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE uncredited_deposits\n        SET status = 'reprocessed'\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c0ee5896c833c66ae4a3a0bd8932c3d5a61ab27d9d0a66df37aab51b83793746"
+}

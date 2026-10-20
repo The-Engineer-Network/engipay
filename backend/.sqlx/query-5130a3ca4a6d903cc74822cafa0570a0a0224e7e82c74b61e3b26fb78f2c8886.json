@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE uncredited_deposits\n        SET status = 'resolved'\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5130a3ca4a6d903cc74822cafa0570a0a0224e7e82c74b61e3b26fb78f2c8886"
+}
