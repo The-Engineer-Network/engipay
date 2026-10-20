@@ -33,7 +33,7 @@ struct ChallengeRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct ChallengeResponse {
+pub struct ChallengeResponse {
     transaction: String,
     network_passphrase: String,
 }
@@ -143,6 +143,7 @@ pub async fn authenticate_account(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::stellar::payment::LocalTestnetSigner;

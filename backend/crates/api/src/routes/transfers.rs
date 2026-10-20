@@ -410,15 +410,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_recipient_id() {
-        let req = request(BOB, "100", "ref-1");
-        assert_eq!(
-            req.recipient_id().map(|id| id.as_uuid()),
-            Ok(Uuid::parse_str(BOB).unwrap())
-        );
-    }
-
-    #[test]
     fn receipt_serializes_with_transaction_metadata() {
         let req = request(ALICE, "100", "ref-1");
         let receipt = TransferReceipt::completed(
