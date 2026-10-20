@@ -208,8 +208,8 @@ fn validate_amount(amount: &str) -> Result<(), EnvelopeError> {
     }
 
     // Reject zero / all-zero amounts.
-    let all_zero = int_part.chars().all(|c| c == '0')
-        && frac_part.map_or(true, |f| f.chars().all(|c| c == '0'));
+    let all_zero =
+        int_part.chars().all(|c| c == '0') && frac_part.is_none_or(|f| f.chars().all(|c| c == '0'));
     if all_zero {
         return Err(invalid());
     }

@@ -6,7 +6,7 @@
 use anyhow::{Context, bail};
 use engipay_core::{Asset, Money};
 use serde::Deserialize;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
 use crate::ObservedDeposit;
 use crate::deposit_creditor::{CreditOutcome, DepositCreditor};

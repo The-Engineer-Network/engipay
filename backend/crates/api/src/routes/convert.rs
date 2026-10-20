@@ -267,10 +267,7 @@ async fn execute_conversion(
         .create_hold(user_id_core, source_money, &hold_ref)
         .await;
 
-    let hold_err = match hold_result {
-        Ok(_) => None,
-        Err(e) => Some(e),
-    };
+    let hold_err = hold_result.err();
 
     if let Some(err) = hold_err {
         // Hold failed: mark the conversion failed, return the error.
