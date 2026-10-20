@@ -38,6 +38,7 @@ zeroize.workspace = true
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 wiremock = "0.6"
+serde_urlencoded = "0.7"
 
 [lints]
 workspace = true

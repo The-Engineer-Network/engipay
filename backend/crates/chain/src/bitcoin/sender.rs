@@ -163,15 +163,15 @@ pub enum BitcoinNetwork {
 
 /// Result of coin selection.
 #[derive(Debug, Clone)]
-struct CoinSelection {
+pub struct CoinSelection {
     /// UTXOs selected to cover amount + fee.
-    selected: Vec<Utxo>,
+    pub selected: Vec<Utxo>,
     /// Total value of selected UTXOs.
-    total_value: u64,
+    pub total_value: u64,
     /// Estimated fee in satoshis.
-    fee: u64,
+    pub fee: u64,
     /// Change to return (0 if below dust threshold).
-    change: u64,
+    pub change: u64,
 }
 
 /// Selects UTXOs using largest-first strategy.
@@ -305,7 +305,7 @@ impl BitcoinSigner for LocalTestSigner {
 
     async fn sign_withdrawal(
         &self,
-        request: &WithdrawalRequest,
+        _request: &WithdrawalRequest,
         selection: &CoinSelection,
         _change_address: &str,
     ) -> Result<PreparedTransaction, BitcoinSenderError> {

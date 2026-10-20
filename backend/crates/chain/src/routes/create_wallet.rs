@@ -42,6 +42,7 @@
 
 use std::env;
 
+use crate::routes::ChainHttpState;
 use axum::Json;
 use axum::Router;
 use axum::http::StatusCode;
@@ -101,7 +102,7 @@ impl IntoResponse for WalletError {
 // ─── Axum router ──────────────────────────────────────────────────────────────
 
 /// Mounts the `POST /internal/create-wallet` route.
-pub fn routes() -> Router {
+pub fn routes() -> Router<ChainHttpState> {
     Router::new().route("/internal/create-wallet", post(handle_create_wallet))
 }
 

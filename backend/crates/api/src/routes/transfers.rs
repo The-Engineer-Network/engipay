@@ -55,6 +55,7 @@ impl TransferRequest {
     }
 
     /// The recipient's user id, parsed.
+    #[allow(dead_code)]
     pub fn recipient_id(&self) -> Result<UserId, TransferRequestError> {
         let raw = Uuid::parse_str(self.recipient.trim())
             .map_err(|_| TransferRequestError::InvalidRecipient)?;
@@ -150,6 +151,7 @@ pub enum TransferStatus {
 
 impl TransferReceipt {
     /// Build a completed receipt from a validated request and its ledger result.
+    #[allow(dead_code)]
     pub fn completed(
         transaction_id: String,
         sender_tag: String,

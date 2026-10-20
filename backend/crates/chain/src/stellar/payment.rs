@@ -273,7 +273,7 @@ pub fn build_payment(
     let operation = if request.use_claimable_balance {
         // Create a claimable balance that only the destination can claim.
         // The predicate is unconditional, so they can claim it anytime.
-        let claimants = vec![Claimant::V0(ClaimantV0 {
+        let claimants = vec![Claimant::ClaimantTypeV0(ClaimantV0 {
             destination: destination.clone(),
             predicate: ClaimPredicate::Unconditional,
         })];
@@ -289,15 +289,7 @@ pub fn build_payment(
         }
     } else {
         // Direct payment to the destination account.
-        let muxed_dest = match parse_address(&request.destination)? {
-            StellarAddress::Account(account) => MuxedAccount::Ed25519(Uint256(raw_key(&account)?)),
-            StellarAddress::Muxed { base, id } => {
-                MuxedAccount::MuxedEd25519(MuxedAccountMed25519 {
-                    id,
-                    ed25519: Uint256(raw_key(&base)?),
-                })
-            }
-        };
+        let muxed_dest = muxed_account(&request.destination)?;
         Operation {
             source_account: None,
             body: OperationBody::Payment(PaymentOp {
@@ -965,7 +957,7 @@ mod tests {
         assert_eq!(op.claimants.len(), 1);
 
         // Verify the claimant is the destination.
-        let Claimant::V0(claimant) = &op.claimants[0];
+        let Claimant::ClaimantTypeV0(claimant) = &op.claimants[0];
         assert_eq!(
             claimant.destination,
             AccountId(PublicKey::PublicKeyTypeEd25519(Uint256([2; 32])))
@@ -1014,7 +1006,7 @@ mod tests {
             panic!("expected CreateClaimableBalance operation");
         };
         // Should extract the base G... address, not the M... address.
-        let Claimant::V0(claimant) = &op.claimants[0];
+        let Claimant::ClaimantTypeV0(claimant) = &op.claimants[0];
         assert_eq!(
             claimant.destination,
             AccountId(PublicKey::PublicKeyTypeEd25519(Uint256([9; 32])))

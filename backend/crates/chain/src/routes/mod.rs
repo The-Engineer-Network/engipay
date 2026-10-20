@@ -235,7 +235,10 @@ mod tests {
                     "chain": "stellar",
                     "asset": "XLM",
                     "amount": "1",
-                    "destination": stellar_strkey::ed25519::PublicKey([1u8; 32]).to_string(),
+                    "destination": format!(
+                        "{}",
+                        stellar_strkey::ed25519::PublicKey([1u8; 32])
+                    ),
                 })
                 .to_string(),
             ))

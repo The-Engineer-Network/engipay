@@ -235,12 +235,12 @@ impl WithdrawalWorker {
 
 /// Sends XLM and USDC withdrawals on Stellar.
 pub struct StellarWithdrawalSender {
-    client: StellarClient,
+    client: Arc<StellarClient>,
     signer: Arc<dyn StellarSigner>,
 }
 
 impl StellarWithdrawalSender {
-    pub fn new(client: StellarClient, signer: Arc<dyn StellarSigner>) -> Self {
+    pub fn new(client: Arc<StellarClient>, signer: Arc<dyn StellarSigner>) -> Self {
         Self { client, signer }
     }
 
@@ -655,7 +655,10 @@ mod tests {
     fn stellar_sender(server: &MockServer) -> StellarWithdrawalSender {
         let config =
             StellarConfig::new(StellarNetwork::Testnet, Some(server.uri()), &account(1)).unwrap();
-        StellarWithdrawalSender::new(StellarClient::new(config).unwrap(), testnet_signer())
+        StellarWithdrawalSender::new(
+            Arc::new(StellarClient::new(config).unwrap()),
+            testnet_signer(),
+        )
     }
 
     async fn mount_account_and_fees(server: &MockServer) {

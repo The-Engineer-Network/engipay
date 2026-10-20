@@ -167,7 +167,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use tokio_util::sync::CancellationToken;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::stellar::{StellarClient, StellarConfig, StellarNetwork};

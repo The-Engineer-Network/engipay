@@ -447,8 +447,10 @@ async fn withdrawals() -> anyhow::Result<()> {
     let pool = db_pool()
         .await?
         .context("set DATABASE_URL to run the withdrawal worker")?;
-    let client = stellar_client()?
-        .context("set STELLAR_CUSTODY_ACCOUNT (and STELLAR_NETWORK=testnet) first")?;
+    let client = Arc::new(
+        stellar_client()?
+            .context("set STELLAR_CUSTODY_ACCOUNT (and STELLAR_NETWORK=testnet) first")?,
+    );
     let secret = env::var("STELLAR_TESTNET_SECRET")
         .context("set STELLAR_TESTNET_SECRET to the testnet account that pays")?;
     let signer = LocalTestnetSigner::from_secret(&secret, client.config().network)?;
@@ -472,6 +474,7 @@ async fn withdrawals() -> anyhow::Result<()> {
     let finality_client = client.clone();
     tokio::spawn(async move {
         use engipay_chain::stellar::broadcast::FinalityPoller;
+        use engipay_chain::stellar::broadcast::poll_transaction_finality;
         use engipay_chain::stellar::settlement::apply_finality;
         use engipay_chain::withdrawals::PgWithdrawalStore;
         use engipay_ledger::postgres::PostgresLedgerStore;
@@ -487,7 +490,7 @@ async fn withdrawals() -> anyhow::Result<()> {
             .fetch_all(&finality_pool)
             .await {
                 for (id, tx_hash) in rows {
-                    let outcome = poller.poll(&finality_client, &tx_hash).await;
+                    let outcome = poll_transaction_finality(&finality_client, &tx_hash, &poller).await;
                     let _ = apply_finality(&store, &ledger, id, outcome).await;
                 }
             }

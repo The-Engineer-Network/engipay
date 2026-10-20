@@ -7,7 +7,7 @@
 
 use super::network::StellarNetwork;
 use super::payment::StellarSigner;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use stellar_xdr::{Limits, ReadXdr, TransactionEnvelope, WriteXdr};
@@ -32,8 +32,12 @@ struct ChallengeRequest {
     home_domain: Option<String>,
 }
 
+/// The challenge transaction returned by a SEP-10 `/auth` endpoint.
+///
+/// Public because [`get_challenge`] returns it and [`authenticate`] accepts
+/// it; callers pass it through opaquely between the two calls.
 #[derive(Debug, Deserialize)]
-struct ChallengeResponse {
+pub struct ChallengeResponse {
     transaction: String,
     network_passphrase: String,
 }
@@ -88,10 +92,10 @@ pub async fn authenticate(
     network: StellarNetwork,
 ) -> Result<String, Sep10Error> {
     // Verify network matches
-    if challenge.network_passphrase != network.network_passphrase() {
+    if challenge.network_passphrase != network.passphrase() {
         return Err(Sep10Error::InvalidChallenge(format!(
             "network mismatch: expected {}, got {}",
-            network.network_passphrase(),
+            network.passphrase(),
             challenge.network_passphrase
         )));
     }
@@ -170,13 +174,13 @@ mod tests {
 
     #[test]
     fn network_mismatch_is_rejected() {
-        let challenge = ChallengeResponse {
+        let _challenge = ChallengeResponse {
             transaction: "AAAA...".to_owned(),
             network_passphrase: "Public Global Stellar Network ; September 2015".to_owned(),
         };
 
         let secret = stellar_strkey::ed25519::PrivateKey([7; 32]);
-        let signer = LocalTestnetSigner::from_secret(
+        let _signer = LocalTestnetSigner::from_secret(
             secret.as_unredacted().to_string().as_str(),
             StellarNetwork::Testnet,
         )
