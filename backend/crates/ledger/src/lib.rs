@@ -128,6 +128,9 @@ pub struct Balance {
 #[cfg(feature = "postgres")]
 pub use postgres::ActiveHold;
 
+#[cfg(feature = "postgres")]
+pub use postgres::{AssetStatement, MonthlyStatement, StatementLine};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HoldState {

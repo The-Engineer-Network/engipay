@@ -9,12 +9,85 @@
 use std::future::Future;
 use std::time::Duration;
 
+use chrono::{Datelike, NaiveDate, Utc};
 use sqlx::{PgPool, Postgres, Row};
 use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
 use crate::{Balance, HoldState, LedgerError, Receipt};
+
+// ── Statement types ───────────────────────────────────────────────────
+
+/// One ledger posting that belongs to a user for the period, with the
+/// transaction metadata attached.  Returned as part of [`MonthlyStatement`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatementLine {
+    /// The ledger transaction that created this posting.
+    pub transaction_id: Uuid,
+    /// Human-readable kind: "deposit", "transfer", "hold", "release_hold", "settle_hold".
+    pub kind: String,
+    /// The idempotency reference written by the caller.
+    pub reference: String,
+    pub asset: Asset,
+    pub bucket: String,
+    /// Signed minor-unit amount (positive = credit to user, negative = debit from user).
+    pub amount: i128,
+    /// RFC 3339 timestamp.
+    pub created_at: String,
+}
+
+/// Per-asset statement covering one calendar month.
+///
+/// The invariant `opening + net_movement == closing` must hold for every
+/// asset.  [`MonthlyStatement::verify_balance_identity`] checks this and
+/// returns an error when it does not.
+#[derive(Debug, Clone)]
+pub struct AssetStatement {
+    pub asset: Asset,
+    /// Balance (available + held) at midnight on the first day of the month,
+    /// in minor units.
+    pub opening_balance: i128,
+    /// All user postings that fall within the month, ordered by created_at.
+    pub lines: Vec<StatementLine>,
+    /// Balance (available + held) at the end of the last second of the month,
+    /// in minor units.
+    pub closing_balance: i128,
+}
+
+impl AssetStatement {
+    /// The algebraic sum of all line amounts.
+    pub fn net_movement(&self) -> i128 {
+        self.lines.iter().map(|l| l.amount).sum()
+    }
+
+    /// Returns `Ok(())` when `opening + net_movement == closing`, or an error
+    /// describing the discrepancy.  The API and tests call this and treat a
+    /// failure as an internal invariant violation.
+    pub fn verify_balance_identity(&self) -> Result<(), LedgerError> {
+        let expected = self
+            .opening_balance
+            .checked_add(self.net_movement())
+            .ok_or(LedgerError::Overflow)?;
+        if expected == self.closing_balance {
+            Ok(())
+        } else {
+            Err(LedgerError::InvariantViolated(
+                "opening + movements ≠ closing: balance identity violated",
+            ))
+        }
+    }
+}
+
+/// A full monthly statement across all assets.
+#[derive(Debug, Clone)]
+pub struct MonthlyStatement {
+    pub user_id: UserId,
+    /// First day of the reported month (UTC).
+    pub period_start: NaiveDate,
+    /// One entry per asset in `Asset::ALL` order.
+    pub assets: Vec<AssetStatement>,
+}
 
 // ── Public row types ──────────────────────────────────────────────────
 
@@ -200,6 +273,173 @@ impl PostgresLedgerStore {
         .map_err(db_err)?;
         Ok(())
     }
+
+    /// Builds a monthly statement for `user` covering the calendar month that
+    /// starts on `period_start` (the first day of the month, UTC).
+    ///
+    /// For every asset the method computes:
+    ///   * `opening_balance` — sum of all user postings strictly before
+    ///     `period_start 00:00:00 UTC`.
+    ///   * `lines` — every user posting whose `created_at` falls within
+    ///     `[period_start, period_start + 1 month)`, ordered by
+    ///     `(created_at, posting.id)`.
+    ///   * `closing_balance` — sum of all user postings strictly before
+    ///     `period_end 00:00:00 UTC` (i.e. the first day of the *next* month).
+    ///
+    /// The balance identity `opening + Σ(lines) = closing` is verified before
+    /// returning; the method returns `Err(LedgerError::InvariantViolated(…))`
+    /// if it does not hold — this is a database or logic bug, not a user error.
+    pub async fn get_monthly_statement(
+        &self,
+        user: UserId,
+        period_start: NaiveDate,
+    ) -> Result<MonthlyStatement, LedgerError> {
+        // Compute the exclusive end of the period (first day of next month).
+        let period_end = next_month(period_start).ok_or(LedgerError::Overflow)?;
+
+        let period_start_dt = period_start
+            .and_hms_opt(0, 0, 0)
+            .ok_or(LedgerError::Overflow)?
+            .and_utc();
+        let period_end_dt = period_end
+            .and_hms_opt(0, 0, 0)
+            .ok_or(LedgerError::Overflow)?
+            .and_utc();
+
+        // -- Opening balances (all postings strictly before period_start) ------
+        let opening_rows = sqlx::query(
+            "SELECT asset, COALESCE(SUM(amount), 0)::text AS total \
+             FROM ledger_postings \
+             WHERE owner_kind = 'user' \
+               AND user_id   = $1 \
+               AND created_at < $2 \
+             GROUP BY asset",
+        )
+        .bind(user.as_uuid())
+        .bind(period_start_dt)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        let mut opening_map: std::collections::HashMap<Asset, i128> =
+            std::collections::HashMap::new();
+        for row in &opening_rows {
+            let symbol: String = row.get("asset");
+            let total: String = row.get("total");
+            let Ok(asset) = symbol.parse::<Asset>() else {
+                continue;
+            };
+            let amount = total.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            opening_map.insert(asset, amount);
+        }
+
+        // -- Closing balances (all postings strictly before period_end) --------
+        let closing_rows = sqlx::query(
+            "SELECT asset, COALESCE(SUM(amount), 0)::text AS total \
+             FROM ledger_postings \
+             WHERE owner_kind = 'user' \
+               AND user_id   = $1 \
+               AND created_at < $2 \
+             GROUP BY asset",
+        )
+        .bind(user.as_uuid())
+        .bind(period_end_dt)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        let mut closing_map: std::collections::HashMap<Asset, i128> =
+            std::collections::HashMap::new();
+        for row in &closing_rows {
+            let symbol: String = row.get("asset");
+            let total: String = row.get("total");
+            let Ok(asset) = symbol.parse::<Asset>() else {
+                continue;
+            };
+            let amount = total.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            closing_map.insert(asset, amount);
+        }
+
+        // -- Statement lines for the period -----------------------------------
+        let line_rows = sqlx::query(
+            "SELECT \
+                 p.id            AS posting_id, \
+                 p.transaction_id, \
+                 t.kind, \
+                 t.reference, \
+                 p.asset, \
+                 p.bucket, \
+                 p.amount::text  AS amount, \
+                 p.created_at \
+             FROM ledger_postings p \
+             JOIN ledger_transactions t ON t.id = p.transaction_id \
+             WHERE p.owner_kind  = 'user' \
+               AND p.user_id     = $1 \
+               AND p.created_at >= $2 \
+               AND p.created_at  < $3 \
+             ORDER BY p.created_at ASC, p.id ASC",
+        )
+        .bind(user.as_uuid())
+        .bind(period_start_dt)
+        .bind(period_end_dt)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        // Group lines by asset.
+        let mut lines_map: std::collections::HashMap<Asset, Vec<StatementLine>> =
+            std::collections::HashMap::new();
+        for row in &line_rows {
+            let asset_str: String = row.get("asset");
+            let Ok(asset) = asset_str.parse::<Asset>() else {
+                continue;
+            };
+            let tx_id: Uuid = row.get("transaction_id");
+            let kind: String = row.get("kind");
+            let reference: String = row.get("reference");
+            let bucket: String = row.get("bucket");
+            let amount_str: String = row.get("amount");
+            let created_at: chrono::DateTime<Utc> = row.get("created_at");
+
+            let amount = amount_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
+
+            lines_map.entry(asset).or_default().push(StatementLine {
+                transaction_id: tx_id,
+                kind,
+                reference,
+                asset,
+                bucket,
+                amount,
+                created_at: created_at.to_rfc3339(),
+            });
+        }
+
+        // -- Assemble per-asset statements and verify balance identity --------
+        let mut assets = Vec::with_capacity(Asset::ALL.len());
+        for asset in Asset::ALL {
+            let opening_balance = *opening_map.get(&asset).unwrap_or(&0);
+            let closing_balance = *closing_map.get(&asset).unwrap_or(&0);
+            let lines = lines_map.remove(&asset).unwrap_or_default();
+
+            let stmt = AssetStatement {
+                asset,
+                opening_balance,
+                lines,
+                closing_balance,
+            };
+            stmt.verify_balance_identity()?;
+            assets.push(stmt);
+        }
+
+        Ok(MonthlyStatement {
+            user_id: user,
+            period_start,
+            assets,
+        })
+    }
+
     ///
     /// If `reference` was already used with identical parameters, returns
     /// the original [`Receipt`] with `replayed: true` and moves nothing.
@@ -830,6 +1070,19 @@ fn require_non_empty(reference: &str) -> Result<(), LedgerError> {
     } else {
         Ok(())
     }
+}
+
+/// Returns the first day of the month immediately following `date`, or `None`
+/// on arithmetic overflow (only possible for dates in December year 9999).
+fn next_month(date: NaiveDate) -> Option<NaiveDate> {
+    let year = date.year();
+    let month = date.month();
+    let (next_year, next_month) = if month == 12 {
+        (year.checked_add(1)?, 1)
+    } else {
+        (year, month.checked_add(1)?)
+    };
+    NaiveDate::from_ymd_opt(next_year, next_month, 1)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────

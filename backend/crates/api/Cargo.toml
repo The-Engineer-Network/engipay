@@ -14,6 +14,7 @@ anyhow.workspace = true
 axum.workspace = true
 # Standard base64, used to encode the pagination cursor.
 base64.workspace = true
+chrono.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
 serde.workspace = true
@@ -27,7 +28,6 @@ uuid.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 jsonwebtoken.workspace = true
-chrono.workspace = true
 # Wallet sign-in: SEP-10 on Stellar and SIWE on EVM.
 stellar-strkey.workspace = true
 stellar-xdr.workspace = true
