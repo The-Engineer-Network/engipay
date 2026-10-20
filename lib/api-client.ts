@@ -87,6 +87,78 @@ export interface TransactionEntry {
   created_at: string
 }
 
+export interface CreatePaymentRequestInput {
+  asset: string
+  amount: string
+  note?: string
+  expiry_minutes?: number
+  allow_partial?: boolean
+  min_amount?: string
+  max_amount?: string
+}
+
+export interface CreatePaymentRequestResponse {
+  id: string
+  uri: string
+  expires_at: string
+}
+
+export interface PaymentEntry {
+  id: string
+  amount: string
+  asset: string
+  chain: string
+  tx_hash?: string
+  payer_address?: string
+  note?: string
+  created_at: string
+}
+
+export interface PaymentRequestDetail {
+  id: string
+  recipient_tag?: string
+  requested_amount: string
+  asset: string
+  status: string
+  expires_at: string
+  settled_at?: string
+  allow_partial: boolean
+  min_amount?: string
+  max_amount?: string
+  amount_paid: string
+  amount_remaining: string
+  payments: PaymentEntry[]
+}
+
+export interface PaymentRequestSummary {
+  id: string
+  requested_amount: string
+  asset: string
+  status: string
+  expires_at: string
+  settled_at?: string
+  allow_partial: boolean
+  amount_paid: string
+  amount_remaining: string
+  created_at: string
+}
+
+export interface RecordPaymentRequestInput {
+  amount: string
+  chain: string
+  tx_hash?: string
+  payer_address?: string
+  note?: string
+}
+
+export interface RecordPaymentResponse {
+  payment_id: string
+  payment_request_id: string
+  request_status: string
+  amount_paid: string
+  amount_remaining: string
+}
+
 // ── Public endpoints (no session required) ────────────────────────────────────
 
 /** GET /v1/assets — assets EngiPay supports, with their networks. */
@@ -129,6 +201,26 @@ export async function verifyStellarSignIn(params: {
     body: JSON.stringify(params),
   })
   if (!result) throw new Error("API did not return a session.")
+  return result
+}
+
+/** GET /v1/payment-requests/:id — view invoice and payment status (public). */
+export async function getPaymentRequest(id: string): Promise<PaymentRequestDetail> {
+  const result = await apiPublicRequest<PaymentRequestDetail>(`/v1/payment-requests/${id}`)
+  if (!result) throw new Error("API did not return payment request details.")
+  return result
+}
+
+/** POST /v1/payment-requests/:id/pay — record a payment against an invoice (public). */
+export async function recordPaymentRequestPayment(
+  id: string,
+  payment: RecordPaymentRequestInput
+): Promise<RecordPaymentResponse> {
+  const result = await apiPublicRequest<RecordPaymentResponse>(`/v1/payment-requests/${id}/pay`, {
+    method: "POST",
+    body: JSON.stringify(payment),
+  })
+  if (!result) throw new Error("API did not return payment confirmation.")
   return result
 }
 
@@ -193,4 +285,22 @@ export async function getTransactions(): Promise<TransactionEntry[]> {
 /** POST /v1/auth/logout — revoke the current session. */
 export async function logout(): Promise<void> {
   await apiRequest<void>("/v1/auth/logout", { method: "POST" })
+}
+
+/** POST /v1/payment-requests — create a merchant payment request / invoice. */
+export async function createPaymentRequest(
+  req: CreatePaymentRequestInput
+): Promise<CreatePaymentRequestResponse> {
+  const result = await apiRequest<CreatePaymentRequestResponse>("/v1/payment-requests", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a payment request.")
+  return result
+}
+
+/** GET /v1/payment-requests — list the signed-in merchant's payment requests. */
+export async function listPaymentRequests(): Promise<PaymentRequestSummary[]> {
+  const result = await apiRequest<PaymentRequestSummary[]>("/v1/payment-requests")
+  return result ?? []
 }
