@@ -52,7 +52,9 @@ async function send<T>(path: string, init: RequestInit, token: string | null): P
 
   const headers = new Headers(init.headers)
   if (token) headers.set("Authorization", `Bearer ${token}`)
-  if (init.body !== undefined) headers.set("Content-Type", "application/json")
+  if (init.body !== undefined && !(typeof FormData !== "undefined" && init.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json")
+  }
 
   const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers })
   if (response.ok) {

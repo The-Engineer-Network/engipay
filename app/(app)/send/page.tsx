@@ -129,7 +129,25 @@ export default function SendPage() {
         <SendForm />
       </Suspense>
 
-      <Card className="mt-6 border-dashed">
+      <div className="mt-4 rounded-xl border border-border bg-card/60 p-4 shadow-sm backdrop-blur">
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-0.5">
+            <p className="text-sm font-semibold">Paying multiple recipients?</p>
+            <p className="text-xs text-muted-foreground">
+              Upload a CSV of recipients and amounts with built-in dual-approval and idempotency guarantees.
+            </p>
+          </div>
+          <Link
+            href="/batch"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-3.5 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/20"
+          >
+            Batch CSV
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      </div>
+
+      <Card className="mt-4 border-dashed">
         <CardContent className="flex items-start gap-3 p-4">
           <Bitcoin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <p className="text-sm text-muted-foreground">
