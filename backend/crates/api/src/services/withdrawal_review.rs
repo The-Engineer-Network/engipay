@@ -348,10 +348,24 @@ mod tests {
 
     // ── from_env ──────────────────────────────────────────────────────────────
 
+    /// Serialises the `from_env` tests below. They all mutate
+    /// `WITHDRAWAL_REVIEW_THRESHOLD_USDC` in this one process, and `cargo test`
+    /// runs tests on parallel threads, so without this lock one test's
+    /// `set_var` could land between another test's `set_var` and `from_env`.
+    /// A poisoned lock is ignored so one failing test does not cascade.
+    fn threshold_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn from_env_falls_back_to_default_when_unset() {
+        let _guard = threshold_env_guard();
         // Remove the variable if it happens to be set, then check the default.
-        // SAFETY: test-only, single-threaded context; no other threads read this var.
+        // SAFETY: test-only; guarded by `threshold_env_guard()`, so no other
+        // test thread touches this variable while we hold the lock.
         unsafe { std::env::remove_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC") };
         let config = ReviewConfig::from_env().unwrap();
         assert_eq!(config.threshold.minor, DEFAULT_REVIEW_THRESHOLD_MINOR);
@@ -359,7 +373,8 @@ mod tests {
 
     #[test]
     fn from_env_parses_whole_usdc_correctly() {
-        // SAFETY: test-only, single-threaded context; no other threads read this var.
+        let _guard = threshold_env_guard();
+        // SAFETY: test-only; guarded by `threshold_env_guard()`.
         unsafe { std::env::set_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC", "5000") };
         let config = ReviewConfig::from_env().unwrap();
         // 5000 USDC × 10_000_000 minor/USDC.
@@ -369,7 +384,8 @@ mod tests {
 
     #[test]
     fn from_env_rejects_non_numeric_value() {
-        // SAFETY: test-only, single-threaded context; no other threads read this var.
+        let _guard = threshold_env_guard();
+        // SAFETY: test-only; guarded by `threshold_env_guard()`.
         unsafe { std::env::set_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC", "notanumber") };
         let result = ReviewConfig::from_env();
         assert!(result.is_err(), "non-numeric value must be rejected");
@@ -378,7 +394,8 @@ mod tests {
 
     #[test]
     fn from_env_rejects_negative_value() {
-        // SAFETY: test-only, single-threaded context; no other threads read this var.
+        let _guard = threshold_env_guard();
+        // SAFETY: test-only; guarded by `threshold_env_guard()`.
         unsafe { std::env::set_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC", "-100") };
         let result = ReviewConfig::from_env();
         assert!(result.is_err(), "negative threshold must be rejected");
