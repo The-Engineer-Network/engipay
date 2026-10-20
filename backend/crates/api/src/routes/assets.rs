@@ -2,6 +2,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use engipay_core::{Asset, Chain};
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::AppState;
 
@@ -9,7 +10,7 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/assets", get(list_assets))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AssetInfo {
     pub symbol: &'static str,
     pub name: &'static str,
@@ -19,15 +20,25 @@ pub struct AssetInfo {
     pub networks: Vec<NetworkInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct NetworkInfo {
     pub chain: Chain,
     /// On-chain precision, which can be coarser than the ledger's (Base USDC).
     pub decimals: u32,
 }
 
-/// The assets EngiPay supports, from the single definition in `engipay-core`,
-/// so the app never shows an asset or network the backend cannot move.
+/// List every asset EngiPay supports.
+///
+/// Returns a stable list derived from the single source of truth in
+/// `engipay-core`, so the app never shows an asset the backend cannot move.
+#[utoipa::path(
+    get,
+    path = "/v1/assets",
+    responses(
+        (status = 200, description = "Supported assets", body = Vec<AssetInfo>)
+    ),
+    tag = "assets"
+)]
 async fn list_assets() -> Json<Vec<AssetInfo>> {
     Json(
         Asset::ALL

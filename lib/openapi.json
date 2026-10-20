@@ -1,0 +1,318 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "EngiPay API",
+    "description": "Pay and get paid in crypto from Nigeria. Naira ramps, transfers, conversions.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/v1/assets": {
+      "get": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "List every asset EngiPay supports.",
+        "description": "Returns a stable list derived from the single source of truth in\n`engipay-core`, so the app never shows an asset the backend cannot move.",
+        "operationId": "list_assets",
+        "responses": {
+          "200": {
+            "description": "Supported assets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AssetInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/quotes": {
+      "post": {
+        "tags": [
+          "fees"
+        ],
+        "summary": "Compute and lock in a fee quote.",
+        "description": "Returns the exact fee for the given (product, asset, gross_minor) triple,\npinned to the current schedule version.  Pass `quote_id` to `POST /v1/settles`\nto use this quote.  Quotes expire after 5 minutes.",
+        "operationId": "create_quote",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Quote computed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuoteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "404": {
+            "description": "No schedule for this product/asset"
+          }
+        }
+      }
+    },
+    "/v1/settles": {
+      "post": {
+        "tags": [
+          "fees"
+        ],
+        "summary": "Settle a hold using a previously issued quote.",
+        "description": "Verifies the quote has not expired, pins the fee to the quote's stored\n`fee_minor`, and records the settlement.  Idempotent on `hold_reference`.",
+        "operationId": "settle_hold",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Settlement recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request or expired quote"
+          },
+          "503": {
+            "description": "Database not available"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Asset": {
+        "type": "string",
+        "description": "Every asset EngiPay holds. Adding one is a deliberate change here, not a\nstring that shows up in a request.\n\nAn asset is the *currency*, not where it lives. A user holding USDC has one\nUSDC balance whether it arrived on Base or on Stellar; the network only\nmatters when money enters or leaves.",
+        "enum": [
+          "Eth",
+          "Usdc",
+          "Btc",
+          "Xlm"
+        ]
+      },
+      "AssetInfo": {
+        "type": "object",
+        "required": [
+          "symbol",
+          "name",
+          "decimals",
+          "networks"
+        ],
+        "properties": {
+          "decimals": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Precision the ledger stores and reports balances in.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkInfo"
+            },
+            "description": "Every network this asset can be deposited from or withdrawn to."
+          },
+          "symbol": {
+            "type": "string"
+          }
+        }
+      },
+      "Chain": {
+        "type": "string",
+        "description": "The networks EngiPay moves money on.",
+        "enum": [
+          "base",
+          "bitcoin",
+          "stellar"
+        ]
+      },
+      "NetworkInfo": {
+        "type": "object",
+        "required": [
+          "chain",
+          "decimals"
+        ],
+        "properties": {
+          "chain": {
+            "$ref": "#/components/schemas/Chain"
+          },
+          "decimals": {
+            "type": "integer",
+            "format": "int32",
+            "description": "On-chain precision, which can be coarser than the ledger's (Base USDC).",
+            "minimum": 0
+          }
+        }
+      },
+      "Product": {
+        "type": "string",
+        "description": "The five products EngiPay charges fees for.",
+        "enum": [
+          "transfer",
+          "withdrawal",
+          "conversion",
+          "buy",
+          "sell"
+        ]
+      },
+      "QuoteRequest": {
+        "type": "object",
+        "required": [
+          "product",
+          "asset",
+          "gross_minor"
+        ],
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/Asset"
+          },
+          "gross_minor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Gross amount the user wants to send/convert/withdraw, in the asset's\nsmallest units (same convention as the ledger)."
+          },
+          "product": {
+            "$ref": "#/components/schemas/Product"
+          }
+        }
+      },
+      "QuoteResponse": {
+        "type": "object",
+        "required": [
+          "quote_id",
+          "product",
+          "asset",
+          "gross_minor",
+          "fee_minor",
+          "schedule_version",
+          "expires_at"
+        ],
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/Asset"
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "ISO-8601 expiry time. The client must re-quote after this."
+          },
+          "fee_minor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Fee in the asset's smallest units."
+          },
+          "gross_minor": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "product": {
+            "$ref": "#/components/schemas/Product"
+          },
+          "quote_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable id for this quote. Pass it to the settle endpoint."
+          },
+          "schedule_version": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The `fee_schedules.id` that produced this fee.  Settlement rejects any\nquote whose stored version doesn't match what it recorded."
+          }
+        }
+      },
+      "SettleRequest": {
+        "type": "object",
+        "required": [
+          "hold_reference",
+          "quote_id"
+        ],
+        "properties": {
+          "hold_reference": {
+            "type": "string",
+            "description": "The idempotency reference of the hold to settle."
+          },
+          "quote_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The quote that priced this settlement."
+          }
+        }
+      },
+      "SettleResponse": {
+        "type": "object",
+        "required": [
+          "replayed",
+          "quote_id",
+          "fee_minor",
+          "schedule_version"
+        ],
+        "properties": {
+          "fee_minor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The fee booked to the Fees system account, in the quote's asset's\nsmallest units."
+          },
+          "quote_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "True when this `hold_reference` was already settled and nothing moved now."
+          },
+          "schedule_version": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The `fee_schedules.id` that was in effect when the quote was created."
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "assets",
+      "description": "Supported assets and networks"
+    },
+    {
+      "name": "fees",
+      "description": "Fee quotes and settlement"
+    }
+  ]
+}

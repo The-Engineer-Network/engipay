@@ -2,9 +2,10 @@ use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// The networks EngiPay moves money on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Chain {
     Base,
@@ -22,7 +23,7 @@ impl Chain {
 /// An asset is the *currency*, not where it lives. A user holding USDC has one
 /// USDC balance whether it arrived on Base or on Stellar; the network only
 /// matters when money enters or leaves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 #[serde(into = "&'static str", try_from = "String")]
 pub enum Asset {
     Eth,

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { PageHeader } from "@/components/app/PageHeader"
 import { PendingServiceNote } from "@/components/app/PendingServiceNote"
 import { Card, CardContent } from "@/components/ui/card"
@@ -16,11 +16,29 @@ import {
 } from "@/components/ui/select"
 import { ArrowDown } from "lucide-react"
 import { DISPLAY_ASSETS } from "@/lib/assets"
+import { createQuote, ApiError } from "@/lib/api"
+import type { QuoteResponse, Product, Asset } from "@/lib/api"
+
+const USDC_MINOR_PER_UNIT = 10_000_000
+
+/** Convert a display-asset symbol to the API Asset enum value. */
+function toApiAsset(symbol: string): Asset | null {
+  const map: Record<string, Asset> = {
+    ETH: "Eth",
+    USDC: "Usdc",
+    BTC: "Btc",
+    XLM: "Xlm",
+  }
+  return map[symbol] ?? null
+}
 
 export default function ConvertPage() {
   const [from, setFrom] = useState(DISPLAY_ASSETS[0]?.symbol ?? "ETH")
   const [to, setTo] = useState(DISPLAY_ASSETS[1]?.symbol ?? "USDC")
   const [amount, setAmount] = useState("")
+  const [quote, setQuote] = useState<QuoteResponse | null>(null)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+  const [loadingQuote, setLoadingQuote] = useState(false)
 
   const amountValid = amount === "" || Number(amount) > 0
   const sameAsset = from === to
@@ -29,6 +47,47 @@ export default function ConvertPage() {
     setFrom(to)
     setTo(from)
   }
+
+  /** Gross amount in the source asset's ledger smallest units. */
+  const grossMinor = (() => {
+    if (!amount || Number(amount) <= 0) return 0
+    if (from === "USDC") return Math.round(Number(amount) * USDC_MINOR_PER_UNIT)
+    return 0 // non-USDC conversions not yet priced
+  })()
+
+  const fetchQuote = useCallback(async () => {
+    const apiAsset = toApiAsset(from)
+    if (grossMinor <= 0 || sameAsset || !apiAsset || from !== "USDC") {
+      setQuote(null)
+      return
+    }
+    setLoadingQuote(true)
+    setQuoteError(null)
+    try {
+      const q = await createQuote({
+        product: "conversion" as Product,
+        asset: apiAsset,
+        gross_minor: grossMinor,
+      })
+      setQuote(q)
+    } catch (err) {
+      setQuote(null)
+      setQuoteError(err instanceof ApiError ? err.message : "Could not fetch fee")
+    } finally {
+      setLoadingQuote(false)
+    }
+  }, [grossMinor, from, sameAsset])
+
+  useEffect(() => {
+    const timer = setTimeout(fetchQuote, 400)
+    return () => clearTimeout(timer)
+  }, [fetchQuote])
+
+  const feeDisplay = (() => {
+    if (!quote) return "—"
+    const feeUsdc = quote.fee_minor / USDC_MINOR_PER_UNIT
+    return `${feeUsdc.toFixed(4)} ${from}`
+  })()
 
   return (
     <div className="mx-auto max-w-lg">
@@ -116,8 +175,13 @@ export default function ConvertPage() {
             </div>
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">Fee</dt>
-              <dd className="text-muted-foreground">—</dd>
+              <dd className={loadingQuote ? "animate-pulse text-muted-foreground" : "text-muted-foreground"}>
+                {loadingQuote ? "…" : feeDisplay}
+              </dd>
             </div>
+            {quoteError && (
+              <p className="text-xs text-destructive">{quoteError}</p>
+            )}
             <div className="flex justify-between gap-4 border-t border-border pt-2 font-medium">
               <dt>You receive</dt>
               <dd>—</dd>

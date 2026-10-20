@@ -20,6 +20,7 @@ use axum::{Json, Router};
 use chrono::Utc;
 use engipay_core::{Asset, FeeSchedule, Product};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -32,7 +33,7 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/quotes", post(create_quote))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct QuoteRequest {
     pub product: Product,
     pub asset: Asset,
@@ -41,7 +42,7 @@ pub struct QuoteRequest {
     pub gross_minor: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct QuoteResponse {
     /// Stable id for this quote. Pass it to the settle endpoint.
     pub quote_id: Uuid,
@@ -57,6 +58,22 @@ pub struct QuoteResponse {
     pub expires_at: String,
 }
 
+/// Compute and lock in a fee quote.
+///
+/// Returns the exact fee for the given (product, asset, gross_minor) triple,
+/// pinned to the current schedule version.  Pass `quote_id` to `POST /v1/settles`
+/// to use this quote.  Quotes expire after 5 minutes.
+#[utoipa::path(
+    post,
+    path = "/v1/quotes",
+    request_body = QuoteRequest,
+    responses(
+        (status = 200, description = "Quote computed", body = QuoteResponse),
+        (status = 400, description = "Bad request"),
+        (status = 404, description = "No schedule for this product/asset"),
+    ),
+    tag = "fees"
+)]
 async fn create_quote(
     State(state): State<AppState>,
     Json(req): Json<QuoteRequest>,

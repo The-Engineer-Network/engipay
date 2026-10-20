@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { PageHeader } from "@/components/app/PageHeader"
 import { PendingServiceNote } from "@/components/app/PendingServiceNote"
 import { Card, CardContent } from "@/components/ui/card"
@@ -15,15 +15,70 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { DISPLAY_ASSETS } from "@/lib/assets"
+import { createQuote, ApiError } from "@/lib/api"
+import type { QuoteResponse, Product, Asset } from "@/lib/api"
 
 /** Quick amounts, in Naira. */
 const PRESETS = ["5000", "10000", "50000", "100000"]
 
+// 1 USDC ≈ ₦1600 (placeholder exchange rate until the ramp partner is live).
+const NAIRA_PER_USDC = 1600
+// USDC has 7 ledger decimals.
+const USDC_MINOR_PER_UNIT = 10_000_000
+
 export default function BuyPage() {
   const [naira, setNaira] = useState("")
   const [asset, setAsset] = useState(DISPLAY_ASSETS[1]?.symbol ?? "USDC")
+  const [quote, setQuote] = useState<QuoteResponse | null>(null)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+  const [loadingQuote, setLoadingQuote] = useState(false)
 
   const amountValid = naira === "" || Number(naira) > 0
+
+  /** Gross USDC in ledger smallest units for the entered Naira amount. */
+  const grossMinor =
+    naira && Number(naira) > 0
+      ? Math.round((Number(naira) / NAIRA_PER_USDC) * USDC_MINOR_PER_UNIT)
+      : 0
+
+  const fetchQuote = useCallback(async () => {
+    if (grossMinor <= 0 || asset !== "USDC") {
+      setQuote(null)
+      return
+    }
+    setLoadingQuote(true)
+    setQuoteError(null)
+    try {
+      const q = await createQuote({
+        product: "buy" as Product,
+        asset: "Usdc" as Asset,
+        gross_minor: grossMinor,
+      })
+      setQuote(q)
+    } catch (err) {
+      setQuote(null)
+      setQuoteError(err instanceof ApiError ? err.message : "Could not fetch fee")
+    } finally {
+      setLoadingQuote(false)
+    }
+  }, [grossMinor, asset])
+
+  useEffect(() => {
+    const timer = setTimeout(fetchQuote, 400)
+    return () => clearTimeout(timer)
+  }, [fetchQuote])
+
+  const feeDisplay = (() => {
+    if (!quote) return "—"
+    const feeUsdc = quote.fee_minor / USDC_MINOR_PER_UNIT
+    return `${feeUsdc.toFixed(2)} USDC`
+  })()
+
+  const receiveDisplay = (() => {
+    if (!quote) return "—"
+    const net = (quote.gross_minor - quote.fee_minor) / USDC_MINOR_PER_UNIT
+    return `${Math.max(0, net).toFixed(2)} USDC`
+  })()
 
   return (
     <div className="mx-auto max-w-lg">
@@ -95,15 +150,20 @@ export default function BuyPage() {
           <dl className="space-y-2 rounded-md border border-border p-4 text-sm">
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">Rate</dt>
-              <dd className="text-muted-foreground">—</dd>
+              <dd className="text-muted-foreground">₦{NAIRA_PER_USDC.toLocaleString()} / USDC</dd>
             </div>
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">Fee</dt>
-              <dd className="text-muted-foreground">—</dd>
+              <dd className={loadingQuote ? "animate-pulse text-muted-foreground" : "text-muted-foreground"}>
+                {loadingQuote ? "…" : feeDisplay}
+              </dd>
             </div>
+            {quoteError && (
+              <p className="text-xs text-destructive">{quoteError}</p>
+            )}
             <div className="flex justify-between gap-4 border-t border-border pt-2 font-medium">
               <dt>You receive</dt>
-              <dd>—</dd>
+              <dd>{loadingQuote ? "…" : receiveDisplay}</dd>
             </div>
           </dl>
 

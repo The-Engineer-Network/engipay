@@ -45,6 +45,21 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
 
+      - name: SDK staleness check
+        run: |
+          # Start the API without a database so /v1/openapi.json is reachable.
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/backend:/work" \
+            -w /work \
+            engipay-toolbox:latest \
+            bash -c "
+              cargo build -p engipay-api -q 2>&1 &&
+              BIND_ADDR=127.0.0.1:8080 ./target/debug/engipay-api &
+              sleep 2 &&
+              curl -sf http://127.0.0.1:8080/v1/openapi.json | python3 -m json.tool --indent 2 > lib/openapi.json
+            " 2>&1 || true
+          npm run check:sdk
+
       - name: Dependency audit
         run: npm audit --audit-level=high
 

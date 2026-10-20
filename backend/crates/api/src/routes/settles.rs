@@ -20,6 +20,7 @@ use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -29,7 +30,7 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/settles", post(settle_hold))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SettleRequest {
     /// The idempotency reference of the hold to settle.
     pub hold_reference: String,
@@ -37,7 +38,7 @@ pub struct SettleRequest {
     pub quote_id: Uuid,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SettleResponse {
     /// True when this `hold_reference` was already settled and nothing moved now.
     pub replayed: bool,
@@ -64,6 +65,21 @@ struct QuoteRow {
     expires_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Settle a hold using a previously issued quote.
+///
+/// Verifies the quote has not expired, pins the fee to the quote's stored
+/// `fee_minor`, and records the settlement.  Idempotent on `hold_reference`.
+#[utoipa::path(
+    post,
+    path = "/v1/settles",
+    request_body = SettleRequest,
+    responses(
+        (status = 200, description = "Settlement recorded", body = SettleResponse),
+        (status = 400, description = "Bad request or expired quote"),
+        (status = 503, description = "Database not available"),
+    ),
+    tag = "fees"
+)]
 async fn settle_hold(
     State(state): State<AppState>,
     Json(req): Json<SettleRequest>,
