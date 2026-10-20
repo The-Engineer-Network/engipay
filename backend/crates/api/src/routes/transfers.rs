@@ -13,6 +13,7 @@ use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 use crate::services::limits::check_velocity_limits;
 use crate::services::recipient::resolve_recipient;
+use crate::services::recipient_risk::{RecipientWarning, assess_recipient};
 
 /// A validated request to transfer funds between two EngiPay users.
 ///
@@ -139,6 +140,10 @@ pub struct TransferReceipt {
     pub amount: String,
     pub created_at: String,
     pub status: TransferStatus,
+    /// Non-blocking advisories about the recipient, e.g. a first-time
+    /// recipient or an address that looks like a saved contact.
+    #[serde(default)]
+    pub warnings: Vec<RecipientWarning>,
 }
 
 /// Terminal status of a successfully executed transfer.
@@ -166,6 +171,7 @@ impl TransferReceipt {
             amount: amount_minor_units.to_string(),
             created_at,
             status: TransferStatus::Completed,
+            warnings: Vec::new(),
         }
     }
 }
@@ -207,6 +213,12 @@ async fn create_transfer(
                 ApiError::Internal(anyhow::anyhow!("recipient lookup failed: {}", msg))
             }
         })?;
+
+    // Assess the recipient for first-time and look-alike warnings. These are
+    // advisory only: the transfer proceeds regardless of the outcome.
+    let warnings = assess_recipient(&pool, sender, recipient)
+        .await
+        .unwrap_or_default();
 
     let ledger = PostgresLedgerStore::new(pool.clone());
 
@@ -264,6 +276,7 @@ async fn create_transfer(
             amount: money.minor.to_string(),
             created_at: now_iso8601(),
             status: TransferStatus::Completed,
+            warnings,
         }),
     ))
 }
@@ -448,6 +461,7 @@ mod tests {
         assert_eq!(json["amount"], "1000000000");
         assert_eq!(json["created_at"], "2024-01-02T03:04:05Z");
         assert_eq!(json["status"], "completed");
+        assert_eq!(json["warnings"], serde_json::json!([]));
     }
 
     #[test]

@@ -11,6 +11,43 @@ use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 
+// ── Split helpers ─────────────────────────────────────────────────────────────
+
+/// Split `total` minor units into `n` shares using the largest-remainder method.
+///
+/// The returned shares always sum exactly to `total`. When the split is uneven,
+/// the first `total % n` shares receive one extra minor unit each.
+pub fn split_equal(total: i128, n: usize) -> Vec<i128> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let n_i = n as i128;
+    let base = total / n_i;
+    let remainder = total % n_i;
+    (0..n)
+        .map(|i| {
+            if (i as i128) < remainder {
+                base + 1
+            } else {
+                base
+            }
+        })
+        .collect()
+}
+
+/// A single payer's share of a split payment request.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PaymentShare {
+    pub id: String,
+    pub payer: String,
+    /// Amount owed by this payer (minor units, string).
+    pub amount: String,
+    /// Amount this payer has paid so far (minor units, string).
+    pub paid_amount: String,
+    /// Derived status: pending | partially_paid | paid.
+    pub status: String,
+}
+
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 /// A single payment recorded against a payment request.
@@ -52,6 +89,9 @@ pub struct PaymentRequestDetail {
     pub amount_remaining: String,
     /// Every payment recorded against this request.
     pub payments: Vec<PaymentEntry>,
+    /// Per-payer shares when this request is a split (empty otherwise).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shares: Vec<PaymentShare>,
 }
 
 /// Summary row returned by GET /v1/payment-requests (merchant list).
@@ -67,6 +107,9 @@ pub struct PaymentRequestSummary {
     pub amount_paid: String,
     pub amount_remaining: String,
     pub created_at: String,
+    /// Per-payer shares when this request is a split (empty otherwise).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shares: Vec<PaymentShare>,
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -75,6 +118,12 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/payment-requests/{id}", get(get_payment_request))
         .route("/payment-requests/{id}/pay", post(record_payment))
+        .route("/payment-requests/{id}/split", post(create_split))
+        .route(
+            "/payment-requests/{id}/shares/{payer}/pay",
+            post(pay_share),
+        )
+        .route("/payment-requests/{id}/cancel", post(cancel_payment_request))
         .route("/payment-requests", get(list_payment_requests))
 }
 
@@ -211,6 +260,8 @@ pub(crate) async fn load_payment_request_detail(
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
 
+    let shares = load_shares(pool, id).await?;
+
     Ok(PaymentRequestDetail {
         id: row_id.to_string(),
         recipient_tag,
@@ -225,7 +276,63 @@ pub(crate) async fn load_payment_request_detail(
         amount_paid: amount_paid.to_string(),
         amount_remaining: amount_remaining.to_string(),
         payments,
+        shares,
     })
+}
+
+/// Load all shares for a payment request, deriving per-share status.
+async fn load_shares(pool: &sqlx::PgPool, id: Uuid) -> Result<Vec<PaymentShare>, ApiError> {
+    let db_err = |e: sqlx::Error| ApiError::Internal(anyhow::anyhow!(e.to_string()));
+
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            s.id,
+            s.payer,
+            s.amount::text AS amount,
+            COALESCE(SUM(sp.amount), 0)::text AS paid_amount
+        FROM payment_request_shares s
+        LEFT JOIN payment_request_share_payments sp ON sp.share_id = s.id
+        WHERE s.payment_request_id = $1
+        GROUP BY s.id
+        ORDER BY s.created_at ASC
+        "#,
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?;
+
+    rows.iter()
+        .map(|r| {
+            let share_id: Uuid = r.try_get("id").map_err(db_err)?;
+            let payer: String = r.try_get("payer").map_err(db_err)?;
+            let amount: i128 = r
+                .try_get::<String, _>("amount")
+                .map_err(db_err)?
+                .parse()
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid share amount: {e}")))?;
+            let paid_amount: i128 = r
+                .try_get::<String, _>("paid_amount")
+                .map_err(db_err)?
+                .parse()
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid paid_amount: {e}")))?;
+            let status = if paid_amount >= amount {
+                "paid"
+            } else if paid_amount > 0 {
+                "partially_paid"
+            } else {
+                "pending"
+            };
+            Ok(PaymentShare {
+                id: share_id.to_string(),
+                payer,
+                amount: amount.to_string(),
+                paid_amount: paid_amount.to_string(),
+                status: status.to_string(),
+            })
+        })
+        .collect()
 }
 
 // ── POST /v1/payment-requests/{id}/pay ───────────────────────────────────────
@@ -497,6 +604,533 @@ async fn record_payment(
     ))
 }
 
+// ── POST /v1/payment-requests/{id}/split ─────────────────────────────────────
+
+/// A single payer entry in a split request.
+#[derive(Debug, Deserialize)]
+pub struct SplitPayer {
+    /// Payer identifier (wallet address or user tag).
+    pub identifier: String,
+    /// Custom amount (minor units, string). Required for custom mode, ignored for equal.
+    #[serde(default)]
+    pub amount: Option<String>,
+}
+
+/// Request body for creating a split.
+#[derive(Debug, Deserialize)]
+pub struct CreateSplitRequest {
+    /// "equal" or "custom".
+    pub mode: String,
+    pub payers: Vec<SplitPayer>,
+}
+
+/// Response returned after a split is created.
+#[derive(Debug, Serialize)]
+pub struct CreateSplitResponse {
+    pub payment_request_id: String,
+    pub shares: Vec<PaymentShare>,
+}
+
+/// POST /v1/payment-requests/{id}/split
+///
+/// Splits a payment request across several payers. Only the creator may split.
+/// In `equal` mode the total is divided with the largest-remainder method so
+/// shares always sum exactly to the requested amount. In `custom` mode the
+/// supplied amounts must sum exactly to the requested amount.
+async fn create_split(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    auth: AuthUser,
+    Json(payload): Json<CreateSplitRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
+    let pool = state
+        .database
+        .clone()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    let db_err = |e: sqlx::Error| ApiError::Internal(anyhow::anyhow!(e.to_string()));
+
+    let row = sqlx::query(
+        r#"
+        SELECT
+            pr.user_id,
+            pr.requested_amount::text AS requested_amount,
+            pr.status,
+            COALESCE(SUM(pp.amount), 0)::text AS amount_paid
+        FROM payment_requests pr
+        LEFT JOIN payment_request_payments pp ON pp.payment_request_id = pr.id
+        WHERE pr.id = $1
+        GROUP BY pr.id
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(db_err)?
+    .ok_or(ApiError::NotFound)?;
+
+    let owner: Uuid = row.try_get("user_id").map_err(db_err)?;
+    if owner != user_id.as_uuid() {
+        return Err(ApiError::Forbidden);
+    }
+
+    let status: String = row.try_get("status").map_err(db_err)?;
+    if status != "pending" {
+        return Err(ApiError::BadRequest(format!(
+            "payment request is {status}, cannot be split"
+        )));
+    }
+
+    let amount_paid: i128 = row
+        .try_get::<String, _>("amount_paid")
+        .map_err(db_err)?
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid amount_paid: {e}")))?;
+    if amount_paid > 0 {
+        return Err(ApiError::BadRequest(
+            "cannot split a payment request that already has payments".to_string(),
+        ));
+    }
+
+    let total: i128 = row
+        .try_get::<String, _>("requested_amount")
+        .map_err(db_err)?
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid requested_amount: {e}")))?;
+
+    if payload.payers.is_empty() {
+        return Err(ApiError::BadRequest(
+            "at least one payer is required".to_string(),
+        ));
+    }
+
+    // Build (payer, amount) pairs.
+    let mut shares: Vec<(String, i128)> = Vec::with_capacity(payload.payers.len());
+    match payload.mode.trim() {
+        "equal" => {
+            let amounts = split_equal(total, payload.payers.len());
+            for (p, amt) in payload.payers.iter().zip(amounts) {
+                let ident = p.identifier.trim();
+                if ident.is_empty() {
+                    return Err(ApiError::BadRequest(
+                        "payer identifier must not be empty".to_string(),
+                    ));
+                }
+                shares.push((ident.to_string(), amt));
+            }
+        }
+        "custom" => {
+            let mut sum: i128 = 0;
+            for p in &payload.payers {
+                let ident = p.identifier.trim();
+                if ident.is_empty() {
+                    return Err(ApiError::BadRequest(
+                        "payer identifier must not be empty".to_string(),
+                    ));
+                }
+                let raw = p.amount.as_deref().ok_or_else(|| {
+                    ApiError::BadRequest("custom mode requires an amount per payer".to_string())
+                })?;
+                let amt: i128 = raw.trim().parse().map_err(|_| {
+                    ApiError::BadRequest(format!("invalid amount for payer {ident}"))
+                })?;
+                if amt <= 0 {
+                    return Err(ApiError::BadRequest(format!(
+                        "amount for payer {ident} must be greater than zero"
+                    )));
+                }
+                sum += amt;
+                shares.push((ident.to_string(), amt));
+            }
+            if sum != total {
+                return Err(ApiError::BadRequest(format!(
+                    "custom shares sum to {sum} but must equal the requested amount of {total}"
+                )));
+            }
+        }
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "invalid mode '{other}'; expected 'equal' or 'custom'"
+            )));
+        }
+    }
+
+    // Reject duplicate payers.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for (ident, _) in &shares {
+            if !seen.insert(ident.clone()) {
+                return Err(ApiError::BadRequest(format!(
+                    "duplicate payer '{ident}'"
+                )));
+            }
+        }
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("begin tx: {e}")))?;
+
+    // Replace any existing shares.
+    sqlx::query("DELETE FROM payment_request_shares WHERE payment_request_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+
+    for (payer, amount) in &shares {
+        sqlx::query(
+            r#"
+            INSERT INTO payment_request_shares
+                (id, payment_request_id, payer, amount)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(id)
+        .bind(payer)
+        .bind(amount.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("commit: {e}")))?;
+
+    let persisted = load_shares(&pool, id).await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateSplitResponse {
+            payment_request_id: id.to_string(),
+            shares: persisted,
+        }),
+    ))
+}
+
+// ── POST /v1/payment-requests/{id}/shares/{payer}/pay ────────────────────────
+
+/// Request body for paying a share.
+#[derive(Debug, Deserialize)]
+pub struct PayShareRequest {
+    /// Amount being paid toward this share (minor units, string).
+    pub amount: String,
+    #[serde(default)]
+    pub chain: Option<String>,
+    #[serde(default)]
+    pub tx_hash: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Response returned after a share payment is recorded.
+#[derive(Debug, Serialize)]
+pub struct PayShareResponse {
+    pub share: PaymentShare,
+    /// Overall request status after this payment.
+    pub request_status: String,
+    pub amount_paid: String,
+    pub amount_remaining: String,
+}
+
+/// POST /v1/payment-requests/{id}/shares/{payer}/pay
+///
+/// Records a payment toward a single payer's share. When every share is fully
+/// paid the parent request is marked `paid`.
+async fn pay_share(
+    State(state): State<AppState>,
+    Path((id, payer)): Path<(Uuid, String)>,
+    Json(payload): Json<PayShareRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let pool = state
+        .database
+        .clone()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    let db_err = |e: sqlx::Error| ApiError::Internal(anyhow::anyhow!(e.to_string()));
+
+    let req_row = sqlx::query(
+        r#"
+        SELECT requested_amount::text AS requested_amount, status
+        FROM payment_requests
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(db_err)?
+    .ok_or(ApiError::NotFound)?;
+
+    let status: String = req_row.try_get("status").map_err(db_err)?;
+    if status != "pending" && status != "partially_paid" {
+        return Err(ApiError::BadRequest(format!(
+            "payment request is {status}, not open"
+        )));
+    }
+    let requested_amount: i128 = req_row
+        .try_get::<String, _>("requested_amount")
+        .map_err(db_err)?
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid requested_amount: {e}")))?;
+
+    let share_row = sqlx::query(
+        r#"
+        SELECT
+            s.id,
+            s.amount::text AS amount,
+            COALESCE(SUM(sp.amount), 0)::text AS paid_amount
+        FROM payment_request_shares s
+        LEFT JOIN payment_request_share_payments sp ON sp.share_id = s.id
+        WHERE s.payment_request_id = $1 AND s.payer = $2
+        GROUP BY s.id
+        "#,
+    )
+    .bind(id)
+    .bind(payer.trim())
+    .fetch_optional(&pool)
+    .await
+    .map_err(db_err)?
+    .ok_or(ApiError::NotFound)?;
+
+    let share_id: Uuid = share_row.try_get("id").map_err(db_err)?;
+    let share_amount: i128 = share_row
+        .try_get::<String, _>("amount")
+        .map_err(db_err)?
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid share amount: {e}")))?;
+    let share_paid: i128 = share_row
+        .try_get::<String, _>("paid_amount")
+        .map_err(db_err)?
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid paid_amount: {e}")))?;
+
+    let payment_amount: i128 = payload
+        .amount
+        .trim()
+        .parse()
+        .map_err(|_| ApiError::BadRequest("amount must be a positive integer".to_string()))?;
+    if payment_amount <= 0 {
+        return Err(ApiError::BadRequest(
+            "payment amount must be greater than zero".to_string(),
+        ));
+    }
+
+    let share_outstanding = share_amount.saturating_sub(share_paid);
+    if payment_amount > share_outstanding {
+        return Err(ApiError::BadRequest(format!(
+            "payment of {payment_amount} would exceed this share's outstanding balance of {share_outstanding}"
+        )));
+    }
+
+    let chain = payload
+        .chain
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("internal");
+    let tx_hash = payload
+        .tx_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("begin tx: {e}")))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO payment_request_share_payments
+            (id, share_id, amount, chain, tx_hash, note)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(share_id)
+    .bind(payment_amount.to_string())
+    .bind(chain)
+    .bind(tx_hash)
+    .bind(payload.note.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    // Recompute totals across all shares.
+    let totals = sqlx::query(
+        r#"
+        SELECT
+            COALESCE(SUM(s.amount), 0)::text AS total_amount,
+            COALESCE(SUM(sp.amount), 0)::text AS total_paid
+        FROM payment_request_shares s
+        LEFT JOIN payment_request_share_payments sp ON sp.share_id = s.id
+        WHERE s.payment_request_id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    let total_paid: i128 = totals
+        .try_get::<String, _>("total_paid")
+        .map_err(db_err)?
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid total_paid: {e}")))?;
+
+    let all_paid = total_paid >= requested_amount;
+    let new_status = if all_paid { "paid" } else { "partially_paid" };
+
+    sqlx::query(
+        r#"
+        UPDATE payment_requests
+        SET status     = $2,
+            settled_at = CASE WHEN $2 = 'paid' THEN now() ELSE settled_at END
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .bind(new_status)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("commit: {e}")))?;
+
+    let new_share_paid = share_paid + payment_amount;
+    let share_status = if new_share_paid >= share_amount {
+        "paid"
+    } else if new_share_paid > 0 {
+        "partially_paid"
+    } else {
+        "pending"
+    };
+
+    let amount_remaining = requested_amount.saturating_sub(total_paid).max(0);
+
+    Ok((
+        StatusCode::CREATED,
+        Json(PayShareResponse {
+            share: PaymentShare {
+                id: share_id.to_string(),
+                payer: payer.trim().to_string(),
+                amount: share_amount.to_string(),
+                paid_amount: new_share_paid.to_string(),
+                status: share_status.to_string(),
+            },
+            request_status: new_status.to_string(),
+            amount_paid: total_paid.to_string(),
+            amount_remaining: amount_remaining.to_string(),
+        }),
+    ))
+}
+
+// ── POST /v1/payment-requests/{id}/cancel ────────────────────────────────────
+
+/// Response returned after cancelling a split request.
+#[derive(Debug, Serialize)]
+pub struct CancelPaymentRequestResponse {
+    pub payment_request_id: String,
+    pub status: String,
+    /// Total amount refunded to payers who had already paid their shares.
+    pub refunded_amount: String,
+}
+
+/// POST /v1/payment-requests/{id}/cancel
+///
+/// Creator-only. Cancels a split request, refunds any partial share payments,
+/// and marks the request expired.
+async fn cancel_payment_request(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    auth: AuthUser,
+) -> Result<Json<CancelPaymentRequestResponse>, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
+    let pool = state
+        .database
+        .clone()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    let db_err = |e: sqlx::Error| ApiError::Internal(anyhow::anyhow!(e.to_string()));
+
+    let row = sqlx::query("SELECT user_id, status FROM payment_requests WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(db_err)?
+        .ok_or(ApiError::NotFound)?;
+
+    let owner: Uuid = row.try_get("user_id").map_err(db_err)?;
+    if owner != user_id.as_uuid() {
+        return Err(ApiError::Forbidden);
+    }
+
+    let status: String = row.try_get("status").map_err(db_err)?;
+    if status == "paid" {
+        return Err(ApiError::BadRequest(
+            "cannot cancel a fully paid request".to_string(),
+        ));
+    }
+    if status == "expired" || status == "cancelled" {
+        return Err(ApiError::BadRequest(format!(
+            "payment request is already {status}"
+        )));
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("begin tx: {e}")))?;
+
+    let refund_row = sqlx::query(
+        r#"
+        SELECT COALESCE(SUM(sp.amount), 0)::text AS refunded
+        FROM payment_request_shares s
+        JOIN payment_request_share_payments sp ON sp.share_id = s.id
+        WHERE s.payment_request_id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    let refunded: i128 = refund_row
+        .try_get::<String, _>("refunded")
+        .map_err(db_err)?
+        .parse()
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid refunded amount: {e}")))?;
+
+    sqlx::query(
+        r#"
+        UPDATE payment_requests
+        SET status = 'expired'
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("commit: {e}")))?;
+
+    Ok(Json(CancelPaymentRequestResponse {
+        payment_request_id: id.to_string(),
+        status: "expired".to_string(),
+        refunded_amount: refunded.to_string(),
+    }))
+}
+
 // ── GET /v1/payment-requests ──────────────────────────────────────────────────
 
 /// GET /v1/payment-requests
@@ -592,9 +1226,18 @@ async fn list_payment_requests(
                 amount_paid: amount_paid.to_string(),
                 amount_remaining: amount_remaining.to_string(),
                 created_at: created_at.to_rfc3339(),
+                shares: Vec::new(),
             })
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
+
+    // Attach shares for each summary.
+    let mut summaries = summaries;
+    for summary in &mut summaries {
+        if let Ok(parsed) = Uuid::parse_str(&summary.id) {
+            summary.shares = load_shares(&pool, parsed).await?;
+        }
+    }
 
     Ok(Json(summaries))
 }
@@ -646,5 +1289,48 @@ mod tests {
         let paid: i128 = 1500; // hypothetical
         let remaining = requested.saturating_sub(paid).max(0);
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn split_equal_evenly_divisible() {
+        let shares = split_equal(1000, 4);
+        assert_eq!(shares, vec![250, 250, 250, 250]);
+        assert_eq!(shares.iter().sum::<i128>(), 1000);
+    }
+
+    #[test]
+    fn split_equal_uneven_uses_largest_remainder() {
+        // 1000 / 3 = 333 remainder 1 → first share gets the extra unit.
+        let shares = split_equal(1000, 3);
+        assert_eq!(shares, vec![334, 333, 333]);
+        assert_eq!(shares.iter().sum::<i128>(), 1000);
+    }
+
+    #[test]
+    fn split_equal_remainder_distributed_to_leading_shares() {
+        // 10 / 4 = 2 remainder 2 → first two shares get +1.
+        let shares = split_equal(10, 4);
+        assert_eq!(shares, vec![3, 3, 2, 2]);
+        assert_eq!(shares.iter().sum::<i128>(), 10);
+    }
+
+    #[test]
+    fn split_equal_shares_always_sum_to_total() {
+        for total in [1i128, 7, 99, 100, 12345] {
+            for n in 1..=7usize {
+                let shares = split_equal(total, n);
+                assert_eq!(shares.len(), n);
+                assert_eq!(
+                    shares.iter().sum::<i128>(),
+                    total,
+                    "total={total} n={n} shares={shares:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn split_equal_zero_payers_returns_empty() {
+        assert!(split_equal(1000, 0).is_empty());
     }
 }

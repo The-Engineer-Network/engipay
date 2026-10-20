@@ -87,6 +87,38 @@ export interface TransactionEntry {
   created_at: string
 }
 
+export interface PaymentShare {
+  payer: string
+  amount: string
+  status: "pending" | "paid" | "refunded"
+}
+
+export interface PaymentRequest {
+  id: string
+  creator: string
+  asset: string
+  total: string
+  status: "pending" | "partially_paid" | "completed" | "cancelled"
+  shares: PaymentShare[]
+}
+
+export interface Contact {
+  id: string
+  label: string
+  identifier: string
+  kind: "tag" | "address"
+  chain?: string
+  created_at: string
+}
+
+export interface RecipientRisk {
+  identifier: string
+  first_time: boolean
+  look_alike: boolean
+  similar_to?: string
+  warnings: string[]
+}
+
 // ── Public endpoints (no session required) ────────────────────────────────────
 
 /** GET /v1/assets — assets EngiPay supports, with their networks. */
@@ -193,4 +225,113 @@ export async function getTransactions(): Promise<TransactionEntry[]> {
 /** POST /v1/auth/logout — revoke the current session. */
 export async function logout(): Promise<void> {
   await apiRequest<void>("/v1/auth/logout", { method: "POST" })
+}
+
+// ── Payment request splits (#483) ─────────────────────────────────────────────
+
+/** GET /v1/payment-requests/:id — fetch a payment request with its shares. */
+export async function getPaymentRequest(id: string): Promise<PaymentRequest> {
+  const result = await apiRequest<PaymentRequest>(`/v1/payment-requests/${id}`)
+  if (!result) throw new Error("API did not return a payment request.")
+  return result
+}
+
+/**
+ * POST /v1/payment-requests/:id/split — split a payment request across payers.
+ * Shares (equal or custom) always sum to the request total.
+ */
+export async function createPaymentRequestSplit(
+  id: string,
+  body: { shares: Array<{ payer: string; amount: string }> }
+): Promise<PaymentRequest> {
+  const result = await apiRequest<PaymentRequest>(
+    `/v1/payment-requests/${id}/split`,
+    { method: "POST", body: JSON.stringify(body) }
+  )
+  if (!result) throw new Error("API did not return a payment request.")
+  return result
+}
+
+/** POST /v1/payment-requests/:id/shares/:payer/pay — pay one payer's share. */
+export async function payPaymentRequestShare(
+  id: string,
+  payer: string,
+  body: { amount: string }
+): Promise<PaymentRequest> {
+  const result = await apiRequest<PaymentRequest>(
+    `/v1/payment-requests/${id}/shares/${encodeURIComponent(payer)}/pay`,
+    { method: "POST", body: JSON.stringify(body) }
+  )
+  if (!result) throw new Error("API did not return a payment request.")
+  return result
+}
+
+/** POST /v1/payment-requests/:id/cancel — cancel and refund partial payments. */
+export async function cancelPaymentRequest(id: string): Promise<PaymentRequest> {
+  const result = await apiRequest<PaymentRequest>(
+    `/v1/payment-requests/${id}/cancel`,
+    { method: "POST" }
+  )
+  if (!result) throw new Error("API did not return a payment request.")
+  return result
+}
+
+// ── Contacts and recipient risk (#484) ────────────────────────────────────────
+
+/** GET /v1/contacts — the signed-in user's saved contacts. */
+export async function listContacts(): Promise<Contact[]> {
+  const result = await apiRequest<Contact[]>("/v1/contacts")
+  return result ?? []
+}
+
+/** POST /v1/contacts — save a new contact. */
+export async function createContact(body: {
+  label: string
+  identifier: string
+  kind: "tag" | "address"
+  chain?: string
+}): Promise<Contact> {
+  const result = await apiRequest<Contact>("/v1/contacts", {
+    method: "POST",
+    body: JSON.stringify(body),
+  })
+  if (!result) throw new Error("API did not return a contact.")
+  return result
+}
+
+/** PATCH /v1/contacts/:id — update a saved contact. */
+export async function updateContact(
+  id: string,
+  body: {
+    label?: string
+    identifier?: string
+    kind?: "tag" | "address"
+    chain?: string
+  }
+): Promise<Contact> {
+  const result = await apiRequest<Contact>(`/v1/contacts/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  })
+  if (!result) throw new Error("API did not return a contact.")
+  return result
+}
+
+/** DELETE /v1/contacts/:id — remove a saved contact. */
+export async function deleteContact(id: string): Promise<void> {
+  await apiRequest<void>(`/v1/contacts/${id}`, { method: "DELETE" })
+}
+
+/**
+ * GET /v1/recipients/:identifier/risk — first-time and look-alike warnings
+ * for a recipient before sending.
+ */
+export async function getRecipientRisk(
+  identifier: string
+): Promise<RecipientRisk> {
+  const result = await apiRequest<RecipientRisk>(
+    `/v1/recipients/${encodeURIComponent(identifier)}/risk`
+  )
+  if (!result) throw new Error("API did not return recipient risk.")
+  return result
 }

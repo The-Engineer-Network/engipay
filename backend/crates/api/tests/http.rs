@@ -196,6 +196,154 @@ async fn buy_quotes_require_a_bearer_token() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// A signed bearer token for the fake in-memory user.
+fn bearer_token() -> String {
+    let config = Config::for_tests();
+    engipay_api::auth::jwt::create_token(
+        uuid::Uuid::new_v4(),
+        String::new(),
+        config.jwt_secret.as_bytes(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn contacts_require_a_bearer_token() {
+    for (method, path) in [
+        ("GET", "/v1/contacts"),
+        ("POST", "/v1/contacts"),
+        ("GET", "/v1/recipients/risk?address=0x0000000000000000000000000000000000000001"),
+    ] {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{method} {path}");
+    }
+}
+
+#[tokio::test]
+async fn contacts_report_no_database_instead_of_pretending() {
+    let token = bearer_token();
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/contacts")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"label":"Alice","address":"0x0000000000000000000000000000000000000001","chain":"base"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+#[ignore = "requires a database"]
+async fn creates_and_lists_a_saved_contact() {
+    let token = bearer_token();
+    let created = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/contacts")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"label":"Alice","address":"0x0000000000000000000000000000000000000001","chain":"base"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/contacts")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let contacts = body.as_array().unwrap();
+    assert_eq!(contacts.len(), 1);
+    assert_eq!(contacts[0]["label"], "Alice");
+    assert_eq!(
+        contacts[0]["address"],
+        "0x0000000000000000000000000000000000000001"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a database"]
+async fn flags_a_look_alike_address_but_not_an_exact_match() {
+    let token = bearer_token();
+    let saved = "0x0000000000000000000000000000000000000001";
+    let look_alike = "0x0000000000000000000000000000000000000002";
+
+    let created = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/contacts")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"label":"Alice","address":"{saved}","chain":"base"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let risk = |address: &str| {
+        let token = token.clone();
+        let path = format!("/v1/recipients/risk?address={address}&chain=base");
+        async move {
+            let response = app()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        }
+    };
+
+    let exact = risk(saved).await;
+    assert_eq!(exact["first_time"], false);
+    assert_eq!(exact["look_alike"], false);
+
+    let similar = risk(look_alike).await;
+    assert_eq!(similar["look_alike"], true);
+
+    let unknown = risk("0x00000000000000000000000000000000000000ff").await;
+    assert_eq!(unknown["first_time"], true);
+}
+
 #[tokio::test]
 async fn buy_quotes_report_no_database_instead_of_pretending() {
     // Without pricing configured, the check is the same: no quote is invented.

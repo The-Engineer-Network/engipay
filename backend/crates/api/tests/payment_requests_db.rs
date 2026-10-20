@@ -528,3 +528,241 @@ async fn list_reflects_partial_paid_amount() {
     assert_eq!(remaining, 500_000_000); // 50 USDC
     assert_eq!(item["status"], "partially_paid");
 }
+
+// ── #483: Split helpers ───────────────────────────────────────────────────────
+
+/// Create a split request and return the response body.
+async fn create_split(
+    app: &axum::Router,
+    token: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    send(
+        app,
+        "POST",
+        "/v1/payment-requests/split",
+        Some(token),
+        Some(body),
+    )
+    .await
+}
+
+/// Pay a specific share of a split request.
+async fn pay_share(
+    app: &axum::Router,
+    id: &str,
+    share_id: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    send(
+        app,
+        "POST",
+        &format!("/v1/payment-requests/{id}/shares/{share_id}/pay"),
+        None,
+        Some(body),
+    )
+    .await
+}
+
+/// Cancel a split request as its creator.
+async fn cancel_split(app: &axum::Router, id: &str, token: &str) -> (StatusCode, Value) {
+    send(
+        app,
+        "POST",
+        &format!("/v1/payment-requests/{id}/cancel"),
+        Some(token),
+        Some(json!({})),
+    )
+    .await
+}
+
+/// Sum the `amount` fields of the shares in a split response body.
+fn shares_total(body: &Value) -> i128 {
+    body["shares"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["amount"].as_str().unwrap().parse::<i128>().unwrap())
+        .sum()
+}
+
+// ── #483: Equal split with rounding ──────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn equal_split_shares_sum_to_total_and_complete_after_last_share() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+
+    // 10 USDC = 100_000_000 minor units, split across 3 payers does not divide evenly.
+    let (status, body) = create_split(
+        &app,
+        &token,
+        json!({
+            "asset": "USDC",
+            "amount": "10.0000000",
+            "split": "equal",
+            "payers": 3
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let shares = body["shares"].as_array().unwrap().clone();
+    assert_eq!(shares.len(), 3);
+    // Rounding must not lose or create a single minor unit.
+    assert_eq!(shares_total(&body), 100_000_000);
+    // The remainder is distributed so no share differs by more than one unit.
+    let amounts: Vec<i128> = shares
+        .iter()
+        .map(|s| s["amount"].as_str().unwrap().parse().unwrap())
+        .collect();
+    let min = *amounts.iter().min().unwrap();
+    let max = *amounts.iter().max().unwrap();
+    assert!(max - min <= 1, "uneven rounding: {amounts:?}");
+
+    let share_ids: Vec<String> = shares
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect();
+
+    // Pay the first two shares – request must not be complete yet.
+    for (i, share_id) in share_ids.iter().take(2).enumerate() {
+        let (pay_status, pay_body) = pay_share(
+            &app,
+            &id,
+            share_id,
+            json!({
+                "chain": "stellar",
+                "tx_hash": format!("tx-split-{i}-{}", Uuid::new_v4())
+            }),
+        )
+        .await;
+        assert_eq!(pay_status, StatusCode::OK, "{pay_body}");
+        assert_eq!(pay_body["share_status"], "paid");
+        assert_ne!(pay_body["request_status"], "paid");
+    }
+
+    let (_, mid_body) = get_request(&app, &id).await;
+    assert_ne!(mid_body["status"], "paid");
+    assert_eq!(mid_body["status"], "partially_paid");
+
+    // Pay the final share – now the whole request is complete.
+    let (pay_status, pay_body) = pay_share(
+        &app,
+        &id,
+        &share_ids[2],
+        json!({
+            "chain": "stellar",
+            "tx_hash": format!("tx-split-last-{}", Uuid::new_v4())
+        }),
+    )
+    .await;
+    assert_eq!(pay_status, StatusCode::OK, "{pay_body}");
+    assert_eq!(pay_body["request_status"], "paid");
+
+    let (_, final_body) = get_request(&app, &id).await;
+    assert_eq!(final_body["status"], "paid");
+    let paid: i128 = final_body["amount_paid"].as_str().unwrap().parse().unwrap();
+    assert_eq!(paid, 100_000_000);
+    for share in final_body["shares"].as_array().unwrap() {
+        assert_eq!(share["status"], "paid");
+    }
+}
+
+// ── #483: Custom split that does not sum to the total ────────────────────────
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn custom_split_with_wrong_total_is_rejected() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+
+    // Shares sum to 9 USDC, not the requested 10 USDC.
+    let (status, body) = create_split(
+        &app,
+        &token,
+        json!({
+            "asset": "USDC",
+            "amount": "10.0000000",
+            "split": "custom",
+            "shares": ["4.0000000", "3.0000000", "2.0000000"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("sum") || msg.contains("total"),
+        "expected message about shares summing to total, got: {msg}"
+    );
+}
+
+// ── #483: Creator cancels a partially paid split ─────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn creator_can_cancel_partially_paid_split_and_refund() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+
+    let (status, body) = create_split(
+        &app,
+        &token,
+        json!({
+            "asset": "USDC",
+            "amount": "10.0000000",
+            "split": "equal",
+            "payers": 2
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let shares = body["shares"].as_array().unwrap().clone();
+    assert_eq!(shares_total(&body), 100_000_000);
+    let first_share = shares[0]["id"].as_str().unwrap().to_string();
+    let first_amount: i128 = shares[0]["amount"].as_str().unwrap().parse().unwrap();
+
+    // Pay the first share only.
+    let (pay_status, pay_body) = pay_share(
+        &app,
+        &id,
+        &first_share,
+        json!({
+            "chain": "base",
+            "tx_hash": format!("tx-cancel-{}", Uuid::new_v4())
+        }),
+    )
+    .await;
+    assert_eq!(pay_status, StatusCode::OK, "{pay_body}");
+
+    // Creator cancels the split.
+    let (cancel_status, cancel_body) = cancel_split(&app, &id, &token).await;
+    assert_eq!(cancel_status, StatusCode::OK, "{cancel_body}");
+    assert_eq!(cancel_body["status"], "cancelled");
+    let refunded: i128 = cancel_body["amount_refunded"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(refunded, first_amount);
+
+    // The request is cancelled and no further share can be paid.
+    let (_, final_body) = get_request(&app, &id).await;
+    assert_eq!(final_body["status"], "cancelled");
+
+    let second_share = shares[1]["id"].as_str().unwrap().to_string();
+    let (late_status, late_body) = pay_share(
+        &app,
+        &id,
+        &second_share,
+        json!({
+            "chain": "base",
+            "tx_hash": format!("tx-cancel-late-{}", Uuid::new_v4())
+        }),
+    )
+    .await;
+    assert_eq!(late_status, StatusCode::BAD_REQUEST, "{late_body}");
+}

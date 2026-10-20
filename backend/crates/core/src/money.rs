@@ -11,6 +11,77 @@ use serde::{Deserialize, Serialize};
 use crate::{Asset, Chain};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SplitError {
+    #[error("cannot split a non-positive total")]
+    NonPositiveTotal,
+    #[error("cannot split into zero parts")]
+    NoParts,
+    #[error("split weights must not all be zero")]
+    ZeroWeights,
+    #[error("split amount is too large")]
+    Overflow,
+}
+
+/// Splits `total_minor` across `weights` using the largest-remainder method.
+///
+/// Each share is `floor(total * weight / sum_weights)`; the leftover units
+/// (fewer than the number of parts) go one each to the parts with the largest
+/// fractional remainders, ties broken by earlier position. The returned shares
+/// therefore always sum exactly to `total_minor`. Equal weights give an equal
+/// split with the remainder spread over the first parts.
+pub fn split_amount(total_minor: i128, weights: &[u128]) -> Result<Vec<i128>, SplitError> {
+    if total_minor <= 0 {
+        return Err(SplitError::NonPositiveTotal);
+    }
+    if weights.is_empty() {
+        return Err(SplitError::NoParts);
+    }
+
+    let total = u128::try_from(total_minor).map_err(|_| SplitError::Overflow)?;
+    let sum_weights = weights
+        .iter()
+        .try_fold(0u128, |acc, &w| acc.checked_add(w))
+        .ok_or(SplitError::Overflow)?;
+    if sum_weights == 0 {
+        return Err(SplitError::ZeroWeights);
+    }
+
+    let mut shares = Vec::with_capacity(weights.len());
+    let mut remainders = Vec::with_capacity(weights.len());
+    let mut assigned = 0u128;
+    for (index, &weight) in weights.iter().enumerate() {
+        let product = total.checked_mul(weight).ok_or(SplitError::Overflow)?;
+        let share = product / sum_weights;
+        let remainder = product % sum_weights;
+        assigned = assigned.checked_add(share).ok_or(SplitError::Overflow)?;
+        shares.push(share);
+        remainders.push((remainder, index));
+    }
+
+    let leftover = total.checked_sub(assigned).ok_or(SplitError::Overflow)?;
+    // Largest remainder first; earlier index wins ties.
+    remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for &(_, index) in remainders.iter().take(leftover as usize) {
+        shares[index] = shares[index].checked_add(1).ok_or(SplitError::Overflow)?;
+    }
+
+    shares
+        .into_iter()
+        .map(|share| i128::try_from(share).map_err(|_| SplitError::Overflow))
+        .collect()
+}
+
+/// Splits `total_minor` into `n` equal shares, spreading any remainder over the
+/// first parts so the shares sum exactly to the total.
+pub fn split_equal(total_minor: i128, n: usize) -> Result<Vec<i128>, SplitError> {
+    if n == 0 {
+        return Err(SplitError::NoParts);
+    }
+    let weights = vec![1u128; n];
+    split_amount(total_minor, &weights)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MoneyError {
     #[error("amount is empty")]
     Empty,
@@ -286,5 +357,74 @@ mod tests {
                 chain: Chain::Base,
             })
         );
+    }
+
+    #[test]
+    fn split_equal_spreads_remainder_over_first_parts() {
+        assert_eq!(split_equal(100, 3), Ok(vec![34, 33, 33]));
+        assert_eq!(split_equal(10, 3), Ok(vec![4, 3, 3]));
+        assert_eq!(split_equal(1, 3), Ok(vec![1, 0, 0]));
+        assert_eq!(split_equal(9, 3), Ok(vec![3, 3, 3]));
+        assert_eq!(split_equal(5, 1), Ok(vec![5]));
+    }
+
+    #[test]
+    fn split_amount_honours_custom_weights() {
+        // 100 split 1:2:1 -> 25, 50, 25.
+        assert_eq!(split_amount(100, &[1, 2, 1]), Ok(vec![25, 50, 25]));
+        // 10 split 1:1:1 -> 4, 3, 3 (largest remainder to earliest ties).
+        assert_eq!(split_amount(10, &[1, 1, 1]), Ok(vec![4, 3, 3]));
+        // 7 split 1:1:1:1 -> 2, 2, 2, 1.
+        assert_eq!(split_amount(7, &[1, 1, 1, 1]), Ok(vec![2, 2, 2, 1]));
+        // Uneven weights with a remainder: 100 split 3:1 -> 75, 25.
+        assert_eq!(split_amount(100, &[3, 1]), Ok(vec![75, 25]));
+        // 100 split 1:1:1 -> 34, 33, 33.
+        assert_eq!(split_amount(100, &[1, 1, 1]), Ok(vec![34, 33, 33]));
+    }
+
+    #[test]
+    fn split_amount_rejects_invalid_input() {
+        assert_eq!(split_amount(0, &[1, 1]), Err(SplitError::NonPositiveTotal));
+        assert_eq!(split_amount(-5, &[1, 1]), Err(SplitError::NonPositiveTotal));
+        assert_eq!(split_amount(10, &[]), Err(SplitError::NoParts));
+        assert_eq!(split_amount(10, &[0, 0]), Err(SplitError::ZeroWeights));
+        assert_eq!(split_equal(10, 0), Err(SplitError::NoParts));
+        assert_eq!(split_equal(0, 3), Err(SplitError::NonPositiveTotal));
+    }
+
+    #[test]
+    fn split_shares_always_sum_to_total() {
+        let totals = [1i128, 2, 3, 7, 10, 99, 100, 101, 1_000, 12_345, 1_000_000];
+        for &total in &totals {
+            for n in 1..=17usize {
+                let shares = split_equal(total, n).unwrap();
+                assert_eq!(shares.len(), n);
+                assert_eq!(shares.iter().sum::<i128>(), total, "total {total} n {n}");
+                assert!(shares.iter().all(|&s| s >= 0));
+                // Shares differ by at most one unit.
+                let max = *shares.iter().max().unwrap();
+                let min = *shares.iter().min().unwrap();
+                assert!(max - min <= 1, "total {total} n {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn split_weighted_shares_always_sum_to_total() {
+        let weight_sets: [&[u128]; 5] = [
+            &[1, 1, 1],
+            &[1, 2, 3],
+            &[5, 3, 2, 1],
+            &[7, 7, 7, 7, 7],
+            &[1, 1, 1, 1, 1, 1, 1],
+        ];
+        for &total in &[1i128, 10, 100, 999, 1_000_000] {
+            for weights in weight_sets {
+                let shares = split_amount(total, weights).unwrap();
+                assert_eq!(shares.len(), weights.len());
+                assert_eq!(shares.iter().sum::<i128>(), total);
+                assert!(shares.iter().all(|&s| s >= 0));
+            }
+        }
     }
 }

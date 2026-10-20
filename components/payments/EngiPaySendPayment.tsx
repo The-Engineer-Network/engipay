@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useId, useTransition } from "react"
+import { useState, useEffect, useId, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -13,10 +13,43 @@ import {
 } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
 import { useEngiPayBalances } from "@/hooks/use-engipay-balances"
-import { Loader2, CheckCircle2, AlertCircle, ArrowUpRight } from "lucide-react"
+import { Loader2, CheckCircle2, AlertCircle, ArrowUpRight, ShieldAlert } from "lucide-react"
 
 const CUSTODIAL_ASSETS = ["USDC", "ETH", "XLM", "BTC"] as const
 type CustodialAsset = (typeof CUSTODIAL_ASSETS)[number]
+
+interface SavedContact {
+  id: string
+  label: string
+  address: string
+}
+
+interface RecipientRisk {
+  first_time: boolean
+  look_alike: boolean
+  similar_to?: string | null
+}
+
+async function getRecipientRisk(
+  recipient: string,
+  token: string
+): Promise<RecipientRisk | null> {
+  try {
+    const res = await fetch(
+      `/api/v1/contacts/risk?recipient=${encodeURIComponent(recipient)}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    return {
+      first_time: Boolean(data.first_time),
+      look_alike: Boolean(data.look_alike),
+      similar_to: data.similar_to ?? null,
+    }
+  } catch {
+    return null
+  }
+}
 
 interface EngiPaySendPaymentProps {
   initialRecipient?: string
@@ -33,6 +66,9 @@ export function EngiPaySendPayment({
   const { balances, refetch } = useEngiPayBalances()
 
   const [tag, setTag] = useState(initialRecipient)
+  const [contacts, setContacts] = useState<SavedContact[]>([])
+  const [risk, setRisk] = useState<RecipientRisk | null>(null)
+  const [isSavingContact, setIsSavingContact] = useState(false)
   const [amount, setAmount] = useState(initialAmount)
   const [asset, setAsset] = useState<CustodialAsset>(
     CUSTODIAL_ASSETS.includes(initialAsset as CustodialAsset)
@@ -51,6 +87,57 @@ export function EngiPaySendPayment({
   // Find user's available balance for this asset
   const assetBalance = balances.find((b) => b.asset.toUpperCase() === asset.toUpperCase())
   const availableAmount = assetBalance?.available ?? "0"
+
+  // Load saved contacts for the picker
+  useEffect(() => {
+    const token =
+      typeof window !== "undefined" ? localStorage.getItem("engipay-token") : null
+    if (!token) return
+    let cancelled = false
+    fetch("/api/v1/contacts", { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return
+        const list: SavedContact[] = Array.isArray(data) ? data : data.contacts ?? []
+        setContacts(list)
+      })
+      .catch(() => {
+        /* contacts are optional; ignore failures */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleSaveContact = async () => {
+    const cleanedTag = tag.trim()
+    if (!cleanedTag || isSavingContact) return
+    const token =
+      typeof window !== "undefined" ? localStorage.getItem("engipay-token") : null
+    if (!token) {
+      setErrorMessage("Please sign in to save contacts.")
+      return
+    }
+    setIsSavingContact(true)
+    try {
+      const res = await fetch("/api/v1/contacts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ label: cleanedTag, address: cleanedTag }),
+      })
+      if (!res.ok) throw new Error("Failed to save contact")
+      const saved = await res.json()
+      setContacts((prev) => [...prev, saved])
+      toast({ title: "Contact saved" })
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : "Failed to save contact")
+    } finally {
+      setIsSavingContact(false)
+    }
+  }
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -84,6 +171,19 @@ export function EngiPaySendPayment({
     }
 
     setIsSubmitting(true)
+
+    // Check recipient risk (first-time recipient / look-alike address)
+    const riskResult = await getRecipientRisk(cleanedTag, token)
+    setRisk(riskResult)
+    if (riskResult && (riskResult.first_time || riskResult.look_alike)) {
+      setErrorMessage(
+        riskResult.look_alike
+          ? "This address looks very similar to one of your saved contacts. Double-check it before sending."
+          : "This is your first payment to this recipient. Please confirm the details are correct."
+      )
+      setIsSubmitting(false)
+      return
+    }
 
     // Generate client-side UUID idempotency reference
     const idempotencyRef =
@@ -184,15 +284,63 @@ export function EngiPaySendPayment({
         </div>
       )}
 
+      {risk && (risk.first_time || risk.look_alike) && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 p-3.5 text-xs text-warning-foreground">
+          <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <p>
+              {risk.look_alike
+                ? "This address looks very similar to one of your saved contacts (possible address poisoning)."
+                : "This is your first payment to this recipient."}
+            </p>
+            {risk.similar_to && (
+              <p className="font-mono text-[11px] opacity-80">Similar to: {risk.similar_to}</p>
+            )}
+            <button
+              type="button"
+              className="underline underline-offset-2"
+              onClick={handleSaveContact}
+              disabled={isSavingContact}
+            >
+              {isSavingContact ? "Saving..." : "Save recipient as a contact"}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-2">
         <Label htmlFor="engipay-recipient">Recipient (@tag or user ID)</Label>
         <Input
           id="engipay-recipient"
           placeholder="@alice"
           value={tag}
-          onChange={(e) => setTag(e.target.value)}
+          onChange={(e) => {
+            setTag(e.target.value)
+            setRisk(null)
+          }}
           disabled={isSubmitting}
         />
+        {contacts.length > 0 && (
+          <Select
+            value=""
+            onValueChange={(val) => {
+              setTag(val)
+              setRisk(null)
+            }}
+            disabled={isSubmitting}
+          >
+            <SelectTrigger aria-label="Pick a saved contact">
+              <SelectValue placeholder="Pick a saved contact" />
+            </SelectTrigger>
+            <SelectContent>
+              {contacts.map((contact) => (
+                <SelectItem key={contact.id} value={contact.address}>
+                  {contact.label} ({contact.address})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <p className="text-[11px] text-muted-foreground">
           Internal EngiPay transfers settle immediately with zero network fees.
         </p>
