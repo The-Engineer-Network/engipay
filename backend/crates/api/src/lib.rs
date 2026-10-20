@@ -27,6 +27,7 @@ use crate::services::bank_name_check::{BankNameCheck, FakeBankNameCheck};
 use crate::services::destination_screen::{DestinationScreen, StaticBlockList};
 use crate::services::kyc_provider::{FakeKycProvider, KycProvider};
 use crate::services::price_source::{FakePriceSource, PriceSource};
+use crate::services::ramp_partner::{FakeRampPartner, RampPartner};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -44,6 +45,8 @@ pub struct AppState {
     /// Withdrawal destination screener (static list now; swap for a real AML
     /// API in production without touching the withdrawal handler).
     pub destination_screen: Arc<dyn DestinationScreen>,
+    /// Naira ramp partner (fake in dev/test, real partner in production).
+    pub ramp_partner: Arc<dyn RampPartner>,
 }
 
 impl AppState {
@@ -58,6 +61,7 @@ impl AppState {
             kyc_provider: Arc::new(FakeKycProvider),
             bank_name_check: Arc::new(FakeBankNameCheck),
             destination_screen: Arc::new(StaticBlockList::empty()),
+            ramp_partner: Arc::new(FakeRampPartner::default()),
         }
     }
 }
