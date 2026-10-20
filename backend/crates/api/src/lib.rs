@@ -1,7 +1,7 @@
-//! EngiPay HTTP API.
-//!
-//! Routes live here rather than in `main.rs` so tests can drive the real router
-//! without opening a socket.
+/// EngiPay HTTP API.
+///
+/// Routes live here rather than in `main.rs` so tests can drive the real router
+/// without opening a socket.
 
 pub mod auth;
 pub mod config;
@@ -9,6 +9,7 @@ pub mod error;
 pub mod metrics;
 pub mod middleware;
 mod routes;
+pub mod secrets;
 pub mod services;
 
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::auth::KeyRing;
 use crate::config::Config;
 use crate::middleware::logging::log_requests;
 use crate::middleware::recovery::CatchPanicLayer;
@@ -35,6 +37,9 @@ pub struct AppState {
     pub database: Option<PgPool>,
     pub config: Config,
     pub rate_limiter: RateLimiter,
+    /// Signing keys for session JWTs. Rotatable without a restart; see
+    /// [`auth::jwt::KeyRing`].
+    pub jwt_keyring: KeyRing,
     /// Conversion price source (fake in dev/test, real oracle in production).
     pub price_source: Arc<dyn PriceSource>,
     /// KYC provider (fake in dev/test, real partner in production).
@@ -54,6 +59,27 @@ impl AppState {
             database,
             config,
             rate_limiter,
+            jwt_keyring: KeyRing::new("dev", crate::secrets::Secret::new(b"dev-jwt-secret-do-not-use-in-production".to_vec())),
+            price_source: Arc::new(FakePriceSource),
+            kyc_provider: Arc::new(FakeKycProvider),
+            bank_name_check: Arc::new(FakeBankNameCheck),
+            destination_screen: Arc::new(StaticBlockList::empty()),
+        }
+    }
+
+    /// Constructor that takes an explicit JWT key ring. Used by `main.rs`
+    /// after resolving the JWT key from the configured secrets provider.
+    pub fn with_jwt_keyring(
+        database: Option<PgPool>,
+        config: Config,
+        rate_limiter: RateLimiter,
+        jwt_keyring: KeyRing,
+    ) -> Self {
+        Self {
+            database,
+            config,
+            rate_limiter,
+            jwt_keyring,
             price_source: Arc::new(FakePriceSource),
             kyc_provider: Arc::new(FakeKycProvider),
             bank_name_check: Arc::new(FakeBankNameCheck),

@@ -1,5 +1,7 @@
 use std::env;
 
+use crate::secrets::{SecretProvider, SecretProviderError};
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_addr: String,
@@ -28,6 +30,9 @@ pub struct Config {
     pub buy_kobo_per_usdc: Option<i128>,
     /// Fee on Naira buys in basis points (`BUY_FEE_BPS`). Unset means no quote.
     pub buy_fee_bps: Option<u32>,
+    /// Secrets provider used to resolve secret material (JWT signing keys,
+    /// database passwords, etc.). Defaults to the env/file fallback.
+    pub secrets: SecretProvider,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -37,10 +42,21 @@ pub struct ConfigError {
     reason: String,
 }
 
+impl From<SecretProviderError> for ConfigError {
+    fn from(err: SecretProviderError) -> Self {
+        ConfigError {
+            name: err.name(),
+            reason: err.to_string(),
+        }
+    }
+}
+
 impl Config {
     /// Reads configuration from the environment. Secrets such as the database
     /// password arrive this way and are never written to the repository.
     pub fn from_env() -> Result<Self, ConfigError> {
+        let secrets = SecretProvider::from_env()?;
+
         let db_max_connections = match env::var("DB_MAX_CONNECTIONS") {
             Ok(value) => value.parse().map_err(|_| ConfigError {
                 name: "DB_MAX_CONNECTIONS",
@@ -92,10 +108,15 @@ impl Config {
             json_logs: env::var("LOG_FORMAT")
                 .is_ok_and(|format| format.eq_ignore_ascii_case("json")),
             stellar_server_secret: env::var("STELLAR_SERVER_SECRET").ok(),
-            jwt_secret: env::var("JWT_SECRET").map_err(|_| ConfigError {
-                name: "JWT_SECRET",
-                reason: "must be set to a random secret used to sign session tokens".to_owned(),
-            })?,
+            jwt_secret: secrets
+                .get("JWT_SECRET")?
+                .ok_or_else(|| ConfigError {
+                    name: "JWT_SECRET",
+                    reason: "must be set to a random secret used to sign session tokens"
+                        .to_owned(),
+                })?
+                .expose()
+                .to_owned(),
             stellar_custody_account: env::var("STELLAR_CUSTODY_ACCOUNT")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
@@ -108,6 +129,7 @@ impl Config {
             tier_0_daily_limit_minor,
             buy_kobo_per_usdc,
             buy_fee_bps,
+            secrets,
         })
     }
 
@@ -127,6 +149,7 @@ impl Config {
             tier_0_daily_limit_minor: 500 * 10_000_000,
             buy_kobo_per_usdc: None,
             buy_fee_bps: None,
+            secrets: SecretProvider::for_tests(),
         }
     }
 }

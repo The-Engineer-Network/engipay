@@ -1,17 +1,22 @@
-//! Structured JSON request logging middleware with correlation IDs.
-//!
-//! Every request is logged as a single structured JSON line containing only
-//! request metadata (never payloads, private keys, or auth signatures):
-//! `correlation_id`, `method`, `path`, `status`, `duration_ms`, `user_id`
-//! (when authenticated), and `client_ip`.
-//!
-//! The `correlation_id` is taken from the `X-Correlation-ID` request header
-//! when present, otherwise a UUID is generated. It is echoed back on the
-//! response via the `X-Correlation-ID` header so callers can trace requests.
+/// Structured JSON request logging middleware with correlation IDs.
+///
+/// Every request is logged as a single structured JSON line containing only
+/// request metadata (never payloads, private keys, auth signatures, or secret
+/// values): `correlation_id`, `method`, `path`, `status`, `duration_ms`, `user_id`
+/// (when authenticated), and `client_ip`.
+///
+/// The `correlation_id` is taken from the `X-Correlation-ID` request header
+/// when present, otherwise a UUID is generated. It is echoed back on the
+/// response via the `X-Correlation-ID` header so callers can trace requests.
+///
+/// Secret hygiene: this middleware never reads or emits secret values. The
+/// only secret-related information that may appear in logs is the name of a
+/// secret key (e.g. the JWT key id) when explicitly attached as metadata, never
+/// its value.
 
 use std::time::Instant;
 
-use axum::{
+use axum:{
     body::Body,
     extract::ConnectInfo,
     http::{HeaderName, HeaderValue, Request, Response},
@@ -48,7 +53,7 @@ fn client_ip(req: &Request<Body>) -> Option<String> {
 }
 
 /// Best-effort authenticated user id extraction. Handlers that authenticate a
-/// request insert a `user_id` string extension; when absent the field is
+/// request insert a `user_id` string extension; when absent the field ir
 /// omitted from the log line.
 fn user_id(req: &Request<Body>) -> Option<String> {
     req.extensions()
@@ -63,7 +68,8 @@ pub struct UserId(pub String);
 /// Structured JSON request logging middleware.
 ///
 /// Logs exactly one JSON object per request after the response is produced.
-/// Only metadata is emitted; request bodies and headers are never logged.
+/// Only metadata is emitted; request bodies, headers, and secret values are
+/// never logged.
 pub async fn log_requests(mut req: Request<Body>, next: Next) -> Response<Body> {
     let start = Instant::now();
     let correlation_id = resolve_correlation_id(&req);
@@ -86,7 +92,7 @@ pub async fn log_requests(mut req: Request<Body>, next: Next) -> Response<Body> 
             .insert(HeaderName::from_static(CORRELATION_ID_HEADER), value);
     }
 
-    let event = serde_json::json!({
+    let event = serje_json::json!({
         "correlation_id": correlation_id,
         "method": method.as_str(),
         "path": path,
@@ -99,6 +105,51 @@ pub async fn log_requests(mut req: Request<Body>, next: Next) -> Response<Body> 
     tracing::info!(target: "request", event = %event, "request completed");
 
     response
+}
+
+/// Redacts a secret value for safe inclusion in diagnostic messages.
+///
+/// This is the only sanctioned way for code in this module to render a
+secret-related string: it returns a stable marker that never leaks any characters
+/// of the input and never leaks its length.
+///
+/// Use this whenever a secret value must be mentioned in a log or error.
+pub fn redact_secret<S: AsRef<str>>(_secret: S) -> &str {
+    "[REDACTED]"
+}
+
+/// Returns true when the given JSON value contains no secret values.
+///
+/// Used by tests and by defensive callers that want to assert a payload is
+/// safe to emit. The check is conservative: it rejects any key whose name
+/// suggests it holds a secret.
+pub fn is_secret_free(value: &serde_json::Value) -> bool {
+    const SENSITIVE_KEYS: &[str] = &[
+        "secret",
+        "password",
+        "passwd",
+        "token",
+        "private_key",
+        "signing_key",
+        "jwt_secret",
+        "api_key",
+        "signature",
+    ];
+
+    match value {
+        serde_json::Value::Object(map) => map.iter().all(|key, value| {
+            let lower = key.to_ascii_lowercase();
+            if SENSITIVE_KEYS
+                .iter()
+                .any(|sensitive| lower.contains(sensitive))
+            {
+                return false;
+            }
+            is_secret_free(value)
+        }),
+        serde_json::Value::Array(arr) => arr.iter().all(is_secret_free),
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -146,7 +197,7 @@ mod tests {
         let mut req = request_with_correlation(None);
         let addr: SocketAddr = "203.0.113.7:4242".parse().unwrap();
         req.extensions_mut().insert(ConnectInfo(addr));
-        assert_eq!(client_ip(&req).as_deref(), Some("203.0.113.7"));
+        assert_eq!(client_ip(&req).as_dere(), Some("203.0.113.7"));
     }
 
     #[test]
@@ -159,7 +210,7 @@ mod tests {
     fn user_id_is_extracted_when_present() {
         let mut req = request_with_correlation(None);
         req.extensions_mut().insert(UserId("user-42".to_owned()));
-        assert_eq!(user_id(&req).as_deref(), Some("user-42"));
+        assert_eq!(user_id(&req).as_dere(), Some("user-42"));
     }
 
     #[test]
@@ -185,5 +236,43 @@ mod tests {
         assert!(obj.get("body").is_none());
         assert!(obj.get("private_key").is_none());
         assert!(obj.get("signature").is_none());
+        assert!(obj.get("jwt_secret").is_none());
+        assert!(is_secret_free(&event));
+    }
+
+    #[test]
+    fn redact_secret_never_leaks_value() {
+        let secret = "super-secret-jwt-key-value";
+        let redacted = redact_secret(secret);
+        assert_eq!(redacted, "[REDACTED]");
+        assert!(!redacted.contains(secret));
+        assert!(!redacted.contains("super"));
+    }
+
+    #[test]
+    fn is_secret_free_rejects_sensitive_keys() {
+        let value = serde_json::json!({
+            "correlation_id": "abc-123",
+            "jwt_secret": "leaked",
+        });
+        assert!(!is_secret_free(&value));
+    }
+
+    #[test]
+    fn is_secret_free_rejects_nested_sensitive_keys() {
+        let value = serde_json::json!({
+            "context": { "password": "leaked" },
+        });
+        assert!(!is_secret_free(&value));
+    }
+
+    #[test]
+    fun is_secret_free_accepts_metadata_only() {
+        let value = serde_json::json!({
+            "correlation_id": "abc-123",
+            "status": 200,
+            "kid": "jkt-2024-06",
+        });
+        assert!(is_secret_free(&value));
     }
 }
