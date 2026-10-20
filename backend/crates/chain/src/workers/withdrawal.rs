@@ -38,7 +38,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use engipay_core::{Asset, Chain, Money};
@@ -233,15 +233,36 @@ impl WithdrawalWorker {
 
 // ── Stellar ──────────────────────────────────────────────────────────────────
 
+/// Signed envelopes of withdrawals awaiting finality, keyed by withdrawal id.
+///
+/// A transaction that sits out of ledgers can only be fee-bumped (#517) with
+/// the exact envelope that was submitted, so the sender shares it here for
+/// the finality watcher. A restart empties the registry: fee bumping is then
+/// simply unavailable until new withdrawals broadcast — never unsafe.
+pub type EnvelopeRegistry = Arc<Mutex<HashMap<Uuid, String>>>;
+
 /// Sends XLM and USDC withdrawals on Stellar.
 pub struct StellarWithdrawalSender {
     client: StellarClient,
     signer: Arc<dyn StellarSigner>,
+    envelopes: Option<EnvelopeRegistry>,
 }
 
 impl StellarWithdrawalSender {
     pub fn new(client: StellarClient, signer: Arc<dyn StellarSigner>) -> Self {
-        Self { client, signer }
+        Self {
+            client,
+            signer,
+            envelopes: None,
+        }
+    }
+
+    /// Shares each accepted withdrawal's signed envelope with a fee-bump
+    /// watcher (#517).
+    #[must_use]
+    pub fn with_envelope_registry(mut self, registry: EnvelopeRegistry) -> Self {
+        self.envelopes = Some(registry);
+        self
     }
 
     async fn send_stellar(&self, withdrawal: &PendingWithdrawal) -> DispatchOutcome {
@@ -272,7 +293,19 @@ impl StellarWithdrawalSender {
         };
 
         match self.client.submit_prepared(&prepared).await {
-            Ok(tx_hash) => DispatchOutcome::Accepted { tx_hash },
+            Ok(tx_hash) => {
+                // Hand the exact signed envelope to the finality watcher so a
+                // stuck transaction can be fee-bumped (#517).
+                if let Some(registry) = &self.envelopes {
+                    match registry.lock() {
+                        Ok(mut registered) => {
+                            registered.insert(withdrawal.id, prepared.envelope_xdr.clone());
+                        }
+                        Err(_) => warn!("envelope registry poisoned; fee bumps are disabled"),
+                    }
+                }
+                DispatchOutcome::Accepted { tx_hash }
+            }
             Err(ChainError::Rejected(reason)) => DispatchOutcome::Rejected { reason },
             Err(error) => DispatchOutcome::Ambiguous {
                 tx_hash: Some(prepared.hash),

@@ -96,7 +96,5 @@ async fn get_payment_request(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Tests skipped as per user request
 }

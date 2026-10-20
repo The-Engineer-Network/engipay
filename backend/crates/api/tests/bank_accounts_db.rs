@@ -245,7 +245,10 @@ async fn adding_same_account_twice_is_idempotent() {
 
     assert_eq!(s1, StatusCode::CREATED);
     // ON CONFLICT DO UPDATE returns the same row — CREATED or OK both acceptable.
-    assert!(s2 == StatusCode::CREATED || s2 == StatusCode::OK, "second add: {s2}");
+    assert!(
+        s2 == StatusCode::CREATED || s2 == StatusCode::OK,
+        "second add: {s2}"
+    );
 
     let (_, list) = send(&app, "GET", "/v1/bank-accounts", &token, None).await;
     assert_eq!(list.as_array().unwrap().len(), 1, "must not duplicate");

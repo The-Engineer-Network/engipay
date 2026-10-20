@@ -51,7 +51,8 @@ impl RateLimiter {
 
         // Evict idle buckets to prevent memory growth
         if buckets.len() > MAX_BUCKETS / 2 {
-            buckets.retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
+            buckets
+                .retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
         }
 
         let rate = if is_authenticated {
@@ -138,7 +139,8 @@ impl VelocityLimiter {
 
         // Evict idle buckets to prevent memory growth
         if buckets.len() > MAX_BUCKETS / 2 {
-            buckets.retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
+            buckets
+                .retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
         }
 
         let rate = 5.0 / 60.0;

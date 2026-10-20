@@ -124,6 +124,10 @@ pub struct Withdrawal {
     pub amount: Money,
     /// Locked in the hold with the principal; booked to `Fees` on settlement.
     pub fee: Money,
+    /// Extra network fee paid by fee bumps while the transaction was stuck
+    /// (#517). Added to `fee` when the hold settles, so the surcharge lands
+    /// in the ledger's `Fees` account.
+    pub extra_fee: Money,
     pub destination: String,
     pub hold_reference: String,
     pub tx_hash: Option<String>,
@@ -171,6 +175,15 @@ pub trait WithdrawalStore: Send + Sync {
         id: Uuid,
         to: WithdrawalStatus,
         update: StatusUpdate,
+    ) -> impl Future<Output = Result<(), WithdrawalError>> + Send;
+
+    /// Books the extra network fee a fee bump paid on top of the quoted fee
+    /// (#517). Recorded additively — several bumps sum up — and must be in the
+    /// withdrawal's own asset. Refuses a negative fee.
+    fn record_fee_bump(
+        &self,
+        id: Uuid,
+        extra: Money,
     ) -> impl Future<Output = Result<(), WithdrawalError>> + Send;
 }
 
@@ -225,7 +238,8 @@ impl WithdrawalStore for PgWithdrawalStore {
     async fn get(&self, id: Uuid) -> Result<Withdrawal, WithdrawalError> {
         let row = sqlx::query(
             "SELECT id, user_id, asset, amount::text AS amount, \
-                    estimated_network_fee::text AS estimated_network_fee, destination, \
+                    estimated_network_fee::text AS estimated_network_fee, \
+                    extra_network_fee::text AS extra_network_fee, destination, \
                     hold_reference, \
                     tx_hash, confirmed_ledger, status \
              FROM withdrawals WHERE id = $1",
@@ -258,6 +272,7 @@ impl WithdrawalStore for PgWithdrawalStore {
             user: UserId::from_uuid(row.get("user_id")),
             amount: minor("amount")?,
             fee: minor("estimated_network_fee")?,
+            extra_fee: minor("extra_network_fee")?,
             destination: row.get("destination"),
             // A row without one predates migration 0013. Settling it would mean
             // guessing which hold to settle, so it is refused instead.
@@ -326,6 +341,47 @@ impl WithdrawalStore for PgWithdrawalStore {
             to,
         })
     }
+
+    async fn record_fee_bump(&self, id: Uuid, extra: Money) -> Result<(), WithdrawalError> {
+        if extra.minor < 0 {
+            return Err(WithdrawalError::Database(
+                "a fee-bump surcharge cannot be negative".to_owned(),
+            ));
+        }
+        if extra.minor == 0 {
+            return Ok(());
+        }
+        let minor = i64::try_from(extra.minor).map_err(|_| {
+            WithdrawalError::Database("fee-bump surcharge is out of range".to_owned())
+        })?;
+        let updated = sqlx::query(
+            "UPDATE withdrawals \
+             SET extra_network_fee = extra_network_fee + $2, \
+                 updated_at = now() \
+             WHERE id = $1 AND asset = $3",
+        )
+        .bind(id)
+        .bind(minor)
+        .bind(extra.asset.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?
+        .rows_affected();
+        if updated == 1 {
+            return Ok(());
+        }
+        // Nothing changed: either the row is missing or the surcharge was in
+        // the wrong asset. Say which.
+        match self.get(id).await {
+            Ok(existing) if existing.amount.asset == extra.asset => {
+                Err(WithdrawalError::NotFound(id))
+            }
+            Ok(_) => Err(WithdrawalError::Database(
+                "fee-bump surcharge asset does not match the withdrawal".to_owned(),
+            )),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -386,6 +442,28 @@ pub(crate) mod fake {
             }
             Ok(())
         }
+
+        async fn record_fee_bump(&self, id: Uuid, extra: Money) -> Result<(), WithdrawalError> {
+            if extra.minor < 0 {
+                return Err(WithdrawalError::Database(
+                    "a fee-bump surcharge cannot be negative".to_owned(),
+                ));
+            }
+            let mut rows = self.rows.lock().expect("fake store lock");
+            let row = rows.get_mut(&id).ok_or(WithdrawalError::NotFound(id))?;
+            if extra.minor > 0 {
+                if extra.asset != row.amount.asset {
+                    return Err(WithdrawalError::Database(
+                        "fee-bump surcharge asset does not match the withdrawal".to_owned(),
+                    ));
+                }
+                row.extra_fee = Money::from_minor(
+                    row.extra_fee.asset,
+                    row.extra_fee.minor.saturating_add(extra.minor),
+                );
+            }
+            Ok(())
+        }
     }
 
     pub fn pending(asset: Asset, amount: i128, fee: i128) -> Withdrawal {
@@ -394,6 +472,7 @@ pub(crate) mod fake {
             user: UserId::new(),
             amount: Money::from_minor(asset, amount),
             fee: Money::from_minor(asset, fee),
+            extra_fee: Money::from_minor(asset, 0),
             destination: "GDESTINATION".to_owned(),
             hold_reference: format!("withdrawal-{}", Uuid::new_v4()),
             tx_hash: None,
@@ -500,6 +579,40 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, WithdrawalError::HashConflict { .. }));
         assert_eq!(store.snapshot(id).tx_hash.as_deref(), Some("aa"));
+    }
+
+    #[tokio::test]
+    async fn fee_bump_surcharges_are_booked_additively() {
+        let withdrawal = pending(Asset::Usdc, 100, 10);
+        let id = withdrawal.id;
+        let store = FakeWithdrawalStore::with(withdrawal);
+
+        store
+            .record_fee_bump(id, Money::from_minor(Asset::Usdc, 25))
+            .await
+            .unwrap();
+        store
+            .record_fee_bump(id, Money::from_minor(Asset::Usdc, 5))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.snapshot(id).extra_fee,
+            Money::from_minor(Asset::Usdc, 30),
+            "every bump's surcharge accumulates"
+        );
+
+        let wrong_asset = store
+            .record_fee_bump(id, Money::from_minor(Asset::Xlm, 5))
+            .await;
+        assert!(matches!(wrong_asset, Err(WithdrawalError::Database(_))));
+        let negative = store
+            .record_fee_bump(id, Money::from_minor(Asset::Usdc, -1))
+            .await;
+        assert!(matches!(negative, Err(WithdrawalError::Database(_))));
+        let missing = store
+            .record_fee_bump(Uuid::new_v4(), Money::from_minor(Asset::Usdc, 1))
+            .await;
+        assert!(matches!(missing, Err(WithdrawalError::NotFound(_))));
     }
 
     // ── Postgres ─────────────────────────────────────────────────────────────
@@ -624,6 +737,24 @@ mod tests {
         let confirmed = store.get(id).await.unwrap();
         assert_eq!(confirmed.confirmed_ledger, Some(7));
         assert_eq!(confirmed.tx_hash, Some(hash));
+
+        // Fee bumps (#517): the surcharge persists and accumulates.
+        store
+            .record_fee_bump(id, Money::from_minor(Asset::Usdc, 25))
+            .await
+            .unwrap();
+        store
+            .record_fee_bump(id, Money::from_minor(Asset::Usdc, 5))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get(id).await.unwrap().extra_fee,
+            Money::from_minor(Asset::Usdc, 30)
+        );
+        let wrong_asset = store
+            .record_fee_bump(id, Money::from_minor(Asset::Xlm, 5))
+            .await;
+        assert!(matches!(wrong_asset, Err(WithdrawalError::Database(_))));
     }
 
     #[tokio::test]

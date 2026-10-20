@@ -8,7 +8,7 @@ use engipay_core::Chain;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::erc20::{deposits_from_logs, BaseNetwork};
+use super::erc20::{BaseNetwork, deposits_from_logs};
 use super::watcher::{BlockWatcher, FinalizedHeight};
 use crate::{ChainClient, ChainError, ObservedDeposit};
 

@@ -131,12 +131,12 @@ pub struct JoinedTransaction {
 /// `PaymentRecord` per operation, all sharing the same `transaction_hash`.
 /// Without a cache each operation would trigger a separate
 /// `GET /transactions/{hash}` call; with the cache only the first does.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TransactionCache {
     entries: HashMap<String, CacheEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CacheEntry {
     transaction: JoinedTransaction,
     inserted_at: Instant,

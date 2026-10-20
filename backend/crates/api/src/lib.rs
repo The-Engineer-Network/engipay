@@ -21,8 +21,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
 use crate::middleware::logging::log_requests;
-use crate::middleware::recovery::CatchPanicLayer;
 use crate::middleware::rate_limit::RateLimiter;
+use crate::middleware::recovery::CatchPanicLayer;
 use crate::services::bank_name_check::{BankNameCheck, FakeBankNameCheck};
 use crate::services::kyc_provider::{FakeKycProvider, KycProvider};
 use crate::services::price_source::{FakePriceSource, PriceSource};

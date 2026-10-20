@@ -10,9 +10,9 @@
 //!
 //! Configuration comes from the environment; see backend/.env.example.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -25,9 +25,9 @@ use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY, cursor_to_l
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
 use engipay_chain::stellar::{StellarClient, StellarConfig, StellarNetwork};
-use engipay_chain::workers::reconcile::{ReconcileWorker, DEFAULT_INTERVAL as RECONCILE_INTERVAL};
+use engipay_chain::workers::reconcile::{DEFAULT_INTERVAL as RECONCILE_INTERVAL, ReconcileWorker};
 use engipay_chain::workers::withdrawal::{
-    DEFAULT_POLL_INTERVAL, StellarWithdrawalSender, WithdrawalWorker,
+    DEFAULT_POLL_INTERVAL, EnvelopeRegistry, StellarWithdrawalSender, WithdrawalWorker,
 };
 use engipay_chain::{ChainClient, is_creditable};
 use engipay_core::{Asset, Money};
@@ -178,9 +178,12 @@ async fn watch() -> anyhow::Result<()> {
     let internal_addr =
         env::var("CHAIN_INTERNAL_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
 
-    let internal_addr_parsed = internal_addr
-        .parse::<std::net::SocketAddr>()
-        .with_context(|| format!("CHAIN_INTERNAL_ADDR must be a host:port, got {internal_addr:?}"))?;
+    let internal_addr_parsed =
+        internal_addr
+            .parse::<std::net::SocketAddr>()
+            .with_context(|| {
+                format!("CHAIN_INTERNAL_ADDR must be a host:port, got {internal_addr:?}")
+            })?;
 
     let token = internal_token();
     if !internal_addr_parsed.ip().is_loopback() && token.is_none() {
@@ -447,15 +450,22 @@ async fn withdrawals() -> anyhow::Result<()> {
         .context("set STELLAR_CUSTODY_ACCOUNT (and STELLAR_NETWORK=testnet) first")?;
     let secret = env::var("STELLAR_TESTNET_SECRET")
         .context("set STELLAR_TESTNET_SECRET to the testnet account that pays")?;
-    let signer = LocalTestnetSigner::from_secret(&secret, client.config().network)?;
+    let signer: Arc<dyn StellarSigner> = Arc::new(LocalTestnetSigner::from_secret(
+        &secret,
+        client.config().network,
+    )?);
     drop(secret);
     info!(from = %signer.account(), "withdrawal worker starting");
 
+    // Signed envelopes shared with the finality watcher, so a transaction
+    // left out of ledgers can be fee-bumped within its configured ceiling
+    // (#517).
+    let envelopes: EnvelopeRegistry = Arc::new(Mutex::new(HashMap::new()));
     let worker_pool = pool.clone();
-    let worker = WithdrawalWorker::new(worker_pool).with_sender(Arc::new(StellarWithdrawalSender::new(
-        client.clone(),
-        Arc::new(signer),
-    )));
+    let worker = WithdrawalWorker::new(worker_pool).with_sender(Arc::new(
+        StellarWithdrawalSender::new(client.clone(), signer.clone())
+            .with_envelope_registry(envelopes.clone()),
+    ));
     let shutdown = CancellationToken::new();
     let on_signal = shutdown.clone();
     tokio::spawn(async move {
@@ -467,13 +477,19 @@ async fn withdrawals() -> anyhow::Result<()> {
     let finality_shutdown = shutdown.clone();
     let finality_pool = pool.clone();
     let finality_client = client.clone();
+    let finality_signer = signer.clone();
     tokio::spawn(async move {
-        use engipay_chain::withdrawals::PgWithdrawalStore;
-        use engipay_chain::stellar::broadcast::FinalityPoller;
+        use engipay_chain::stellar::broadcast::{FinalityPoller, poll_transaction_finality};
+        use engipay_chain::stellar::fee_bump::FeeBumpPolicy;
         use engipay_chain::stellar::settlement::apply_finality;
+        use engipay_chain::withdrawals::PgWithdrawalStore;
         use engipay_ledger::postgres::PostgresLedgerStore;
+        use stellar_xdr::{Limits, ReadXdr, TransactionEnvelope};
 
         let poller = FinalityPoller::new();
+        // #517: a transaction left out of N ledgers is fee-bumped, but never
+        // above the configured ceiling.
+        let fee_bump = FeeBumpPolicy::from_env();
         let store = PgWithdrawalStore::new(finality_pool.clone());
         let ledger = PostgresLedgerStore::new(finality_pool.clone());
 
@@ -484,7 +500,30 @@ async fn withdrawals() -> anyhow::Result<()> {
             .fetch_all(&finality_pool)
             .await {
                 for (id, tx_hash) in rows {
-                    let outcome = poller.poll(&finality_client, &tx_hash).await;
+                    // The signed envelope is only known while this process is
+                    // alive; without it the plain finality poll still runs.
+                    let envelope = envelopes
+                        .lock()
+                        .ok()
+                        .and_then(|registered| registered.get(&id).cloned())
+                        .and_then(|xdr| TransactionEnvelope::from_xdr_base64(&xdr, Limits::none()).ok());
+                    let outcome = match envelope {
+                        Some(envelope) => {
+                            poller
+                                .poll_finality_with_fee_bump(
+                                    &finality_client,
+                                    finality_signer.as_ref(),
+                                    &envelope,
+                                    &fee_bump,
+                                    &store,
+                                    id,
+                                )
+                                .await
+                        }
+                        None => {
+                            poll_transaction_finality(&finality_client, &tx_hash, &poller).await
+                        }
+                    };
                     let _ = apply_finality(&store, &ledger, id, outcome).await;
                 }
             }
@@ -544,10 +583,22 @@ async fn dlq_list(pool: &sqlx::PgPool) -> anyhow::Result<()> {
         println!("  ID:         {}", row.id);
         println!("  Created:    {}", row.created_at);
         println!("  Reason:     {}", row.reason);
-        println!("  Reference:  {}", row.raw_payload["reference"].as_str().unwrap_or("?"));
-        println!("  Address:    {}", row.raw_payload["address"].as_str().unwrap_or("?"));
-        println!("  Amount:     {} (minor units)", row.raw_payload["amount_minor"].as_i64().unwrap_or(0));
-        println!("  Asset:      {}", row.raw_payload["asset"].as_str().unwrap_or("?"));
+        println!(
+            "  Reference:  {}",
+            row.raw_payload["reference"].as_str().unwrap_or("?")
+        );
+        println!(
+            "  Address:    {}",
+            row.raw_payload["address"].as_str().unwrap_or("?")
+        );
+        println!(
+            "  Amount:     {} (minor units)",
+            row.raw_payload["amount_minor"].as_i64().unwrap_or(0)
+        );
+        println!(
+            "  Asset:      {}",
+            row.raw_payload["asset"].as_str().unwrap_or("?")
+        );
         println!();
     }
     Ok(())

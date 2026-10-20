@@ -41,12 +41,14 @@
 
 use std::time::Duration;
 
+use engipay_core::Money;
 use stellar_xdr::TransactionEnvelope;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::StellarClient;
-use super::payment::{envelope_base64, transaction_hash};
+use super::fee_bump::{self, FeeBumpPolicy};
+use super::payment::{StellarSigner, envelope_base64, transaction_hash};
 use super::settlement::{self, HoldLedger, SettlementError};
 use crate::ChainError;
 use crate::withdrawals::{StatusUpdate, WithdrawalError, WithdrawalStatus, WithdrawalStore};
@@ -263,6 +265,20 @@ pub enum FinalityError {
         #[source]
         source: ChainError,
     },
+
+    /// The withdrawal could not be read while preparing to book a fee-bump
+    /// surcharge (#517). Nothing was submitted.
+    #[error("withdrawal {id} could not be read for a fee bump: {source}")]
+    Store {
+        id: Uuid,
+        #[source]
+        source: WithdrawalError,
+    },
+
+    /// The withdrawal has no recorded transaction hash to poll. Nothing was
+    /// submitted.
+    #[error("withdrawal {id} has no recorded transaction hash to poll")]
+    MissingHash { id: Uuid },
 }
 
 // ── FinalistPoller ────────────────────────────────────────────────────────────
@@ -413,6 +429,139 @@ impl Default for FinalityPoller {
     }
 }
 
+// ── Fee bumping (#517) ─────────────────────────────────────────────────────
+
+impl FinalityPoller {
+    /// Polls for finality like [`poll`](Self::poll), but watches for
+    /// non-inclusion: once the transaction has been left out of
+    /// `after_ledgers` consecutive checks (one Stellar ledger ≈ one poll at
+    /// the default interval), `bump_fn` is called to submit a fee bump within
+    /// the configured ceiling. The hash it returns — the outer transaction's
+    /// — becomes the hash polled from then on, while every outcome is
+    /// reported under the **original** `tx_hash` so settlement keeps matching
+    /// the recorded hash.
+    ///
+    /// `bump_fn` returning `Ok(None)` means the ceiling withheld the bump and
+    /// polling simply continues; a bump error is logged and polling continues
+    /// too, because the transaction may still land on its own. Only a
+    /// non-transient Horizon error or the timeout ends the poll.
+    pub async fn poll_with_fee_bump<F, Fut, B, BFut>(
+        &self,
+        tx_hash: &str,
+        after_ledgers: u64,
+        fetch_fn: F,
+        mut bump_fn: B,
+    ) -> Result<FinalityOutcome, FinalityError>
+    where
+        F: Fn(String) -> Fut,
+        Fut: std::future::Future<Output = Result<TxStatus, ChainError>>,
+        B: FnMut() -> BFut,
+        BFut: std::future::Future<Output = Result<Option<String>, ChainError>>,
+    {
+        let start = tokio::time::Instant::now();
+        let mut current = tx_hash.to_owned();
+        let mut missed: u64 = 0;
+
+        info!(
+            hash = %tx_hash,
+            after_ledgers,
+            timeout_secs = self.timeout.as_secs(),
+            "polling Horizon for finality with fee-bump support"
+        );
+
+        loop {
+            let elapsed = start.elapsed();
+            if elapsed >= self.timeout {
+                warn!(
+                    hash = %tx_hash,
+                    elapsed_secs = elapsed.as_secs(),
+                    timeout_secs = self.timeout.as_secs(),
+                    "transaction not confirmed within timeout; flagging for manual review"
+                );
+                return Err(FinalityError::Timeout {
+                    hash: tx_hash.to_owned(),
+                    timeout: self.timeout,
+                });
+            }
+
+            match fetch_fn(current.clone()).await {
+                Ok(TxStatus::IncludedSuccessful { ledger }) => {
+                    info!(
+                        hash = %tx_hash,
+                        polled = %current,
+                        ledger,
+                        "transaction confirmed in closed ledger"
+                    );
+                    return Ok(FinalityOutcome::Confirmed {
+                        hash: tx_hash.to_owned(),
+                        ledger,
+                    });
+                }
+                Ok(TxStatus::IncludedFailed { ledger }) => {
+                    warn!(
+                        hash = %tx_hash,
+                        polled = %current,
+                        ledger,
+                        "transaction included in ledger but marked failed"
+                    );
+                    return Ok(FinalityOutcome::Failed {
+                        hash: tx_hash.to_owned(),
+                        ledger,
+                    });
+                }
+                Ok(TxStatus::NotYetIncluded) => {
+                    missed = missed.saturating_add(1);
+                    if after_ledgers > 0 && missed >= after_ledgers {
+                        missed = 0;
+                        match bump_fn().await {
+                            Ok(Some(bump_hash)) => {
+                                info!(
+                                    hash = %tx_hash,
+                                    %bump_hash,
+                                    "missed ledgers; polling the fee-bumped transaction"
+                                );
+                                current = bump_hash;
+                            }
+                            Ok(None) => {
+                                debug!(
+                                    hash = %tx_hash,
+                                    "fee bump withheld; continuing to poll"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    hash = %tx_hash,
+                                    %error,
+                                    "fee bump failed; continuing to poll"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(source) => {
+                    warn!(
+                        hash = %tx_hash,
+                        error = %source,
+                        "Horizon error during finality poll; aborting"
+                    );
+                    return Err(FinalityError::Horizon {
+                        hash: tx_hash.to_owned(),
+                        source,
+                    });
+                }
+            }
+
+            let remaining = self.timeout.saturating_sub(start.elapsed());
+            let sleep_for = self.poll_interval.min(remaining);
+            if sleep_for.is_zero() {
+                // Timeout will be caught at the top of the next iteration.
+                continue;
+            }
+            tokio::time::sleep(sleep_for).await;
+        }
+    }
+}
+
 // ── TxStatus ─────────────────────────────────────────────────────────────────
 
 /// The result of a single `GET /transactions/{hash}` call, reduced to the
@@ -480,6 +629,89 @@ pub async fn poll_transaction_finality(
             }
         })
         .await
+}
+
+impl FinalityPoller {
+    /// Polls a live [`StellarClient`] for finality and fee-bumps the signed
+    /// `inner_envelope` (#517) when the transaction is left out of
+    /// `policy.after_ledgers()` ledgers, never offering more than the policy's
+    /// ceiling.
+    ///
+    /// The withdrawal must already have a recorded transaction hash; that hash
+    /// is the one every outcome is reported under, whether or not the
+    /// transaction had to be bumped. The extra fee a successful bump pays is
+    /// booked against the withdrawal's own hold via
+    /// [`WithdrawalStore::record_fee_bump`], so when the transaction finally
+    /// lands, settlement charges the quoted fee **plus** the surcharge to the
+    /// ledger's `Fees` account — the surcharge can never outgrow the hold
+    /// because it is clamped to the withdrawal's principal.
+    pub async fn poll_finality_with_fee_bump<W: WithdrawalStore>(
+        &self,
+        client: &crate::stellar::StellarClient,
+        signer: &dyn StellarSigner,
+        inner_envelope: &TransactionEnvelope,
+        policy: &FeeBumpPolicy,
+        store: &W,
+        withdrawal_id: Uuid,
+    ) -> Result<FinalityOutcome, FinalityError> {
+        let withdrawal = store
+            .get(withdrawal_id)
+            .await
+            .map_err(|source| FinalityError::Store {
+                id: withdrawal_id,
+                source,
+            })?;
+        let tx_hash = withdrawal
+            .tx_hash
+            .as_deref()
+            .ok_or(FinalityError::MissingHash { id: withdrawal_id })?;
+
+        self.poll_with_fee_bump(
+            tx_hash,
+            policy.after_ledgers(),
+            |hash| async move {
+                match client.fetch_transaction(&hash).await {
+                    Ok(joined) => Ok(TxStatus::from_horizon(joined.ledger, joined.successful)),
+                    Err(ChainError::Unavailable(_)) => Ok(TxStatus::NotYetIncluded),
+                    Err(other) => Err(other),
+                }
+            },
+            || {
+                let withdrawal = &withdrawal;
+                async move {
+                    let Some(submission) = fee_bump::fee_bump_stuck_transaction(
+                        client,
+                        signer,
+                        inner_envelope,
+                        policy,
+                    )
+                    .await?
+                    else {
+                        return Ok(None);
+                    };
+                    // Book the surcharge on the withdrawal's own hold, clamped
+                    // so the hold always covers it at settlement.
+                    let extra = i128::from(submission.extra_fee).min(withdrawal.amount.minor);
+                    if extra > 0 {
+                        store
+                            .record_fee_bump(
+                                withdrawal_id,
+                                Money::from_minor(withdrawal.amount.asset, extra),
+                            )
+                            .await
+                            .map_err(|error| {
+                                ChainError::Unavailable(format!(
+                                    "fee bump submitted but the extra fee could not be booked: \
+                                     {error}"
+                                ))
+                            })?;
+                    }
+                    Ok(Some(submission.hash))
+                }
+            },
+        )
+        .await
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -32,7 +32,9 @@ pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 ///
 /// A shortfall (negative discrepancy) always triggers an `error!` regardless
 /// of this value.
-const DEFAULT_SURPLUS_TOLERANCE: i128 = 0;/// The result of a single reconciliation pass for one asset.
+const DEFAULT_SURPLUS_TOLERANCE: i128 = 0;
+
+/// The result of a single reconciliation pass for one asset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetReport {
     pub asset: Asset,
@@ -78,7 +80,7 @@ impl ReconcileWorker {
         let surplus_tolerance = std::env::var("RECONCILE_SURPLUS_TOLERANCE")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0_i128);
+            .unwrap_or(DEFAULT_SURPLUS_TOLERANCE);
         Self {
             store: PostgresLedgerStore::new(pool),
             stellar,
@@ -107,10 +109,7 @@ impl ReconcileWorker {
 
             match self.tick().await {
                 Ok(reports) => {
-                    info!(
-                        assets = reports.len(),
-                        "reconciliation run complete"
-                    );
+                    info!(assets = reports.len(), "reconciliation run complete");
                 }
                 Err(error) => {
                     warn!(%error, "reconciliation run failed; will retry next interval");

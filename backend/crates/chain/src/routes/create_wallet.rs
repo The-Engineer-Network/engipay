@@ -101,7 +101,10 @@ impl IntoResponse for WalletError {
 // ─── Axum router ──────────────────────────────────────────────────────────────
 
 /// Mounts the `POST /internal/create-wallet` route.
-pub fn routes() -> Router {
+///
+/// Generic over the router state: the handler is stateless, so the routes can
+/// be merged into any router (e.g. `Router<ChainHttpState>`).
+pub fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
     Router::new().route("/internal/create-wallet", post(handle_create_wallet))
 }
 

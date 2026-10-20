@@ -5,6 +5,7 @@
 
 pub mod broadcast;
 pub mod cursor;
+pub mod fee_bump;
 pub mod horizon;
 pub mod network;
 pub mod payment;
@@ -82,6 +83,24 @@ pub struct StellarClient {
     /// Wrapped in a `Mutex` so `deposits_since` (which takes `&self` via the
     /// trait) can populate the cache without needing `&mut self`.
     transaction_cache: Mutex<TransactionCache>,
+}
+
+/// A second handle on the same Horizon client: the connection pool is shared,
+/// so watchers and senders can poll without rebuilding TLS state, while each
+/// clone keeps its own short-lived transaction cache.
+impl Clone for StellarClient {
+    fn clone(&self) -> Self {
+        let cache = self
+            .transaction_cache
+            .lock()
+            .expect("transaction cache lock poisoned")
+            .clone();
+        Self {
+            config: self.config.clone(),
+            http: self.http.clone(),
+            transaction_cache: Mutex::new(cache),
+        }
+    }
 }
 
 impl StellarClient {
@@ -185,12 +204,12 @@ impl StellarClient {
             })?;
             match bal.asset_type.as_str() {
                 "native" => out.push((Asset::Xlm, i128::from(stroops))),
-                "credit_alphanum4" => {
+                "credit_alphanum4"
                     if bal.asset_code.as_deref() == Some("USDC")
-                        && bal.asset_issuer.as_deref() == Some(self.config.network.usdc_issuer())
-                    {
-                        out.push((Asset::Usdc, i128::from(stroops)));
-                    }
+                        && bal.asset_issuer.as_deref()
+                            == Some(self.config.network.usdc_issuer()) =>
+                {
+                    out.push((Asset::Usdc, i128::from(stroops)));
                 }
                 _ => {}
             }

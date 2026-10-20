@@ -34,7 +34,9 @@ capture_schema() {
   docker compose exec -T postgres \
     pg_dump --schema-only -U "${POSTGRES_USER:-engipay}" "$target_db" 2>/dev/null \
     | grep -v '^--' \
-    | grep -v '^$'
+    | grep -v '^$' \
+    | grep -v '^\\restrict ' \
+    | grep -v '^\\unrestrict '
 }
 
 verify_tables() {

@@ -55,22 +55,28 @@ const ESTIMATED_TX_SIZE: u64 = 226;
 pub enum BitcoinSenderError {
     #[error("mainnet operations are not supported by the local test signer")]
     MainnetRefused,
-    
-    #[error("insufficient funds: need {needed} sats (including {fee} sats fee), have {available} sats")]
-    InsufficientFunds { needed: u64, fee: u64, available: u64 },
-    
+
+    #[error(
+        "insufficient funds: need {needed} sats (including {fee} sats fee), have {available} sats"
+    )]
+    InsufficientFunds {
+        needed: u64,
+        fee: u64,
+        available: u64,
+    },
+
     #[error("invalid destination address: {0}")]
     InvalidAddress(String),
-    
+
     #[error("transaction building failed: {0}")]
     BuildFailed(String),
-    
+
     #[error("broadcast failed: {0}")]
     BroadcastFailed(String),
-    
+
     #[error("RPC error: {0}")]
     RpcError(String),
-    
+
     #[error("no UTXOs available for coin selection")]
     NoUtxos,
 }
@@ -107,22 +113,24 @@ impl WithdrawalRequest {
                 "withdrawal asset must be BTC".to_owned(),
             ));
         }
-        
+
         // Money stores BTC in satoshis (minor units).
         let amount_sats = u64::try_from(amount.minor)
             .map_err(|_| BitcoinSenderError::BuildFailed("amount out of range".to_owned()))?;
-        
+
         if amount_sats == 0 {
-            return Err(BitcoinSenderError::BuildFailed("amount must be positive".to_owned()));
+            return Err(BitcoinSenderError::BuildFailed(
+                "amount must be positive".to_owned(),
+            ));
         }
-        
+
         Ok(Self {
             destination,
             amount_sats,
             memo: None,
         })
     }
-    
+
     /// Attaches a memo to the withdrawal request.
     pub fn with_memo(mut self, memo: String) -> Self {
         self.memo = Some(memo);
@@ -155,15 +163,15 @@ pub enum BitcoinNetwork {
 
 /// Result of coin selection.
 #[derive(Debug, Clone)]
-struct CoinSelection {
+pub struct CoinSelection {
     /// UTXOs selected to cover amount + fee.
-    selected: Vec<Utxo>,
+    pub selected: Vec<Utxo>,
     /// Total value of selected UTXOs.
-    total_value: u64,
+    pub total_value: u64,
     /// Estimated fee in satoshis.
-    fee: u64,
+    pub fee: u64,
     /// Change to return (0 if below dust threshold).
-    change: u64,
+    pub change: u64,
 }
 
 /// Selects UTXOs using largest-first strategy.
@@ -177,33 +185,36 @@ fn select_coins(
 ) -> Result<CoinSelection, BitcoinSenderError> {
     if available.is_empty() {
         return Err(BitcoinSenderError::NoUtxos);
-    }
-    
-    // Sort UTXOs largest-first for optimal selection.
-    available.sort_by(|a, b| b.value_sats.cmp(&a.value_sats));
-    
-    let estimated_fee = ESTIMATED_TX_SIZE * fee_rate;
-    let total_needed = target.checked_add(estimated_fee)
+    } // Sort UTXOs largest-first for optimal selection.
+    available.sort_by_key(|utxo| std::cmp::Reverse(utxo.value_sats));
+
+    let estimated_fee = ESTIMATED_TX_SIZE
+        .checked_mul(fee_rate)
+        .ok_or_else(|| BitcoinSenderError::BuildFailed("fee overflow".to_owned()))?;
+    let total_needed = target
+        .checked_add(estimated_fee)
         .ok_or_else(|| BitcoinSenderError::BuildFailed("amount overflow".to_owned()))?;
-    
+
     let mut selected = Vec::new();
     let mut accumulated = 0u64;
-    
+
     for utxo in available {
         selected.push(utxo.clone());
-        accumulated += utxo.value_sats;
-        
+        accumulated = accumulated.saturating_add(utxo.value_sats);
+
         if accumulated >= total_needed {
             // Calculate actual change after fee.
-            let change_before_dust = accumulated.saturating_sub(target).saturating_sub(estimated_fee);
+            let change_before_dust = accumulated
+                .saturating_sub(target)
+                .saturating_sub(estimated_fee);
             let change = if change_before_dust < DUST_THRESHOLD {
                 0 // Add to fee instead of creating dust output
             } else {
                 change_before_dust
             };
-            
+
             let actual_fee = accumulated.saturating_sub(target).saturating_sub(change);
-            
+
             return Ok(CoinSelection {
                 selected,
                 total_value: accumulated,
@@ -212,7 +223,7 @@ fn select_coins(
             });
         }
     }
-    
+
     // Not enough funds
     let total_available: u64 = selected.iter().map(|u| u.value_sats).sum();
     Err(BitcoinSenderError::InsufficientFunds {
@@ -228,12 +239,12 @@ fn select_coins(
 pub trait BitcoinSigner: Send + Sync {
     /// Returns the network this signer is configured for.
     fn network(&self) -> BitcoinNetwork;
-    
+
     /// Returns available UTXOs for spending.
     fn list_utxos(
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<Utxo>, BitcoinSenderError>> + Send;
-    
+
     /// Signs a withdrawal transaction using the provided coin selection.
     ///
     /// # Errors
@@ -269,9 +280,12 @@ impl LocalTestSigner {
         if network == BitcoinNetwork::Mainnet {
             return Err(BitcoinSenderError::MainnetRefused);
         }
-        Ok(Self { network, utxos: Vec::new() })
+        Ok(Self {
+            network,
+            utxos: Vec::new(),
+        })
     }
-    
+
     /// Adds test UTXOs for coin selection testing.
     #[cfg(test)]
     pub fn with_utxos(mut self, utxos: Vec<Utxo>) -> Self {
@@ -284,21 +298,21 @@ impl BitcoinSigner for LocalTestSigner {
     fn network(&self) -> BitcoinNetwork {
         self.network
     }
-    
+
     async fn list_utxos(&self) -> Result<Vec<Utxo>, BitcoinSenderError> {
         Ok(self.utxos.clone())
     }
-    
+
     async fn sign_withdrawal(
         &self,
-        request: &WithdrawalRequest,
+        _request: &WithdrawalRequest,
         selection: &CoinSelection,
         _change_address: &str,
     ) -> Result<PreparedTransaction, BitcoinSenderError> {
         if self.network == BitcoinNetwork::Mainnet {
             return Err(BitcoinSenderError::MainnetRefused);
         }
-        
+
         // Placeholder: Real implementation would build and sign the transaction.
         // For now, return a mock prepared transaction for testing.
         Ok(PreparedTransaction {
@@ -328,7 +342,7 @@ impl SenderConfig {
             fee_rate_sats_per_byte: DEFAULT_FEE_RATE,
         }
     }
-    
+
     /// Sets a custom fee rate.
     pub fn with_fee_rate(mut self, sats_per_byte: u64) -> Self {
         self.fee_rate_sats_per_byte = sats_per_byte;
@@ -347,7 +361,7 @@ impl<S: BitcoinSigner> BitcoinWithdrawalSender<S> {
     pub fn new(signer: S, config: SenderConfig) -> Self {
         Self { signer, config }
     }
-    
+
     /// Builds, signs, and broadcasts a withdrawal transaction.
     ///
     /// # Process
@@ -373,21 +387,20 @@ impl<S: BitcoinSigner> BitcoinWithdrawalSender<S> {
     ) -> Result<PreparedTransaction, BitcoinSenderError> {
         // 1. List available UTXOs
         let utxos = self.signer.list_utxos().await?;
-        
+
         // 2. Select coins
         let selection = select_coins(
             utxos,
             request.amount_sats,
             self.config.fee_rate_sats_per_byte,
         )?;
-        
+
         // 3. Sign the transaction
-        let prepared = self.signer.sign_withdrawal(
-            request,
-            &selection,
-            &self.config.change_address,
-        ).await?;
-        
+        let prepared = self
+            .signer
+            .sign_withdrawal(request, &selection, &self.config.change_address)
+            .await?;
+
         // 4. Broadcast (placeholder - needs RPC client or esplora)
         // Real implementation would POST raw_tx to bitcoind or esplora
         tracing::info!(
@@ -397,10 +410,10 @@ impl<S: BitcoinSigner> BitcoinWithdrawalSender<S> {
             change = prepared.change_sats,
             "bitcoin withdrawal prepared (broadcast not implemented)"
         );
-        
+
         Ok(prepared)
     }
-    
+
     /// Checks if a transaction has reached 2 confirmations.
     ///
     /// # Returns
@@ -426,6 +439,7 @@ impl<S: BitcoinSigner> fmt::Debug for BitcoinWithdrawalSender<S> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -534,7 +548,10 @@ mod tests {
     fn coin_selection_fails_on_insufficient_funds() {
         let utxos = vec![test_utxo(1_000, 6)];
         let result = select_coins(utxos, 10_000, 2);
-        assert!(matches!(result, Err(BitcoinSenderError::InsufficientFunds { .. })));
+        assert!(matches!(
+            result,
+            Err(BitcoinSenderError::InsufficientFunds { .. })
+        ));
     }
 
     #[test]
@@ -542,7 +559,10 @@ mod tests {
         // 1000 - 100 - (226 * 2) = 448 sats change (below 546 dust threshold)
         let utxos = vec![test_utxo(1_000, 6)];
         let selection = select_coins(utxos, 100, 2).unwrap();
-        assert_eq!(selection.change, 0, "change below dust should be added to fee");
+        assert_eq!(
+            selection.change, 0,
+            "change below dust should be added to fee"
+        );
         assert!(selection.fee > ESTIMATED_TX_SIZE * 2);
     }
 
@@ -564,21 +584,23 @@ mod tests {
         let signer = LocalTestSigner::new(BitcoinNetwork::Testnet)
             .unwrap()
             .with_utxos(utxos);
-        
+
         let config = SenderConfig::new("tb1qchange...".to_owned());
         let sender = BitcoinWithdrawalSender::new(signer, config);
-        
+
         let request = WithdrawalRequest::new(
             "tb1qdest...".to_owned(),
             Money::from_minor(Asset::Btc, 60_000),
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let prepared = sender.send_withdrawal(&request).await.unwrap();
-        
+
         // Should select 50_000 + 30_000 = 80_000
         assert_eq!(prepared.inputs.len(), 2);
         assert!(prepared.fee_sats > 0);
-        assert!(prepared.change_sats > 0 || prepared.change_sats == 0);
+        // 80_000 selected - 60_000 paid out: the rest is fee plus change.
+        assert!(prepared.change_sats < 20_000);
     }
 
     #[tokio::test]
@@ -587,16 +609,20 @@ mod tests {
         let signer = LocalTestSigner::new(BitcoinNetwork::Testnet)
             .unwrap()
             .with_utxos(utxos);
-        
+
         let config = SenderConfig::new("tb1qchange...".to_owned());
         let sender = BitcoinWithdrawalSender::new(signer, config);
-        
+
         let request = WithdrawalRequest::new(
             "tb1qdest...".to_owned(),
             Money::from_minor(Asset::Btc, 100_000),
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let result = sender.send_withdrawal(&request).await;
-        assert!(matches!(result, Err(BitcoinSenderError::InsufficientFunds { .. })));
+        assert!(matches!(
+            result,
+            Err(BitcoinSenderError::InsufficientFunds { .. })
+        ));
     }
 }

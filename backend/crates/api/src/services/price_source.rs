@@ -83,7 +83,7 @@ impl FakePriceSource {
     fn rate(from: Asset, to: Asset) -> Option<(i128, i128)> {
         // Whole-unit rates expressed as (to_units_per_from_unit_numerator, denominator).
         // We then scale by decimal differences.
-        let (whole_num, whole_den) = match (from, to) {
+        let (whole_num, whole_den): (i128, i128) = match (from, to) {
             (Asset::Usdc, Asset::Xlm) => (10, 1),
             (Asset::Xlm, Asset::Usdc) => (1, 10),
             (Asset::Usdc, Asset::Eth) => (1, 3500),
@@ -94,7 +94,7 @@ impl FakePriceSource {
             (Asset::Eth, Asset::Xlm) => (35000, 1),
             (Asset::Xlm, Asset::Btc) => (1, 650_000),
             (Asset::Btc, Asset::Xlm) => (650_000, 1),
-            (Asset::Eth, Asset::Btc) => (1, 18),  // ~1 ETH ≈ 1/18 BTC
+            (Asset::Eth, Asset::Btc) => (1, 18), // ~1 ETH ≈ 1/18 BTC
             (Asset::Btc, Asset::Eth) => (18, 1),
             _ => return None,
         };
@@ -122,9 +122,8 @@ impl PriceSource for FakePriceSource {
         if from == to {
             return Err(PriceError::SameAsset);
         }
-        let (rate_numerator, rate_denominator) = Self::rate(from, to).ok_or_else(|| {
-            PriceError::NoPair(from.symbol().to_owned(), to.symbol().to_owned())
-        })?;
+        let (rate_numerator, rate_denominator) = Self::rate(from, to)
+            .ok_or_else(|| PriceError::NoPair(from.symbol().to_owned(), to.symbol().to_owned()))?;
         Ok(ConversionPrice {
             rate_numerator,
             rate_denominator,
@@ -182,7 +181,10 @@ mod tests {
             src.quote(Asset::Usdc, Asset::Usdc),
             Err(PriceError::SameAsset)
         );
-        assert_eq!(src.quote(Asset::Xlm, Asset::Xlm), Err(PriceError::SameAsset));
+        assert_eq!(
+            src.quote(Asset::Xlm, Asset::Xlm),
+            Err(PriceError::SameAsset)
+        );
     }
 
     #[test]

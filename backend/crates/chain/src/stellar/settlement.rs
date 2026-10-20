@@ -5,7 +5,9 @@
 //!
 //! * **Confirmed** — [`settle_hold`](engipay_ledger::postgres::PostgresLedgerStore::settle_hold):
 //!   debit the user's `held` bucket, credit `ExternalOutflow` with the
-//!   principal and `Fees` with the fee, then mark the withdrawal `completed`.
+//!   principal and `Fees` with the quoted fee **plus any fee-bump surcharge**
+//!   recorded by [`WithdrawalStore::record_fee_bump`] (#517), then mark the
+//!   withdrawal `completed`.
 //! * **Failed on-chain or rejected** — release the hold back to the user's
 //!   `available` bucket and mark the withdrawal `failed`.
 //! * **Unknown** (timeout, Horizon unreachable) — touch nothing in the ledger
@@ -142,7 +144,13 @@ pub async fn settle_confirmed<W: WithdrawalStore, L: HoldLedger>(
             .await?;
     }
 
-    let fee = (withdrawal.fee.minor > 0).then_some(withdrawal.fee);
+    // The quoted fee plus whatever fee bumps paid on top of it (#517): every
+    // stroop that left the custody account as a network fee is revenue.
+    let fee_minor = withdrawal
+        .fee
+        .minor
+        .saturating_add(withdrawal.extra_fee.minor);
+    let fee = (fee_minor > 0).then(|| Money::from_minor(withdrawal.fee.asset, fee_minor));
     let receipt = ledger.settle_hold(&withdrawal.hold_reference, fee).await?;
 
     store
@@ -159,6 +167,7 @@ pub async fn settle_confirmed<W: WithdrawalStore, L: HoldLedger>(
         ledger = ledger_seq,
         principal = %withdrawal.amount,
         fee = %withdrawal.fee,
+        fee_bump_surcharge = %withdrawal.extra_fee,
         replayed = receipt.replayed,
         "withdrawal settled"
     );
@@ -361,6 +370,38 @@ mod tests {
         let after = store.snapshot(withdrawal.id);
         assert_eq!(after.status, Completed);
         assert_eq!(after.confirmed_ledger, Some(4_242));
+    }
+
+    #[tokio::test]
+    async fn the_fee_bump_surcharge_is_booked_on_settlement() {
+        let (withdrawal, store, ledger) = broadcast();
+        assert_eq!(ledger.balance(withdrawal.user, Asset::Usdc).held, 9_500_000);
+        // A fee bump paid 25_000 stroops on top of the quoted fee while the
+        // transaction was waiting for a ledger (#517).
+        store
+            .record_fee_bump(withdrawal.id, Money::from_minor(Asset::Usdc, 25_000))
+            .await
+            .unwrap();
+
+        let settlement = apply_finality(&store, &ledger, withdrawal.id, confirmed(77))
+            .await
+            .unwrap();
+        assert!(matches!(settlement, Settlement::Completed { .. }));
+
+        assert_eq!(
+            ledger.system(SystemAccount::Fees, Asset::Usdc),
+            525_000,
+            "quoted fee + surcharge, booked as revenue"
+        );
+        assert_eq!(
+            ledger.system(SystemAccount::ExternalOutflow, Asset::Usdc),
+            8_975_000,
+            "the hold minus the fees still balances exactly"
+        );
+        assert_eq!(ledger.balance(withdrawal.user, Asset::Usdc).held, 0);
+        let after = store.snapshot(withdrawal.id);
+        assert_eq!(after.status, Completed);
+        assert_eq!(after.extra_fee, Money::from_minor(Asset::Usdc, 25_000));
     }
 
     #[tokio::test]

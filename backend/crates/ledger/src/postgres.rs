@@ -172,7 +172,9 @@ impl PostgresLedgerStore {
             let Ok(asset) = symbol.parse::<Asset>() else {
                 continue; // Unknown asset symbol — skip rather than failing the whole check.
             };
-            let total = total_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            let total = total_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
             out.push((asset, total));
         }
         Ok(out)

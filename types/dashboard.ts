@@ -2,6 +2,9 @@ export interface Balance {
   symbol: string
   name: string
   balance: string
+  /** Funds locked in a ledger hold, as a decimal string. Absent when the
+   *  source of the balance does not report holds. */
+  held?: string
   value: string
   change: string
   icon: string
