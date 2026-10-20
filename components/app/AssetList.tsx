@@ -57,7 +57,7 @@ export function AssetList({ balances, isLoading }: AssetListProps) {
                 <span className="block font-medium tabular-nums">{asset.balance}</span>
                 {"held" in asset && asset.held && Number(asset.held) > 0 ? (
                   <span className="block text-[11px] text-muted-foreground">
-                    ({asset.held} held)
+                    ({String(asset.held)} held)
                   </span>
                 ) : null}
               </div>
