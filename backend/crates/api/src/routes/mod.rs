@@ -11,6 +11,7 @@ pub mod me;
 pub mod metrics;
 pub mod openapi;
 pub mod payment_requests;
+pub mod receipts;
 pub mod requests;
 pub mod transactions;
 pub mod transfers;
@@ -35,6 +36,7 @@ pub fn v1() -> Router<AppState> {
         .merge(transactions::routes())
         .merge(requests::routes())
         .merge(payment_requests::routes())
+        .merge(receipts::routes())
         .merge(transfers::routes())
         .merge(withdrawals::router())
 }

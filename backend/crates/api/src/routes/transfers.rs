@@ -12,6 +12,7 @@ use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 use crate::services::limits::check_velocity_limits;
+use crate::services::receipts::{Receipt, ReceiptKind, SignedReceipt};
 use crate::services::recipient::resolve_recipient;
 
 /// A validated request to transfer funds between two EngiPay users.
@@ -253,19 +254,52 @@ async fn create_transfer(
         .await
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
 
+    let created_at = now_iso8601();
+    let sender_tag = sender.as_uuid().to_string();
+
+    // Build a canonical, minimal receipt (only the two parties' tags, the
+    // amount, asset and timestamp) and sign it so it can be verified outside
+    // the app without exposing any other user's data.
+    let canonical = Receipt {
+        kind: ReceiptKind::Transfer,
+        transaction_id: receipt.transaction_id.to_string(),
+        amount: money.minor.to_string(),
+        asset: request.asset,
+        created_at: created_at.clone(),
+        key_id: state.receipt_signer.key_id().to_string(),
+        sender_tag: Some(sender_tag.clone()),
+        recipient_tag: Some(recipient_tag.clone()),
+    };
+    let signed: SignedReceipt = state
+        .receipt_signer
+        .sign(&canonical)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to sign receipt: {}", e)))?;
+
     Ok((
         StatusCode::CREATED,
-        Json(TransferReceipt {
-            transaction_id: receipt.transaction_id.to_string(),
-            reference: request.reference.trim().to_string(),
-            sender_tag: sender.as_uuid().to_string(),
-            recipient_tag,
-            asset: request.asset,
-            amount: money.minor.to_string(),
-            created_at: now_iso8601(),
-            status: TransferStatus::Completed,
+        Json(TransferResponse {
+            receipt: TransferReceipt {
+                transaction_id: receipt.transaction_id.to_string(),
+                reference: request.reference.trim().to_string(),
+                sender_tag,
+                recipient_tag,
+                asset: request.asset,
+                amount: money.minor.to_string(),
+                created_at,
+                status: TransferStatus::Completed,
+            },
+            signed_receipt: signed,
         }),
     ))
+}
+
+/// Response body for a successful transfer: the human-facing receipt plus the
+/// signed, verifiable receipt that can be shared and checked externally.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferResponse {
+    #[serde(flatten)]
+    pub receipt: TransferReceipt,
+    pub signed_receipt: SignedReceipt,
 }
 
 /// Current time as an ISO 8601 (UTC) timestamp.
@@ -481,6 +515,42 @@ mod tests {
         let json = serde_json::to_string(&receipt).expect("receipt serializes");
         let decoded: TransferReceipt = serde_json::from_str(&json).expect("receipt deserializes");
         assert_eq!(decoded, receipt);
+    }
+
+    #[test]
+    fn transfer_response_includes_signed_receipt() {
+        use crate::services::receipts::ReceiptSigner;
+
+        let req = request(ALICE, "100", "ref-1");
+        let signer = ReceiptSigner::from_seed("test-key", &[7u8; 32]).expect("signer");
+        let canonical = Receipt {
+            kind: ReceiptKind::Transfer,
+            transaction_id: "txn-123".to_string(),
+            amount: "1000000000".to_string(),
+            asset: Asset::Usdc,
+            created_at: "2024-01-02T03:04:05Z".to_string(),
+            key_id: signer.key_id().to_string(),
+            sender_tag: Some(BOB.to_string()),
+            recipient_tag: Some(ALICE.to_string()),
+        };
+        let signed = signer.sign(&canonical).expect("signs");
+
+        let response = TransferResponse {
+            receipt: TransferReceipt::completed(
+                "txn-123".to_string(),
+                BOB.to_string(),
+                &req,
+                1_000_000_000,
+                "2024-01-02T03:04:05Z".to_string(),
+            ),
+            signed_receipt: signed.clone(),
+        };
+
+        let json = serde_json::to_value(&response).expect("serializes");
+        assert_eq!(json["transaction_id"], "txn-123");
+        assert_eq!(json["signed_receipt"]["key_id"], "test-key");
+        assert!(json["signed_receipt"]["signature"].is_string());
+        assert!(signed.verify(&signer.public_key()).is_ok());
     }
 
     #[test]

@@ -28,6 +28,17 @@ pub struct Config {
     pub buy_kobo_per_usdc: Option<i128>,
     /// Fee on Naira buys in basis points (`BUY_FEE_BPS`). Unset means no quote.
     pub buy_fee_bps: Option<u32>,
+    /// Identifier of the current Ed25519 key used to sign transaction receipts
+    /// (`RECEIPT_SIGNING_KEY_ID`). Embedded in every receipt so verifiers can
+    /// pick the matching public key.
+    pub receipt_signing_key_id: String,
+    /// Current Ed25519 secret key used to sign receipts (`RECEIPT_SIGNING_KEY`),
+    /// encoded as base64 or hex. When unset, receipts cannot be issued.
+    pub receipt_signing_key: Option<String>,
+    /// Historical public keys `(key_id, public_key)` kept so receipts signed
+    /// before a key rotation remain verifiable (`RECEIPT_PUBLIC_KEYS`, formatted
+    /// as `keyid:base64pubkey,keyid2:base64pubkey2`).
+    pub receipt_historical_public_keys: Vec<(String, String)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -77,6 +88,44 @@ impl Config {
             _ => None,
         };
 
+        let receipt_signing_key_id = match env::var("RECEIPT_SIGNING_KEY_ID") {
+            Ok(value) if !value.trim().is_empty() => value.trim().to_owned(),
+            _ => "receipt-key-1".to_owned(),
+        };
+
+        let receipt_signing_key = env::var("RECEIPT_SIGNING_KEY")
+            .ok()
+            .filter(|key| !key.trim().is_empty())
+            .map(|key| key.trim().to_owned());
+
+        let receipt_historical_public_keys = match env::var("RECEIPT_PUBLIC_KEYS") {
+            Ok(value) if !value.trim().is_empty() => value
+                .split(',')
+                .map(|entry| entry.trim())
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| {
+                    let (key_id, public_key) = entry.split_once(':').ok_or_else(|| ConfigError {
+                        name: "RECEIPT_PUBLIC_KEYS",
+                        reason: format!(
+                            "expected `keyid:base64pubkey` entries, got {entry:?}"
+                        ),
+                    })?;
+                    let key_id = key_id.trim();
+                    let public_key = public_key.trim();
+                    if key_id.is_empty() || public_key.is_empty() {
+                        return Err(ConfigError {
+                            name: "RECEIPT_PUBLIC_KEYS",
+                            reason: format!(
+                                "expected non-empty `keyid:base64pubkey` entries, got {entry:?}"
+                            ),
+                        });
+                    }
+                    Ok((key_id.to_owned(), public_key.to_owned()))
+                })
+                .collect::<Result<Vec<_>, ConfigError>>()?,
+            _ => Vec::new(),
+        };
+
         Ok(Self {
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_owned()),
             database_url: env::var("DATABASE_URL")
@@ -108,6 +157,9 @@ impl Config {
             tier_0_daily_limit_minor,
             buy_kobo_per_usdc,
             buy_fee_bps,
+            receipt_signing_key_id,
+            receipt_signing_key,
+            receipt_historical_public_keys,
         })
     }
 
@@ -127,6 +179,16 @@ impl Config {
             tier_0_daily_limit_minor: 500 * 10_000_000,
             buy_kobo_per_usdc: None,
             buy_fee_bps: None,
+            receipt_signing_key_id: "test-receipt-key".to_owned(),
+            // Deterministic Ed25519 test keypair (seed of 32 zero bytes) so
+            // tests can both sign and verify receipts. Never use in production.
+            receipt_signing_key: Some(
+                "nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A=".to_owned(),
+            ),
+            receipt_historical_public_keys: vec![(
+                "test-receipt-key".to_owned(),
+                "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=".to_owned(),
+            )],
         }
     }
 }
