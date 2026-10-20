@@ -789,7 +789,11 @@ mod tests {
             .run_once(|_e| {
                 let c = count_clone.clone();
                 async move {
-                    *c.lock().unwrap() = c.lock().unwrap().saturating_add(1);
+                    // One guard only: locking twice in a single expression
+                    // (as `*c.lock() = c.lock()...` did) self-deadlocks on a
+                    // non-reentrant std::sync::Mutex and hangs the suite.
+                    let mut guard = c.lock().unwrap();
+                    *guard = guard.saturating_add(1);
                     Ok(())
                 }
             })
