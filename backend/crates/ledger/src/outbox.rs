@@ -367,9 +367,7 @@ pub mod pg {
                     .await
                     .map_err(db_err)?;
 
-            Ok(row
-                .map(|r| r.get::<Option<i64>, _>("last_sequence"))
-                .flatten())
+            Ok(row.and_then(|r| r.get::<Option<i64>, _>("last_sequence")))
         }
 
         async fn save_cursor(
