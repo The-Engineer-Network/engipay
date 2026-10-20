@@ -11,6 +11,8 @@ import {
   ChevronRight,
   ShieldCheck,
   Wallet,
+  Store,
+  ArrowRight,
 } from "lucide-react"
 import { BalanceHero } from "@/components/app/BalanceHero"
 import { AssetList } from "@/components/app/AssetList"
@@ -154,6 +156,34 @@ export default function HomePage() {
                 </span>
               </Link>
             ))}
+          </div>
+
+          <div className="mt-3">
+            <Link
+              href="/pos"
+              className="lift-card shine glass-panel group flex items-center justify-between gap-4 p-4 border border-primary/25 bg-primary/5 hover:border-primary/50 transition-all"
+            >
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow">
+                  <Store className="h-5 w-5" />
+                </span>
+                <div>
+                  <span className="flex items-center gap-2 text-sm font-bold text-foreground">
+                    Shop POS Counter
+                    <span className="rounded-full bg-primary/20 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                      NEW
+                    </span>
+                  </span>
+                  <span className="block text-xs text-muted-foreground">
+                    Real-time QR checkout with instant testnet settlement
+                  </span>
+                </div>
+              </div>
+              <span className="flex items-center gap-1 text-xs font-semibold text-primary group-hover:translate-x-0.5 transition-transform">
+                Launch Terminal
+                <ArrowRight className="h-4 w-4" />
+              </span>
+            </Link>
           </div>
         </section>
       </Reveal>

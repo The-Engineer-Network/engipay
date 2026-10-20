@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { useAccount, useBalance, useEstimateGas, useEstimateFeesPerGas, useSendTransaction, useWriteContract, useWaitForTransactionReceipt } from "wagmi"
 import { encodeFunctionData, formatEther, isAddress, type Address } from "viem"
@@ -15,6 +15,7 @@ import { activeChain } from "@/lib/wagmi"
 import { useWallet } from "@/contexts/WalletContext"
 import { cn } from "@/lib/utils"
 import { validateSendAmount } from "@/lib/amountValidation"
+import { broadcastPosPayment } from "@/lib/pos"
 import {
   FALLBACK_NATIVE_GAS,
   FALLBACK_TOKEN_GAS,
@@ -68,6 +69,19 @@ export function SendPayment({
     asset === NATIVE
       ? activeChain.nativeCurrency.symbol
       : TRACKED_TOKENS.find((token) => token.address === asset)?.symbol ?? ""
+
+  useEffect(() => {
+    if (isConfirmed && txHash && recipient) {
+      broadcastPosPayment({
+        type: "payment_received",
+        recipient,
+        amount,
+        asset: selectedSymbol,
+        txHash,
+        chain: "base",
+      })
+    }
+  }, [isConfirmed, txHash, recipient, amount, selectedSymbol])
 
   // Exact balance in base units, so the check never goes through floating point.
   const selectedDecimals =
