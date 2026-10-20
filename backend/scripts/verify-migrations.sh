@@ -62,6 +62,62 @@ verify_tables() {
   fi
 }
 
+# Verify that named table constraints exist.  Exits non-zero when any are
+# missing so a migration that accidentally drops a constraint does not go
+# unnoticed.
+verify_constraints() {
+  local target_db="$1"
+  # Each entry is "table_name:constraint_name".
+  local constraints=(
+    "ledger_postings:ledger_postings_pkey"
+    "ledger_transactions:ledger_transactions_reference_key"
+  )
+  for entry in "${constraints[@]}"; do
+    local table="${entry%%:*}"
+    local constraint="${entry##*:}"
+    if psql_cmd -d "$target_db" -tAc \
+        "SELECT 1 FROM information_schema.table_constraints
+         WHERE table_schema='public'
+           AND table_name='$table'
+           AND constraint_name='$constraint'" \
+        | grep -q 1; then
+      echo "  ✓ constraint $constraint on $table"
+    else
+      echo "  ✗ constraint $constraint on $table NOT FOUND" >&2
+      exit 1
+    fi
+  done
+}
+
+# Verify that named triggers exist.  Uses information_schema.triggers (not the
+# constraint view) so both regular and constraint triggers are found.  Exits
+# non-zero when any are missing.
+verify_triggers() {
+  local target_db="$1"
+  # Each entry is "table_name:trigger_name".
+  local triggers=(
+    "ledger_transactions:ledger_transactions_append_only"
+    "ledger_postings:ledger_postings_append_only"
+    "ledger_holds:ledger_holds_transition"
+    "ledger_postings:ledger_postings_balanced"
+  )
+  for entry in "${triggers[@]}"; do
+    local table="${entry%%:*}"
+    local trigger="${entry##*:}"
+    if psql_cmd -d "$target_db" -tAc \
+        "SELECT 1 FROM information_schema.triggers
+         WHERE trigger_schema='public'
+           AND event_object_table='$table'
+           AND trigger_name='$trigger'" \
+        | grep -q 1; then
+      echo "  ✓ trigger $trigger on $table"
+    else
+      echo "  ✗ trigger $trigger on $table NOT FOUND" >&2
+      exit 1
+    fi
+  done
+}
+
 # ── Pass 1 ─────────────────────────────────────────────────────────────────────
 echo "Pass 1: applying migrations to a fresh database..."
 psql_cmd -d postgres -c "CREATE DATABASE \"$db\";" >/dev/null
@@ -72,6 +128,8 @@ done
 
 echo "Verifying schema (pass 1)..."
 verify_tables "$db"
+verify_constraints "$db"
+verify_triggers "$db"
 schema_pass1=$(capture_schema "$db")
 
 # ── Pass 2 (re-apply to a new database to confirm idempotency) ─────────────────
@@ -85,6 +143,8 @@ done
 
 echo "Verifying schema (pass 2)..."
 verify_tables "$db"
+verify_constraints "$db"
+verify_triggers "$db"
 schema_pass2=$(capture_schema "$db")
 
 # ── Compare ────────────────────────────────────────────────────────────────────

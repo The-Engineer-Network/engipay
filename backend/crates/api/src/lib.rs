@@ -24,6 +24,7 @@ use crate::middleware::logging::log_requests;
 use crate::middleware::recovery::CatchPanicLayer;
 use crate::middleware::rate_limit::RateLimiter;
 use crate::services::bank_name_check::{BankNameCheck, FakeBankNameCheck};
+use crate::services::destination_screen::{DestinationScreen, StaticBlockList};
 use crate::services::kyc_provider::{FakeKycProvider, KycProvider};
 use crate::services::price_source::{FakePriceSource, PriceSource};
 
@@ -40,6 +41,9 @@ pub struct AppState {
     pub kyc_provider: Arc<dyn KycProvider>,
     /// Bank account name check (fake in dev/test, real partner in production).
     pub bank_name_check: Arc<dyn BankNameCheck>,
+    /// Withdrawal destination screener (static list now; swap for a real AML
+    /// API in production without touching the withdrawal handler).
+    pub destination_screen: Arc<dyn DestinationScreen>,
 }
 
 impl AppState {
@@ -53,6 +57,7 @@ impl AppState {
             price_source: Arc::new(FakePriceSource),
             kyc_provider: Arc::new(FakeKycProvider),
             bank_name_check: Arc::new(FakeBankNameCheck),
+            destination_screen: Arc::new(StaticBlockList::empty()),
         }
     }
 }
