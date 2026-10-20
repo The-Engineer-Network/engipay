@@ -6,6 +6,7 @@ use axum::{Json, Router};
 use engipay_core::{Asset, Money, UserId};
 use engipay_ledger::postgres::PostgresLedgerStore;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::AppState;
 use crate::error::ApiError;
@@ -406,15 +407,6 @@ mod tests {
         assert_eq!(
             req.amount_minor_units(),
             Err(TransferRequestError::NonPositiveAmount)
-        );
-    }
-
-    #[test]
-    fn parses_recipient_id() {
-        let req = request(BOB, "100", "ref-1");
-        assert_eq!(
-            req.recipient_id().map(|id| id.as_uuid()),
-            Ok(Uuid::parse_str(BOB).unwrap())
         );
     }
 

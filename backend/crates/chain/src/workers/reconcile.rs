@@ -79,7 +79,7 @@ impl ReconcileWorker {
         let surplus_tolerance = std::env::var("RECONCILE_SURPLUS_TOLERANCE")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0_i128);
+            .unwrap_or(DEFAULT_SURPLUS_TOLERANCE);
         Self {
             store: PostgresLedgerStore::new(pool),
             stellar,

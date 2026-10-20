@@ -325,7 +325,8 @@ pub fn build_payment(
 }
 
 /// Parses the destination address into an AccountId for claimable balances.
-/// This is separate from muxed_account because claimable balances use AccountId.
+/// A claimable balance names the account that may claim it, so it uses
+/// AccountId rather than the muxed account a payment operation uses.
 fn parse_destination(address: &str) -> Result<AccountId, PaymentError> {
     let parsed = parse_address(address)?;
     let account = match parsed {
@@ -483,16 +484,6 @@ pub fn envelope_base64(envelope: &TransactionEnvelope) -> Result<String, Payment
     envelope
         .to_xdr_base64(Limits::none())
         .map_err(|error| PaymentError::Encoding(error.to_string()))
-}
-
-fn muxed_account(address: &str) -> Result<MuxedAccount, PaymentError> {
-    Ok(match parse_address(address)? {
-        StellarAddress::Account(account) => MuxedAccount::Ed25519(Uint256(raw_key(&account)?)),
-        StellarAddress::Muxed { base, id } => MuxedAccount::MuxedEd25519(MuxedAccountMed25519 {
-            id,
-            ed25519: Uint256(raw_key(&base)?),
-        }),
-    })
 }
 
 fn raw_key(account: &str) -> Result<[u8; 32], PaymentError> {

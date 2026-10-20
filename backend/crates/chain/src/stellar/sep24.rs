@@ -187,6 +187,7 @@ pub async fn get_transaction(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
