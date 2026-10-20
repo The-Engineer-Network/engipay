@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::error::ApiError;
+use crate::receipts::ReceiptSig;
 use crate::routes::auth::AuthUser;
 use crate::services::limits::check_velocity_limits;
 use crate::services::recipient::resolve_recipient;
@@ -55,6 +56,7 @@ impl TransferRequest {
     }
 
     /// The recipient's user id, parsed.
+    #[allow(dead_code)]
     pub fn recipient_id(&self) -> Result<UserId, TransferRequestError> {
         let raw = Uuid::parse_str(self.recipient.trim())
             .map_err(|_| TransferRequestError::InvalidRecipient)?;
@@ -139,6 +141,10 @@ pub struct TransferReceipt {
     pub amount: String,
     pub created_at: String,
     pub status: TransferStatus,
+    /// Ed25519 signature over the canonical JSON of this receipt (without this
+    /// field). `None` when no signing key is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_sig: Option<ReceiptSig>,
 }
 
 /// Terminal status of a successfully executed transfer.
@@ -150,6 +156,7 @@ pub enum TransferStatus {
 
 impl TransferReceipt {
     /// Build a completed receipt from a validated request and its ledger result.
+    #[allow(dead_code)]
     pub fn completed(
         transaction_id: String,
         sender_tag: String,
@@ -166,6 +173,7 @@ impl TransferReceipt {
             amount: amount_minor_units.to_string(),
             created_at,
             status: TransferStatus::Completed,
+            receipt_sig: None,
         }
     }
 }
@@ -253,19 +261,36 @@ async fn create_transfer(
         .await
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(TransferReceipt {
-            transaction_id: receipt.transaction_id.to_string(),
-            reference: request.reference.trim().to_string(),
-            sender_tag: sender.as_uuid().to_string(),
-            recipient_tag,
-            asset: request.asset,
-            amount: money.minor.to_string(),
-            created_at: now_iso8601(),
-            status: TransferStatus::Completed,
-        }),
-    ))
+    let mut transfer_receipt = TransferReceipt {
+        transaction_id: receipt.transaction_id.to_string(),
+        reference: request.reference.trim().to_string(),
+        sender_tag: sender.as_uuid().to_string(),
+        recipient_tag,
+        asset: request.asset,
+        amount: money.minor.to_string(),
+        created_at: now_iso8601(),
+        status: TransferStatus::Completed,
+        receipt_sig: None,
+    };
+
+    // Sign the receipt if a signing key is configured. The signature covers the
+    // canonical JSON of the receipt body without the `receipt_sig` field (which
+    // is None at signing time), so verification strips that field before checking.
+    if let Some(signer) = &state.receipt_signer {
+        match signer.sign(&transfer_receipt) {
+            Ok(signature) => {
+                transfer_receipt.receipt_sig = Some(ReceiptSig {
+                    kid: signer.kid().to_owned(),
+                    signature,
+                });
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to sign transfer receipt; returning unsigned");
+            }
+        }
+    }
+
+    Ok((StatusCode::CREATED, Json(transfer_receipt)))
 }
 
 /// Current time as an ISO 8601 (UTC) timestamp.

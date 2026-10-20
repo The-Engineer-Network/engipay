@@ -28,6 +28,16 @@ pub struct Config {
     pub buy_kobo_per_usdc: Option<i128>,
     /// Fee on Naira buys in basis points (`BUY_FEE_BPS`). Unset means no quote.
     pub buy_fee_bps: Option<u32>,
+    /// Ed25519 receipt signing key as a 64-character hex string, optionally
+    /// prefixed with a key-id (`"v1:aabbcc…"`). When unset receipts are
+    /// returned without a signature.
+    pub receipt_signing_key: Option<String>,
+    /// Comma-separated list of retired Ed25519 public keys for verifying
+    /// receipts signed before the last key rotation. Each entry is
+    /// `kid:hex_public_key` (e.g. `"v1:aabb…,v0:ccdd…"`). Private keys are
+    /// never needed here — only public keys are required so old receipts can
+    /// still be verified. When empty, only the current key is published.
+    pub receipt_retired_keys: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +118,18 @@ impl Config {
             tier_0_daily_limit_minor,
             buy_kobo_per_usdc,
             buy_fee_bps,
+            receipt_signing_key: env::var("RECEIPT_SIGNING_KEY")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
+            receipt_retired_keys: env::var("RECEIPT_RETIRED_KEYS")
+                .ok()
+                .map(|s| {
+                    s.split(',')
+                        .map(|e| e.trim().to_owned())
+                        .filter(|e| !e.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 
@@ -127,6 +149,8 @@ impl Config {
             tier_0_daily_limit_minor: 500 * 10_000_000,
             buy_kobo_per_usdc: None,
             buy_fee_bps: None,
+            receipt_signing_key: None,
+            receipt_retired_keys: vec![],
         }
     }
 }

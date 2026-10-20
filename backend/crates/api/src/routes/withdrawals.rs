@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::{ApiError, LedgerError},
+    receipts::ReceiptSig,
     services::cooling_off,
     services::withdrawal_review,
 };
@@ -36,6 +37,10 @@ pub struct WithdrawalResponse {
     pub amount: i64,
     pub estimated_network_fee: i64,
     pub status: String,
+    /// Ed25519 signature over the canonical JSON of this response (without
+    /// this field). `None` when no signing key is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_sig: Option<ReceiptSig>,
 }
 
 /// Builds the unique ledger reference used to lock withdrawal funds in the
@@ -144,16 +149,31 @@ pub async fn create_withdrawal(
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to create withdrawal: {}", e)))?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(WithdrawalResponse {
-            id: withdrawal_id,
-            user_id: payload.user_id,
-            amount: payload.amount,
-            estimated_network_fee: payload.estimated_network_fee,
-            status,
-        }),
-    ))
+    let mut response = WithdrawalResponse {
+        id: withdrawal_id,
+        user_id: payload.user_id,
+        amount: payload.amount,
+        estimated_network_fee: payload.estimated_network_fee,
+        status,
+        receipt_sig: None,
+    };
+
+    // Sign the receipt if a signing key is configured.
+    if let Some(signer) = &state.receipt_signer {
+        match signer.sign(&response) {
+            Ok(signature) => {
+                response.receipt_sig = Some(ReceiptSig {
+                    kid: signer.kid().to_owned(),
+                    signature,
+                });
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to sign withdrawal receipt; returning unsigned");
+            }
+        }
+    }
+
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 pub async fn get_withdrawal(

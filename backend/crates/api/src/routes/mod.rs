@@ -11,9 +11,11 @@ pub mod me;
 pub mod metrics;
 pub mod openapi;
 pub mod payment_requests;
+pub mod receipts_verify;
 pub mod requests;
 pub mod transactions;
 pub mod transfers;
+pub mod well_known;
 pub mod withdrawals;
 
 use axum::Router;
@@ -35,6 +37,8 @@ pub fn v1() -> Router<AppState> {
         .merge(transactions::routes())
         .merge(requests::routes())
         .merge(payment_requests::routes())
+        .merge(receipts_verify::routes())
         .merge(transfers::routes())
+        .merge(well_known::routes())
         .merge(withdrawals::router())
 }
