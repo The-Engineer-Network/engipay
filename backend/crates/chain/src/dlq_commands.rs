@@ -8,8 +8,8 @@ use engipay_core::{Asset, Money};
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use crate::deposit_creditor::{DepositCreditor, CreditOutcome};
 use crate::ObservedDeposit;
+use crate::deposit_creditor::{CreditOutcome, DepositCreditor};
 
 /// Row from `uncredited_deposits`.
 #[derive(Debug, Clone)]
