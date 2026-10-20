@@ -79,7 +79,7 @@ pub struct PaymentEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     /// Optional opaque reference for reconciliation.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
     pub ref_: Option<String>,
     /// Fallback standard URI for clients that do not understand the envelope.
     pub uri: String,

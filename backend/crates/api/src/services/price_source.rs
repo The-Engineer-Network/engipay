@@ -83,7 +83,7 @@ impl FakePriceSource {
     fn rate(from: Asset, to: Asset) -> Option<(i128, i128)> {
         // Whole-unit rates expressed as (to_units_per_from_unit_numerator, denominator).
         // We then scale by decimal differences.
-        let (whole_num, whole_den) = match (from, to) {
+        let (whole_num, whole_den): (i128, i128) = match (from, to) {
             (Asset::Usdc, Asset::Xlm) => (10, 1),
             (Asset::Xlm, Asset::Usdc) => (1, 10),
             (Asset::Usdc, Asset::Eth) => (1, 3500),
