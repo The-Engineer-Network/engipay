@@ -32,6 +32,50 @@ use crate::LedgerError;
 
 // ── Domain events ──────────────────────────────────────────────────────
 
+/// Serde helpers for the `i128` money fields on [`DomainEvent`].
+///
+/// Internally tagged enums (`#[serde(tag = ...)]`) round-trip through serde's
+/// private buffered `Content` type, which cannot represent `i128` — the
+/// default `deserialize_i128` fails with "i128 is not supported". Routing the
+/// fields through `deserialize_any` (supported by every self-describing
+/// format, JSON included) restores the round-trip without changing the wire
+/// format: the amount stays an unquoted JSON integer.
+mod i128_money {
+    use std::fmt;
+
+    use serde::de::{Deserializer, Error, Visitor};
+
+    /// Deserializes an `i128` amount from a self-describing format.
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<i128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct AmountVisitor;
+
+        impl<'de> Visitor<'de> for AmountVisitor {
+            type Value = i128;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("an integer amount in the asset's smallest unit")
+            }
+
+            fn visit_i64<E: Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(i128::from(value))
+            }
+
+            fn visit_u64<E: Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(i128::from(value))
+            }
+
+            fn visit_i128<E: Error>(self, value: i128) -> Result<Self::Value, E> {
+                Ok(value)
+            }
+        }
+
+        deserializer.deserialize_any(AmountVisitor)
+    }
+}
+
 /// Every money-movement that the ledger can generate.
 ///
 /// Each variant carries enough information for a downstream consumer to act
@@ -44,6 +88,7 @@ pub enum DomainEvent {
     FundsDeposited {
         user_id: UserId,
         asset: Asset,
+        #[serde(deserialize_with = "i128_money::deserialize")]
         amount: i128,
         /// Caller's idempotency reference, e.g. `base:<tx>:<log>`.
         reference: String,
@@ -53,6 +98,7 @@ pub enum DomainEvent {
         from_user_id: UserId,
         to_user_id: UserId,
         asset: Asset,
+        #[serde(deserialize_with = "i128_money::deserialize")]
         amount: i128,
         reference: String,
     },
@@ -60,6 +106,7 @@ pub enum DomainEvent {
     HoldCreated {
         user_id: UserId,
         asset: Asset,
+        #[serde(deserialize_with = "i128_money::deserialize")]
         amount: i128,
         reference: String,
     },
@@ -67,6 +114,7 @@ pub enum DomainEvent {
     HoldReleased {
         user_id: UserId,
         asset: Asset,
+        #[serde(deserialize_with = "i128_money::deserialize")]
         amount: i128,
         reference: String,
     },
@@ -75,8 +123,10 @@ pub enum DomainEvent {
         user_id: UserId,
         asset: Asset,
         /// Amount that left EngiPay (held amount minus fee).
+        #[serde(deserialize_with = "i128_money::deserialize")]
         principal: i128,
         /// Platform fee, zero if none.
+        #[serde(deserialize_with = "i128_money::deserialize")]
         fee: i128,
         reference: String,
     },
