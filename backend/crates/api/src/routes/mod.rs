@@ -1,5 +1,7 @@
 pub mod assets;
 pub mod health;
+pub mod quotes;
+pub mod settles;
 
 use axum::Router;
 
@@ -7,5 +9,8 @@ use crate::AppState;
 
 /// Versioned routes. A breaking change becomes /v2 instead of surprising the app.
 pub fn v1() -> Router<AppState> {
-    Router::new().merge(assets::routes())
+    Router::new()
+        .merge(assets::routes())
+        .merge(quotes::routes())
+        .merge(settles::routes())
 }
