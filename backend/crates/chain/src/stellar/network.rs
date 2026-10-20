@@ -26,7 +26,7 @@ impl StellarNetwork {
 
     /// The passphrase every transaction signature commits to. A transaction
     /// signed for one network is invalid on the other.
-    pub const fn passphrase(self) -> &'static str {
+    pub const fn network_passphrase(self) -> &'static str {
         match self {
             Self::Testnet => "Test SDF Network ; September 2015",
             Self::Mainnet => "Public Global Stellar Network ; September 2015",
@@ -35,7 +35,7 @@ impl StellarNetwork {
 
     /// SHA-256 of the passphrase, as used in transaction hashes.
     pub fn network_id(self) -> [u8; 32] {
-        Sha256::digest(self.passphrase().as_bytes()).into()
+        Sha256::digest(self.network_passphrase().as_bytes()).into()
     }
 
     /// The SDF's public Horizon instance. Production should run its own or use

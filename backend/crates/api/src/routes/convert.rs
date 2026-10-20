@@ -442,7 +442,7 @@ mod tests {
         let src = FakePriceSource;
         // 50 bps on 1 = 0.005 → ceil = 1
         let price = src.quote(Asset::Usdc, Asset::Xlm).unwrap();
-        let (_out, fee) = apply_price(1, &price).unwrap_or((0, 0));
+        let (_out, _fee) = apply_price(1, &price).unwrap_or((0, 0));
         // With fee=1 from 1 input, net = 0 → None. That's correct (too small).
         // Try a slightly larger amount.
         let (_out2, fee2) = apply_price(201, &price).unwrap();

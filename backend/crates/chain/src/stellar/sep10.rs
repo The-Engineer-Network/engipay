@@ -7,7 +7,7 @@
 
 use super::network::StellarNetwork;
 use super::payment::StellarSigner;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use stellar_xdr::{Limits, ReadXdr, TransactionEnvelope, WriteXdr};
@@ -170,13 +170,13 @@ mod tests {
 
     #[test]
     fn network_mismatch_is_rejected() {
-        let challenge = ChallengeResponse {
+        let _challenge = ChallengeResponse {
             transaction: "AAAA...".to_owned(),
             network_passphrase: "Public Global Stellar Network ; September 2015".to_owned(),
         };
 
         let secret = stellar_strkey::ed25519::PrivateKey([7; 32]);
-        let signer = LocalTestnetSigner::from_secret(
+        let _signer = LocalTestnetSigner::from_secret(
             secret.as_unredacted().to_string().as_str(),
             StellarNetwork::Testnet,
         )
