@@ -163,10 +163,7 @@ fn internal(state: ChainHttpState) -> Router {
     Router::new()
         .route("/internal/estimate-fee", post(estimate_fee::estimate_fee))
         .merge(create_wallet::routes())
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            auth,
-        ))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
         .layer(axum::middleware::from_fn(track_request_metrics))
         .with_state(state)
 }
@@ -256,8 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_endpoint_requires_no_credential_even_when_auth_is_on() {
-        let state = ChainHttpState::new(Arc::new(FakeStellarOracle))
-            .with_token("secret");
+        let state = ChainHttpState::new(Arc::new(FakeStellarOracle)).with_token("secret");
         let app = router_with_state(state);
         let (status, _) = get_metrics(app).await;
         assert_eq!(status, StatusCode::OK);
@@ -272,8 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_without_token_is_rejected_when_token_configured() {
-        let state = ChainHttpState::new(Arc::new(FakeStellarOracle))
-            .with_token("secret");
+        let state = ChainHttpState::new(Arc::new(FakeStellarOracle)).with_token("secret");
         let app = router_with_state(state);
         let status = post_estimate_fee(app, None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -281,8 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_with_wrong_token_is_rejected() {
-        let state = ChainHttpState::new(Arc::new(FakeStellarOracle))
-            .with_token("secret");
+        let state = ChainHttpState::new(Arc::new(FakeStellarOracle)).with_token("secret");
         let app = router_with_state(state);
         let status = post_estimate_fee(app, Some("wrong")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -290,8 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_with_correct_token_is_accepted() {
-        let state = ChainHttpState::new(Arc::new(FakeStellarOracle))
-            .with_token("correct-secret");
+        let state = ChainHttpState::new(Arc::new(FakeStellarOracle)).with_token("correct-secret");
         let app = router_with_state(state);
         let status = post_estimate_fee(app, Some("correct-secret")).await;
         assert_eq!(status, StatusCode::OK);
