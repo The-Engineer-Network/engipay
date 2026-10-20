@@ -63,6 +63,24 @@ for file in $STAGED; do
       done
       ;;
   esac
+
+  # ----------------------------------------------------------------
+  # 3. Source files saved as UTF-16
+  # ----------------------------------------------------------------
+  # Cargo, rustc and Postgres all require UTF-8. A file saved as UTF-16
+  # by an editor breaks the build in ways that are easy to miss.
+  case "$file" in
+    *.rs|*.toml|*.sql|*.ts|*.tsx|*.js|*.mjs|*.cjs|*.json|*.md|*.sh|*.yml|*.yaml)
+      bom=$(git show ":$file" 2>/dev/null | head -c 2 | od -An -tx1 | tr -d ' \n')
+      case "$bom" in
+        fffe|feff)
+          printf "${RED}BLOCKED${NC}: $file is UTF-16 encoded.\n" >&2
+          printf "         Cargo, rustc and Postgres all need UTF-8. Save it as UTF-8.\n" >&2
+          FAILED=1
+          ;;
+      esac
+      ;;
+  esac
 done
 
 if [ "$FAILED" -ne 0 ]; then

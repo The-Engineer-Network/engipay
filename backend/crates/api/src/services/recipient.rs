@@ -44,12 +44,10 @@ pub async fn resolve_recipient(pool: &PgPool, input: &str) -> Result<UserId, Rec
         if tag.is_empty() {
             return Err(RecipientError::EmptyInput);
         }
-        sqlx::query_scalar::<_, UserId>(
-            "SELECT user_id FROM user_profiles WHERE tag = $1 LIMIT 1",
-        )
-        .bind(tag)
-        .fetch_optional(pool)
-        .await
+        sqlx::query_scalar::<_, UserId>("SELECT user_id FROM user_profiles WHERE tag = $1 LIMIT 1")
+            .bind(tag)
+            .fetch_optional(pool)
+            .await
     } else if input.contains('@') {
         sqlx::query_scalar::<_, UserId>(
             "SELECT user_id FROM user_profiles WHERE email = $1 LIMIT 1",
@@ -58,12 +56,10 @@ pub async fn resolve_recipient(pool: &PgPool, input: &str) -> Result<UserId, Rec
         .fetch_optional(pool)
         .await
     } else {
-        sqlx::query_scalar::<_, UserId>(
-            "SELECT id FROM users WHERE wallet_address = $1 LIMIT 1",
-        )
-        .bind(input)
-        .fetch_optional(pool)
-        .await
+        sqlx::query_scalar::<_, UserId>("SELECT id FROM users WHERE wallet_address = $1 LIMIT 1")
+            .bind(input)
+            .fetch_optional(pool)
+            .await
     };
 
     match result {
@@ -140,7 +136,10 @@ mod tests {
 
     #[test]
     fn error_messages_are_stable() {
-        assert_eq!(RecipientError::EmptyInput.to_string(), "recipient identifier is empty");
+        assert_eq!(
+            RecipientError::EmptyInput.to_string(),
+            "recipient identifier is empty"
+        );
         assert_eq!(RecipientError::NotFound.to_string(), "recipient not found");
     }
 }

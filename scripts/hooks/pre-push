@@ -67,6 +67,20 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
         done
         ;;
     esac
+
+    # Source files saved as UTF-16
+    case "$file" in
+      *.rs|*.toml|*.sql|*.ts|*.tsx|*.js|*.mjs|*.cjs|*.json|*.md|*.sh|*.yml|*.yaml)
+        bom=$(git show "$local_sha:$file" 2>/dev/null | head -c 2 | od -An -tx1 | tr -d ' \n')
+        case "$bom" in
+          fffe|feff)
+            printf "${RED}BLOCKED${NC}: $file is UTF-16 encoded in a pushed commit.\n" >&2
+            printf "         Cargo, rustc and Postgres all need UTF-8. Save it as UTF-8.\n" >&2
+            FAILED=1
+            ;;
+        esac
+        ;;
+    esac
   done
 done
 

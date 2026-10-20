@@ -29,9 +29,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::deposit_creditor::DepositCreditor;
-use crate::stellar::cursor::{cursor_to_ledger, CursorError, CursorStore};
+use crate::stellar::cursor::{CursorError, CursorStore, cursor_to_ledger};
 use crate::stellar::horizon::cursor_for_ledger;
-use crate::{is_creditable, ChainClient};
+use crate::{ChainClient, is_creditable};
 
 /// References remembered per loop to drop deposits seen by two overlapping polls.
 const SEEN_CAPACITY: usize = 10_000;

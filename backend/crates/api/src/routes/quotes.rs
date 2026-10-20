@@ -78,9 +78,8 @@ async fn create_quote(
         .compute_fee(i128::from(req.gross_minor))
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let fee_minor = i64::try_from(fee_result.fee_minor).map_err(|_| {
-        ApiError::BadRequest("fee amount overflows i64".to_owned())
-    })?;
+    let fee_minor = i64::try_from(fee_result.fee_minor)
+        .map_err(|_| ApiError::BadRequest("fee amount overflows i64".to_owned()))?;
 
     let now = Utc::now();
     let expires_at = now
@@ -170,12 +169,10 @@ async fn fetch_active_schedule(
         id: row.id,
         product,
         asset,
-        fixed_minor: parse_minor(&row.fixed_minor)
-            .map_err(ApiError::Internal)?,
+        fixed_minor: parse_minor(&row.fixed_minor).map_err(ApiError::Internal)?,
         bps: u32::try_from(row.bps)
             .map_err(|_| ApiError::Internal(anyhow::anyhow!("bps overflows u32")))?,
-        min_fee_minor: parse_minor(&row.min_fee_minor)
-            .map_err(ApiError::Internal)?,
+        min_fee_minor: parse_minor(&row.min_fee_minor).map_err(ApiError::Internal)?,
         max_fee_minor: row
             .max_fee_minor
             .as_deref()
@@ -210,5 +207,3 @@ pub fn fallback_schedule(product: Product, asset: Asset) -> Option<FeeSchedule> 
         max_fee_minor: max,
     })
 }
-
-

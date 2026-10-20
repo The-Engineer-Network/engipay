@@ -275,12 +275,11 @@ async fn execute_fails_on_insufficient_balance() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
     // The conversion row should be 'failed'.
-    let conv_status: String =
-        sqlx::query_scalar("SELECT status FROM conversions WHERE id = $1")
-            .bind(uuid::Uuid::parse_str(quote_id).unwrap())
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let conv_status: String = sqlx::query_scalar("SELECT status FROM conversions WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(quote_id).unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(conv_status, "failed");
 
     // Ledger still balances: user has 0 USDC (no hold was left open).

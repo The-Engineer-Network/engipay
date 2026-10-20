@@ -149,7 +149,11 @@ fn fallback_uri(chain: &str, to: &str, asset: &str, amount: &str) -> String {
 }
 
 fn validate_chain(chain: &str) -> Result<(), EnvelopeError> {
-    if chain.is_empty() || !chain.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if chain.is_empty()
+        || !chain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return Err(EnvelopeError::InvalidChain(chain.to_string()));
     }
     Ok(())
@@ -170,10 +174,7 @@ fn validate_recipient(to: &str) -> Result<(), EnvelopeError> {
 }
 
 fn validate_asset(asset: &str) -> Result<(), EnvelopeError> {
-    if asset.is_empty()
-        || asset.len() > 16
-        || !asset.chars().all(|c| c.is_ascii_alphanumeric())
-    {
+    if asset.is_empty() || asset.len() > 16 || !asset.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err(EnvelopeError::InvalidAsset(asset.to_string()));
     }
     Ok(())
@@ -207,8 +208,8 @@ fn validate_amount(amount: &str) -> Result<(), EnvelopeError> {
     }
 
     // Reject zero / all-zero amounts.
-    let all_zero = int_part.chars().all(|c| c == '0')
-        && frac_part.map_or(true, |f| f.chars().all(|c| c == '0'));
+    let all_zero =
+        int_part.chars().all(|c| c == '0') && frac_part.is_none_or(|f| f.chars().all(|c| c == '0'));
     if all_zero {
         return Err(invalid());
     }
@@ -232,8 +233,14 @@ mod tests {
 
     #[test]
     fn generates_schema_compliant_envelope() {
-        let env = PaymentEnvelope::new(TO, "USDC", "25.00", Some("@user".into()), Some("ref-1".into()))
-            .expect("valid envelope");
+        let env = PaymentEnvelope::new(
+            TO,
+            "USDC",
+            "25.00",
+            Some("@user".into()),
+            Some("ref-1".into()),
+        )
+        .expect("valid envelope");
 
         let json: Value = serde_json::from_str(&env.to_json()).expect("valid json");
 
@@ -258,7 +265,10 @@ mod tests {
     #[test]
     fn includes_fallback_standard_uri() {
         let env = PaymentEnvelope::new(TO, "USDC", "25.00", None, None).unwrap();
-        assert_eq!(env.uri, format!("ethereum:{TO}@base?value=25.00&asset=USDC"));
+        assert_eq!(
+            env.uri,
+            format!("ethereum:{TO}@base?value=25.00&asset=USDC")
+        );
         assert!(env.uri.starts_with("ethereum:"));
     }
 
