@@ -125,6 +125,7 @@ pub async fn watch_chain<C>(
     cfg: ChainWatch,
     cursor_store: Option<CursorStore>,
     creditor: Option<Arc<DepositCreditor>>,
+    leader_lock: Option<crate::leader::LeaderLock>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()>
 where
@@ -166,6 +167,9 @@ where
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
+                if let Some(lock) = leader_lock {
+                    lock.unlock().await;
+                }
                 return Ok(());
             }
             _ = ticker.tick() => {}

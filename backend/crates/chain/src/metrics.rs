@@ -26,6 +26,11 @@ pub static DEPOSITS_CREDITED: AtomicU64 = AtomicU64::new(0);
 /// Current size of the dead-letter queue (best-effort; updated each poll).
 pub static DLQ_SIZE: AtomicU64 = AtomicU64::new(0);
 
+/// 1 when this instance currently holds the leader advisory lock for its
+/// chain network, 0 when it is a standby or when no database is configured.
+/// Prometheus can alert on split-brain when two instances both report 1.
+pub static IS_LEADER: AtomicU64 = AtomicU64::new(0);
+
 // ── Withdrawal metrics ────────────────────────────────────────────────────────
 
 pub static WITHDRAWALS_SENT: AtomicU64 = AtomicU64::new(0);
@@ -81,6 +86,14 @@ pub fn render() -> String {
         "gauge",
         "Number of items currently in the dead-letter queue.",
         DLQ_SIZE.load(Relaxed),
+    );
+
+    write_simple(
+        &mut out,
+        "chain_is_leader",
+        "gauge",
+        "1 if this instance currently holds the leader lock for the watcher network, 0 otherwise.",
+        IS_LEADER.load(Relaxed),
     );
 
     write_counter(

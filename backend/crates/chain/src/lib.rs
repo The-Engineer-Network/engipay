@@ -17,6 +17,7 @@ pub mod deposit_creditor;
 pub mod dlq;
 pub mod dlq_commands;
 pub mod evm;
+pub mod leader;
 pub mod metrics;
 pub mod routes;
 pub mod services;
