@@ -52,6 +52,12 @@ pub struct Account {
     /// The assets the account currently holds, including native XLM.
     #[serde(default)]
     pub balances: Vec<AccountBalance>,
+    /// All signers on the account, including the master key.
+    #[serde(default)]
+    pub signers: Vec<AccountSigner>,
+    /// The three threshold levels for this account.
+    #[serde(default)]
+    pub thresholds: AccountThresholds,
 }
 
 /// One entry in the `balances` array of `GET /accounts/{id}`.
@@ -70,6 +76,45 @@ pub struct AccountBalance {
     /// Present for non-native assets.
     #[serde(default)]
     pub asset_issuer: Option<String>,
+}
+
+/// One entry in the `signers` array of `GET /accounts/{id}`.
+///
+/// Each signer has a weight; a transaction is authorised when the sum of
+/// weights of all attached signatures meets or exceeds the relevant threshold.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct AccountSigner {
+    /// The signer's public key (`G...`).
+    pub key: String,
+    /// The weight of this signer. 0 means the signer is effectively removed.
+    pub weight: u32,
+    /// The type of signer: `"ed25519_public_key"` for the normal case.
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// Account thresholds returned by `GET /accounts/{id}`.
+///
+/// Stellar has three threshold levels:
+/// * `low_threshold` — operations that modify account data but are low-risk
+///   (e.g. AllowTrust).
+/// * `med_threshold` — payment operations and most other operations.
+/// * `high_threshold` — SetOptions, AccountMerge — account-altering ops.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct AccountThresholds {
+    pub low_threshold: u32,
+    pub med_threshold: u32,
+    pub high_threshold: u32,
+}
+
+impl Default for AccountThresholds {
+    fn default() -> Self {
+        Self {
+            low_threshold: 0,
+            med_threshold: 0,
+            high_threshold: 0,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
