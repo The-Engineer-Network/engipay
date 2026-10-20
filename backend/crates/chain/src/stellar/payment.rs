@@ -234,6 +234,132 @@ pub fn build_payment(
     })
 }
 
+/// Builds an unsigned payment transaction sourced from a **channel account**
+/// with the payment operation debiting the **custody account**.
+///
+/// This enables parallel Stellar withdrawals: the channel account owns the
+/// transaction's sequence number (so multiple channels can submit
+/// concurrently without colliding), while the custody account is the
+/// operation's source (so the funds leave custody, not the channel).
+///
+/// * `channel_source` — the ed25519 public key bytes of the channel account
+///   (the transaction source, which owns the sequence number).
+/// * `channel_sequence` — the channel account's *current* sequence number;
+///   the transaction uses `channel_sequence + 1`.
+/// * `custody_source` — the ed25519 public key bytes of the custody account
+///   (the payment operation's source, which owns the funds).
+/// * `request` — what to pay and the optional on-chain memo.
+/// * `network` — testnet or mainnet (affects the USDC issuer and the network
+///   hash used for signing).
+/// * `valid_until` — Unix timestamp after which the network will reject the
+///   transaction, so a stuck payment cannot land hours later.
+/// * `fee_per_op` — base fee in stroops per operation. Pass [`BASE_FEE`] for
+///   the network minimum, or a value from Horizon's `/fee_stats` endpoint
+///   (e.g. `p90_accepted_fee`) under load.
+pub fn build_channel_payment(
+    channel_source: &[u8; 32],
+    channel_sequence: i64,
+    custody_source: &[u8; 32],
+    request: &PaymentRequest,
+    network: StellarNetwork,
+    valid_until: u64,
+    fee_per_op: u32,
+) -> Result<Transaction, PaymentError> {
+    let destination = muxed_account(&request.destination)?;
+    let asset = xdr_asset(request.money.asset, network)?;
+
+    let units = request
+        .money
+        .to_network_units(Chain::Stellar)
+        .map_err(|error| PaymentError::Amount(error.to_string()))?;
+    if units <= 0 {
+        return Err(PaymentError::Amount("must be greater than zero".to_owned()));
+    }
+    let amount = i64::try_from(units)
+        .map_err(|_| PaymentError::Amount("too large for Stellar".to_owned()))?;
+
+    let next_sequence = channel_sequence
+        .checked_add(1)
+        .ok_or(PaymentError::Amount("sequence number overflow".to_owned()))?;
+
+    let memo = memo_xdr(request.memo.as_ref())?;
+
+    // The payment operation's source is the custody account, so the funds
+    // leave custody. The transaction's source is the channel account, so the
+    // sequence number belongs to the channel.
+    let operation = Operation {
+        source_account: Some(MuxedAccount::Ed25519(Uint256(*custody_source))),
+        body: OperationBody::Payment(PaymentOp {
+            destination,
+            asset,
+            amount,
+        }),
+    };
+
+    Ok(Transaction {
+        source_account: MuxedAccount::Ed25519(Uint256(*channel_source)),
+        fee: fee_per_op,
+        seq_num: SequenceNumber(next_sequence),
+        cond: Preconditions::Time(TimeBounds {
+            min_time: TimePoint(0),
+            max_time: TimePoint(valid_until),
+        }),
+        memo,
+        operations: vec![operation]
+            .try_into()
+            .map_err(|_| PaymentError::Encoding("too many operations".to_owned()))?,
+        ext: TransactionExt::V0,
+    })
+}
+
+/// Signs a channel payment transaction with both the channel signer and the
+/// custody signer.
+///
+/// The channel signer authorises the transaction (it owns the sequence
+/// number), and the custody signer authorises the payment operation (it owns
+/// the funds). Both signatures are required by the network.
+///
+/// Verifies both signatures before returning, so a faulty signer fails here,
+/// not on the network.
+pub fn sign_channel_payment(
+    transaction: Transaction,
+    channel_signer: &dyn StellarSigner,
+    custody_signer: &dyn StellarSigner,
+    network: StellarNetwork,
+) -> Result<(TransactionEnvelope, [u8; 32]), PaymentError> {
+    // The transaction source must be the channel account.
+    if transaction.source_account != MuxedAccount::Ed25519(Uint256(channel_signer.public_key())) {
+        return Err(PaymentError::Key(
+            "the transaction source is not the channel account",
+        ));
+    }
+
+    // The operation source must be the custody account.
+    let op = &transaction.operations[0];
+    if op.source_account != Some(MuxedAccount::Ed25519(Uint256(custody_signer.public_key()))) {
+        return Err(PaymentError::Key(
+            "the payment operation source is not the custody account",
+        ));
+    }
+
+    let (envelope, hash) = sign(transaction, channel_signer, network)?;
+    let envelope = add_signature(envelope, custody_signer, network)?;
+
+    // Verify both signatures.
+    if !verify_signature(&envelope, &channel_signer.public_key(), network)? {
+        return Err(PaymentError::Key(
+            "the channel signature does not verify",
+        ));
+    }
+    if !verify_signature(&envelope, &custody_signer.public_key(), network)? {
+        return Err(PaymentError::Key(
+            "the custody signature does not verify",
+        ));
+    }
+
+    Ok((envelope, hash))
+}
+
 /// Converts the optional [`StellarMemo`] into the XDR `Memo` type.
 fn memo_xdr(memo: Option<&StellarMemo>) -> Result<Memo, PaymentError> {
     match memo {
@@ -721,5 +847,197 @@ mod tests {
             panic!("expected text memo");
         };
         assert_eq!(text.as_slice(), b"round-trip test");
+    }
+
+    // ── Channel payment tests ─────────────────────────────────────────────
+
+    fn channel_signer(seed: u8) -> LocalTestnetSigner {
+        LocalTestnetSigner::from_secret(
+            stellar_strkey::ed25519::PrivateKey([seed; 32])
+                .as_unredacted()
+                .to_string()
+                .as_str(),
+            StellarNetwork::Testnet,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn build_channel_payment_sets_channel_as_source_and_custody_as_op_source() {
+        let channel = channel_signer(1);
+        let custody = channel_signer(2);
+        let tx = build_channel_payment(
+            &channel.public_key(),
+            41,
+            &custody.public_key(),
+            &request(account(3), Asset::Xlm, "1.5"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+
+        // Transaction source is the channel account.
+        assert_eq!(
+            tx.source_account,
+            MuxedAccount::Ed25519(Uint256(channel.public_key()))
+        );
+        // Sequence belongs to the channel.
+        assert_eq!(tx.seq_num, SequenceNumber(42));
+
+        // Operation source is the custody account.
+        let op = &tx.operations[0];
+        assert_eq!(
+            op.source_account,
+            Some(MuxedAccount::Ed25519(Uint256(custody.public_key())))
+        );
+
+        // Payment details are correct.
+        let OperationBody::Payment(payment) = &op.body else {
+            panic!("not a payment");
+        };
+        assert_eq!(payment.amount, 15_000_000);
+        assert_eq!(payment.asset, stellar_xdr::Asset::Native);
+    }
+
+    #[test]
+    fn build_channel_payment_refuses_unsupported_assets() {
+        let channel = channel_signer(1);
+        let custody = channel_signer(2);
+        let refused = build_channel_payment(
+            &channel.public_key(),
+            1,
+            &custody.public_key(),
+            &request(account(3), Asset::Btc, "0.1"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        );
+        assert!(matches!(
+            refused,
+            Err(PaymentError::UnsupportedAsset(Asset::Btc))
+        ));
+    }
+
+    #[test]
+    fn build_channel_payment_refuses_zero_amounts() {
+        let channel = channel_signer(1);
+        let custody = channel_signer(2);
+        let refused = build_channel_payment(
+            &channel.public_key(),
+            1,
+            &custody.public_key(),
+            &request(account(3), Asset::Xlm, "0"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        );
+        assert!(matches!(refused, Err(PaymentError::Amount(_))));
+    }
+
+    #[test]
+    fn sign_channel_payment_produces_dual_signatures() {
+        let channel = channel_signer(1);
+        let custody = channel_signer(2);
+        let tx = build_channel_payment(
+            &channel.public_key(),
+            1,
+            &custody.public_key(),
+            &request(account(3), Asset::Xlm, "3"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        let (envelope, hash) =
+            sign_channel_payment(tx, &channel, &custody, StellarNetwork::Testnet).unwrap();
+
+        let TransactionEnvelope::Tx(v1) = &envelope else {
+            panic!("not a v1 envelope");
+        };
+        assert_eq!(v1.signatures.len(), 2, "both signers must sign");
+
+        // Both signatures must verify.
+        assert!(verify_signature(&envelope, &channel.public_key(), StellarNetwork::Testnet).unwrap());
+        assert!(verify_signature(&envelope, &custody.public_key(), StellarNetwork::Testnet).unwrap());
+
+        // The hash must be 32 bytes.
+        assert_eq!(hash.len(), 32);
+    }
+
+    #[test]
+    fn sign_channel_payment_round_trips_through_base64() {
+        let channel = channel_signer(1);
+        let custody = channel_signer(2);
+        let tx = build_channel_payment(
+            &channel.public_key(),
+            5,
+            &custody.public_key(),
+            &request(account(3), Asset::Xlm, "0.0000001"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        let (envelope, _) =
+            sign_channel_payment(tx, &channel, &custody, StellarNetwork::Testnet).unwrap();
+        let encoded = envelope_base64(&envelope).unwrap();
+        let decoded = TransactionEnvelope::from_xdr_base64(&encoded, Limits::none()).unwrap();
+        assert_eq!(decoded, envelope);
+    }
+
+    #[test]
+    fn sign_channel_payment_refuses_wrong_transaction_source() {
+        let channel = channel_signer(1);
+        let custody = channel_signer(2);
+        // Build a regular payment sourced from custody, not channel.
+        let tx = build_payment(
+            &custody.public_key(),
+            1,
+            &request(account(3), Asset::Xlm, "1"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        let result = sign_channel_payment(tx, &channel, &custody, StellarNetwork::Testnet);
+        assert!(matches!(result, Err(PaymentError::Key(_))));
+    }
+
+    #[test]
+    fn sign_channel_payment_refuses_wrong_operation_source() {
+        let channel = channel_signer(1);
+        let custody = channel_signer(2);
+        // Build a regular payment (no operation source = uses tx source).
+        let tx = build_payment(
+            &channel.public_key(),
+            1,
+            &request(account(3), Asset::Xlm, "1"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        let result = sign_channel_payment(tx, &channel, &custody, StellarNetwork::Testnet);
+        assert!(matches!(result, Err(PaymentError::Key(_))));
+    }
+
+    #[test]
+    fn channel_payment_memo_is_encoded() {
+        let channel = channel_signer(1);
+        let custody = channel_signer(2);
+        let mut req = request(account(3), Asset::Xlm, "1");
+        req.memo = Some(StellarMemo::Id(42_000));
+        let tx = build_channel_payment(
+            &channel.public_key(),
+            1,
+            &custody.public_key(),
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        assert_eq!(tx.memo, Memo::Id(42_000));
     }
 }

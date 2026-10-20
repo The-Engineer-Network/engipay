@@ -49,6 +49,7 @@ use uuid::Uuid;
 
 use crate::ChainError;
 use crate::stellar::StellarClient;
+use crate::stellar::channel::ChannelPool;
 use crate::stellar::payment::{PaymentRequest, StellarMemo, StellarSigner};
 
 /// Withdrawals claimed per poll.
@@ -234,14 +235,36 @@ impl WithdrawalWorker {
 // ── Stellar ──────────────────────────────────────────────────────────────────
 
 /// Sends XLM and USDC withdrawals on Stellar.
+///
+/// When a [`ChannelPool`] is configured, each withdrawal is sourced from a
+/// channel account (for the sequence number) with the custody account as the
+/// payment operation's source. This allows many withdrawals to be submitted
+/// in parallel without sequence-number collisions.
+///
+/// When no channel pool is configured, the sender falls back to the custody
+/// account as the direct transaction source (the original behaviour).
 pub struct StellarWithdrawalSender {
     client: StellarClient,
     signer: Arc<dyn StellarSigner>,
+    /// Optional channel pool for parallel withdrawals. When `None`, the
+    /// custody signer is used as the direct transaction source.
+    channels: Option<Arc<ChannelPool>>,
 }
 
 impl StellarWithdrawalSender {
     pub fn new(client: StellarClient, signer: Arc<dyn StellarSigner>) -> Self {
-        Self { client, signer }
+        Self {
+            client,
+            signer,
+            channels: None,
+        }
+    }
+
+    /// Configures the sender to use a channel pool for parallel withdrawals.
+    #[must_use]
+    pub fn with_channels(mut self, pool: Arc<ChannelPool>) -> Self {
+        self.channels = Some(pool);
+        self
     }
 
     async fn send_stellar(&self, withdrawal: &PendingWithdrawal) -> DispatchOutcome {
@@ -256,18 +279,40 @@ impl StellarWithdrawalSender {
             memo: withdrawal.memo.as_deref().map(stellar_memo),
         };
 
-        let prepared = match self
-            .client
-            .prepare_payment(self.signer.as_ref(), &request)
-            .await
-        {
-            Ok(prepared) => prepared,
-            // Nothing was submitted, so either retry or give up cleanly.
-            Err(ChainError::Rejected(reason)) => return DispatchOutcome::Rejected { reason },
-            Err(error) => {
-                return DispatchOutcome::Retry {
-                    reason: error.to_string(),
-                };
+        let prepared = if let Some(ref pool) = self.channels {
+            // Channel path: channel account is the transaction source,
+            // custody is the payment operation source.
+            match pool
+                .prepare_channel_payment(
+                    &self.client,
+                    self.signer.as_ref(),
+                    &request,
+                    self.client.config().network,
+                )
+                .await
+            {
+                Ok(prepared) => prepared,
+                Err(ChainError::Rejected(reason)) => return DispatchOutcome::Rejected { reason },
+                Err(error) => {
+                    return DispatchOutcome::Retry {
+                        reason: error.to_string(),
+                    };
+                }
+            }
+        } else {
+            // Direct path: custody account is the transaction source.
+            match self
+                .client
+                .prepare_payment(self.signer.as_ref(), &request)
+                .await
+            {
+                Ok(prepared) => prepared,
+                Err(ChainError::Rejected(reason)) => return DispatchOutcome::Rejected { reason },
+                Err(error) => {
+                    return DispatchOutcome::Retry {
+                        reason: error.to_string(),
+                    };
+                }
             }
         };
 
@@ -780,6 +825,142 @@ mod tests {
             matches!(outcome, DispatchOutcome::Rejected { .. }),
             "{outcome:?}"
         );
+    }
+
+    // ── Stellar sender with channels ────────────────────────────────────
+
+    fn channel_signer(seed: u8) -> Arc<dyn StellarSigner> {
+        Arc::new(
+            LocalTestnetSigner::from_secret(
+                stellar_strkey::ed25519::PrivateKey([seed; 32])
+                    .as_unredacted()
+                    .to_string()
+                    .as_str(),
+                StellarNetwork::Testnet,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn stellar_sender_with_channels(server: &MockServer) -> StellarWithdrawalSender {
+        let config =
+            StellarConfig::new(StellarNetwork::Testnet, Some(server.uri()), &account(1)).unwrap();
+        let client = StellarClient::new(config).unwrap();
+        let pool = Arc::new(
+            ChannelPool::new_for_test(vec![channel_signer(7), channel_signer(8)]).unwrap(),
+        );
+        StellarWithdrawalSender::new(client, testnet_signer()).with_channels(pool)
+    }
+
+    async fn mount_channel_and_fees(server: &MockServer) {
+        // Mock for fee_stats
+        Mock::given(method("GET"))
+            .and(path("/fee_stats"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fee_charged": { "p50": "100", "p90": "100" }
+            })))
+            .mount(server)
+            .await;
+        // Mock for both channel accounts' sequence lookups
+        for seed in [7u8, 8u8] {
+            let acct = stellar_strkey::ed25519::PublicKey([seed; 32]).to_string();
+            Mock::given(method("GET"))
+                .and(path(format!("/accounts/{acct}")))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "sequence": "200" })),
+                )
+                .mount(server)
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn stellar_sender_with_channels_reports_the_accepted_hash() {
+        let server = MockServer::start().await;
+        mount_channel_and_fees(&server).await;
+        const TX_HASH: &str = "167ce3abe1973e68a5a4d1b64128e8d45f18740113eea89632470ca2aafb6c01";
+        Mock::given(method("POST"))
+            .and(path("/transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "hash": TX_HASH,
+                "ledger": 7
+            })))
+            .mount(&server)
+            .await;
+
+        let w = withdrawal(Chain::Stellar, Money::from_minor(Asset::Xlm, 10_000_000));
+        let outcome = stellar_sender_with_channels(&server).send(&w).await;
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Accepted {
+                tx_hash: TX_HASH.to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn stellar_sender_with_channels_retries_when_horizon_is_down() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        // POST may or may not be called depending on whether the GET for the
+        // fee stats fails first.
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let w = withdrawal(Chain::Stellar, Money::from_minor(Asset::Xlm, 1));
+        let outcome = stellar_sender_with_channels(&server).send(&w).await;
+        // With channel accounts, the sequence is managed locally, so the tx
+        // can be built even when Horizon is down. If the submission fails
+        // (503), we cannot tell whether it landed, so the outcome is Ambiguous
+        // (not Retry). The test asserts the signed hash is present.
+        assert!(
+            matches!(outcome, DispatchOutcome::Ambiguous { tx_hash: Some(_), .. }),
+            "expected Ambiguous with a hash when Horizon is down after signing, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stellar_sender_with_channels_refuses_unsupported_assets() {
+        let server = MockServer::start().await;
+        let w = withdrawal(Chain::Stellar, Money::from_minor(Asset::Btc, 1));
+        let outcome = stellar_sender_with_channels(&server).send(&w).await;
+        assert!(matches!(outcome, DispatchOutcome::Rejected { .. }));
+    }
+
+    #[tokio::test]
+    async fn stellar_sender_with_channels_rejects_invalid_destination() {
+        let server = MockServer::start().await;
+        mount_channel_and_fees(&server).await;
+        let mut w = withdrawal(Chain::Stellar, Money::from_minor(Asset::Xlm, 1));
+        w.destination = "not-an-address".to_owned();
+        let outcome = stellar_sender_with_channels(&server).send(&w).await;
+        assert!(
+            matches!(outcome, DispatchOutcome::Rejected { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stellar_sender_with_channels_flags_unreadable_response_as_ambiguous() {
+        let server = MockServer::start().await;
+        mount_channel_and_fees(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let w = withdrawal(Chain::Stellar, Money::from_minor(Asset::Xlm, 1));
+        let outcome = stellar_sender_with_channels(&server).send(&w).await;
+        let DispatchOutcome::Ambiguous { tx_hash, .. } = outcome else {
+            panic!("expected Ambiguous, got {outcome:?}");
+        };
+        assert_eq!(tx_hash.map(|h| h.len()), Some(64));
     }
 
     // ── Integration tests (require a PostgreSQL database) ──────────────

@@ -162,7 +162,7 @@ pub fn router_with_state(state: ChainHttpState) -> Router {
 fn internal(state: ChainHttpState) -> Router {
     Router::new()
         .route("/internal/estimate-fee", post(estimate_fee::estimate_fee))
-        .merge(create_wallet::routes())
+        .merge(create_wallet::routes().with_state(()))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth,
@@ -238,7 +238,7 @@ mod tests {
                     "chain": "stellar",
                     "asset": "XLM",
                     "amount": "1",
-                    "destination": stellar_strkey::ed25519::PublicKey([1u8; 32]).to_string(),
+                    "destination": stellar_strkey::ed25519::PublicKey([1u8; 32]).to_string().as_str(),
                 })
                 .to_string(),
             ))

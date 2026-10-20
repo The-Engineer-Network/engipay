@@ -4,6 +4,7 @@
 //! transactions; it never sees a key.
 
 pub mod broadcast;
+pub mod channel;
 pub mod cursor;
 pub mod horizon;
 pub mod network;
@@ -75,13 +76,23 @@ impl StellarConfig {
     }
 }
 
+/// A Stellar Horizon client.
+///
+/// Cloning is cheap: it shares the underlying HTTP connection pool
+/// (`reqwest::Client` is `Arc`-backed), the `StellarConfig`, and the
+/// short-lived transaction cache. If you want an independent cache, construct a
+/// fresh client; if you want shared state, wrapping in `Arc` and cloning the
+/// `Arc` is also fine.
+#[derive(Clone)]
 pub struct StellarClient {
     config: StellarConfig,
+    /// `reqwest::Client` is already `Clone` (it wraps an `Arc` internally).
     http: reqwest::Client,
     /// Short-lived cache for `GET /transactions/{hash}` responses.
-    /// Wrapped in a `Mutex` so `deposits_since` (which takes `&self` via the
-    /// trait) can populate the cache without needing `&mut self`.
-    transaction_cache: Mutex<TransactionCache>,
+    /// Wrapped in an `Arc<Mutex<…>>` so the client can be cloned cheaply
+    /// while still sharing the cache between the original and any clone that
+    /// is meant to cooperate in the same polling loop.
+    transaction_cache: Arc<Mutex<TransactionCache>>,
 }
 
 impl StellarClient {
@@ -94,7 +105,7 @@ impl StellarClient {
         Ok(Self {
             config,
             http,
-            transaction_cache: Mutex::new(TransactionCache::new()),
+            transaction_cache: Arc::new(Mutex::new(TransactionCache::new())),
         })
     }
 

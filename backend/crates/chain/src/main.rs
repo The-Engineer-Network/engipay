@@ -21,6 +21,7 @@ use engipay_chain::routes;
 use engipay_chain::routes::ChainHttpState;
 use engipay_chain::routes::estimate_fee::FeeQuotes;
 use engipay_chain::routes::router_with_state;
+use engipay_chain::stellar::channel::ChannelPool;
 use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY, cursor_to_ledger};
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
@@ -162,6 +163,63 @@ async fn db_pool() -> anyhow::Result<Option<sqlx::PgPool>> {
         .await
         .context("could not connect to DATABASE_URL")?;
     Ok(Some(pool))
+}
+
+/// Builds a [`ChannelPool`] from `STELLAR_CHANNEL_SECRETS` if set.
+///
+/// `STELLAR_CHANNEL_SECRETS` is a comma-separated list of Stellar secret keys
+/// (`S...`) for the channel accounts.  When the variable is absent or empty,
+/// `Ok(None)` is returned and the withdrawal worker falls back to the custody
+/// account as the direct transaction source.
+///
+/// On success, each channel's sequence number is reconciled with the database
+/// and Horizon (taking the maximum) so a restart after a crash never reuses or
+/// skips a sequence.
+async fn build_channel_pool(
+    client: &StellarClient,
+    pool: &sqlx::PgPool,
+) -> anyhow::Result<Option<Arc<ChannelPool>>> {
+    let Ok(secrets_raw) = env::var("STELLAR_CHANNEL_SECRETS") else {
+        return Ok(None);
+    };
+    let secrets_raw = secrets_raw.trim().to_owned();
+    if secrets_raw.is_empty() {
+        return Ok(None);
+    }
+
+    let network = client.config().network;
+    let mut signers: Vec<Arc<dyn StellarSigner>> = Vec::new();
+
+    for secret in secrets_raw.split(',') {
+        let secret = secret.trim();
+        if secret.is_empty() {
+            continue;
+        }
+        let signer = LocalTestnetSigner::from_secret(secret, network)
+            .context("STELLAR_CHANNEL_SECRETS contains an invalid secret key")?;
+        signers.push(Arc::new(signer));
+    }
+
+    if signers.is_empty() {
+        return Ok(None);
+    }
+
+    let mut channel_pool =
+        ChannelPool::new(signers, pool.clone()).context("failed to create channel pool")?;
+
+    // Reconcile sequences from the database and Horizon on startup so a crash
+    // never reuses a sequence number.
+    channel_pool
+        .refresh(client)
+        .await
+        .context("failed to refresh channel pool sequences on startup")?;
+
+    info!(
+        channel_count = channel_pool.len(),
+        "channel pool initialised and sequences reconciled",
+    );
+
+    Ok(Some(Arc::new(channel_pool)))
 }
 
 async fn watch() -> anyhow::Result<()> {
@@ -439,6 +497,11 @@ async fn stellar_send(args: &[String]) -> anyhow::Result<()> {
 
 /// Broadcasts `pending_broadcast` withdrawals until interrupted. Signs with
 /// `STELLAR_TESTNET_SECRET`, which [`LocalTestnetSigner`] refuses on mainnet.
+///
+/// When `STELLAR_CHANNEL_SECRETS` is set (comma-separated `S...` keys), a
+/// [`ChannelPool`] is created so withdrawals use channel accounts as
+/// transaction sources — enabling parallel withdrawals without sequence
+/// collisions. The custody account remains the payment operation's source.
 async fn withdrawals() -> anyhow::Result<()> {
     let pool = db_pool()
         .await?
@@ -449,13 +512,25 @@ async fn withdrawals() -> anyhow::Result<()> {
         .context("set STELLAR_TESTNET_SECRET to the testnet account that pays")?;
     let signer = LocalTestnetSigner::from_secret(&secret, client.config().network)?;
     drop(secret);
+    let signer: Arc<dyn StellarSigner> = Arc::new(signer);
     info!(from = %signer.account(), "withdrawal worker starting");
 
+    // Build the channel pool if channel secrets are configured.
+    let channel_pool = build_channel_pool(&client, &pool).await?;
+
+    let sender = if let Some(ref channels) = channel_pool {
+        info!(
+            channel_count = channels.len(),
+            "using channel accounts for parallel withdrawals",
+        );
+        StellarWithdrawalSender::new(client.clone(), signer.clone()).with_channels(channels.clone())
+    } else {
+        info!("no channel accounts configured; using custody account directly");
+        StellarWithdrawalSender::new(client.clone(), signer.clone())
+    };
+
     let worker_pool = pool.clone();
-    let worker = WithdrawalWorker::new(worker_pool).with_sender(Arc::new(StellarWithdrawalSender::new(
-        client.clone(),
-        Arc::new(signer),
-    )));
+    let worker = WithdrawalWorker::new(worker_pool).with_sender(Arc::new(sender));
     let shutdown = CancellationToken::new();
     let on_signal = shutdown.clone();
     tokio::spawn(async move {
@@ -469,7 +544,7 @@ async fn withdrawals() -> anyhow::Result<()> {
     let finality_client = client.clone();
     tokio::spawn(async move {
         use engipay_chain::withdrawals::PgWithdrawalStore;
-        use engipay_chain::stellar::broadcast::FinalityPoller;
+        use engipay_chain::stellar::broadcast::{FinalityPoller, poll_transaction_finality};
         use engipay_chain::stellar::settlement::apply_finality;
         use engipay_ledger::postgres::PostgresLedgerStore;
 
@@ -484,7 +559,7 @@ async fn withdrawals() -> anyhow::Result<()> {
             .fetch_all(&finality_pool)
             .await {
                 for (id, tx_hash) in rows {
-                    let outcome = poller.poll(&finality_client, &tx_hash).await;
+                    let outcome = poll_transaction_finality(&finality_client, &tx_hash, &poller).await;
                     let _ = apply_finality(&store, &ledger, id, outcome).await;
                 }
             }

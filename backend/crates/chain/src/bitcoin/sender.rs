@@ -291,7 +291,7 @@ impl BitcoinSigner for LocalTestSigner {
     
     async fn sign_withdrawal(
         &self,
-        request: &WithdrawalRequest,
+        _request: &WithdrawalRequest,
         selection: &CoinSelection,
         _change_address: &str,
     ) -> Result<PreparedTransaction, BitcoinSenderError> {
