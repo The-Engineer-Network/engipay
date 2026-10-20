@@ -9,6 +9,7 @@ pub mod horizon;
 pub mod network;
 pub mod payment;
 pub mod settlement;
+pub mod soroban;
 pub mod watcher;
 
 use std::sync::{Arc, Mutex};
@@ -48,6 +49,9 @@ fn hex_lower(bytes: &[u8]) -> String {
 pub struct StellarConfig {
     pub network: StellarNetwork,
     pub horizon_url: String,
+    /// The Stellar RPC (ex-Soroban RPC) endpoint for `getEvents`. Used to
+    /// detect Soroban contract token transfers that Horizon does not report.
+    pub rpc_url: String,
     /// The custody account deposits arrive in, `G...`.
     pub custody_account: String,
 }
@@ -58,12 +62,28 @@ impl StellarConfig {
         horizon_url: Option<String>,
         custody_account: &str,
     ) -> Result<Self, ChainError> {
+        Self::new_with_rpc(network, horizon_url, None, custody_account)
+    }
+
+    /// Creates a config with an explicit Stellar RPC URL. Pass `None` to use
+    /// the network's default.
+    pub fn new_with_rpc(
+        network: StellarNetwork,
+        horizon_url: Option<String>,
+        rpc_url: Option<String>,
+        custody_account: &str,
+    ) -> Result<Self, ChainError> {
         match parse_address(custody_account) {
             Ok(StellarAddress::Account(account)) => Ok(Self {
                 network,
                 horizon_url: horizon_url
                     .filter(|url| !url.trim().is_empty())
                     .unwrap_or_else(|| network.default_horizon_url().to_owned())
+                    .trim_end_matches('/')
+                    .to_owned(),
+                rpc_url: rpc_url
+                    .filter(|url| !url.trim().is_empty())
+                    .unwrap_or_else(|| network.default_rpc_url().to_owned())
                     .trim_end_matches('/')
                     .to_owned(),
                 custody_account: account,
@@ -75,6 +95,7 @@ impl StellarConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct StellarClient {
     config: StellarConfig,
     http: reqwest::Client,
@@ -82,6 +103,24 @@ pub struct StellarClient {
     /// Wrapped in a `Mutex` so `deposits_since` (which takes `&self` via the
     /// trait) can populate the cache without needing `&mut self`.
     transaction_cache: Mutex<TransactionCache>,
+}
+
+impl Clone for StellarClient {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            http: self.http.clone(),
+            // Clone the inner cache; each instance gets an independent copy.
+            // The cache is short-lived (60-second TTL) so a stale snapshot is
+            // harmless.
+            transaction_cache: Mutex::new(
+                self.transaction_cache
+                    .lock()
+                    .expect("transaction cache lock poisoned")
+                    .clone(),
+            ),
+        }
+    }
 }
 
 impl StellarClient {
@@ -185,12 +224,12 @@ impl StellarClient {
             })?;
             match bal.asset_type.as_str() {
                 "native" => out.push((Asset::Xlm, i128::from(stroops))),
-                "credit_alphanum4" => {
+                "credit_alphanum4"
                     if bal.asset_code.as_deref() == Some("USDC")
-                        && bal.asset_issuer.as_deref() == Some(self.config.network.usdc_issuer())
-                    {
-                        out.push((Asset::Usdc, i128::from(stroops)));
-                    }
+                        && bal.asset_issuer.as_deref()
+                            == Some(self.config.network.usdc_issuer()) =>
+                {
+                    out.push((Asset::Usdc, i128::from(stroops)));
                 }
                 _ => {}
             }
@@ -513,6 +552,32 @@ impl ChainClient for StellarClient {
                 _ => break,
             }
         }
+
+        // Merge Soroban SAC transfer events alongside Horizon payments.
+        // A Soroban wallet transfer never appears in Horizon's payments stream,
+        // so we poll the Stellar RPC `getEvents` endpoint in parallel.
+        // If the RPC is unreachable we log a warning but still return the
+        // Horizon deposits — partial data is better than a hard failure.
+        match soroban::soroban_deposits_since(
+            &self.http,
+            &self.config.rpc_url,
+            self.config.network,
+            &self.config.custody_account,
+            height,
+            latest,
+        )
+        .await
+        {
+            Ok(soroban_deposits) => deposits.extend(soroban_deposits),
+            Err(error) => {
+                warn!(
+                    %error,
+                    rpc_url = %self.config.rpc_url,
+                    "Stellar RPC unavailable; Soroban transfer events not checked this poll"
+                );
+            }
+        }
+
         Ok(deposits)
     }
 
