@@ -62,6 +62,14 @@ export function SendPayment({
     query: { enabled: Boolean(txHash) },
   })
 
+  const isBusy = isSendingNative || isSendingToken || isConfirming
+  const recipientValid = recipient === "" || isAddress(recipient)
+
+  const selectedSymbol =
+    asset === NATIVE
+      ? activeChain.nativeCurrency.symbol
+      : TRACKED_TOKENS.find((token) => token.address === asset)?.symbol ?? ""
+
   useEffect(() => {
     if (isConfirmed && txHash && recipient) {
       broadcastPosPayment({
@@ -74,14 +82,6 @@ export function SendPayment({
       })
     }
   }, [isConfirmed, txHash, recipient, amount, selectedSymbol])
-
-  const isBusy = isSendingNative || isSendingToken || isConfirming
-  const recipientValid = recipient === "" || isAddress(recipient)
-
-  const selectedSymbol =
-    asset === NATIVE
-      ? activeChain.nativeCurrency.symbol
-      : TRACKED_TOKENS.find((token) => token.address === asset)?.symbol ?? ""
 
   // Exact balance in base units, so the check never goes through floating point.
   const selectedDecimals =
