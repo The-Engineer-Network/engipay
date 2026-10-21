@@ -184,7 +184,10 @@ pub async fn upload_batch(
         };
 
         let mut tx = pool.begin().await.map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("failed to start database transaction: {}", e))
+            ApiError::Internal(anyhow::anyhow!(
+                "failed to start database transaction: {}",
+                e
+            ))
         })?;
 
         sqlx::query(
@@ -221,7 +224,13 @@ pub async fn upload_batch(
             .bind(row.memo.as_deref().map(|s| s.trim()))
             .execute(&mut *tx)
             .await
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to insert batch row {}: {}", idx + 1, e)))?;
+            .map_err(|e| {
+                ApiError::Internal(anyhow::anyhow!(
+                    "failed to insert batch row {}: {}",
+                    idx + 1,
+                    e
+                ))
+            })?;
         }
 
         tx.commit().await.map_err(|e| {
@@ -268,18 +277,23 @@ pub async fn approve_batch(
         let (creator_id, status_str, requires_approval, approved_by) = batch;
 
         if status_str != "awaiting_approval" && !requires_approval {
-            return Err(ApiError::BadRequest("batch is not awaiting approval".to_owned()));
+            return Err(ApiError::BadRequest(
+                "batch is not awaiting approval".to_owned(),
+            ));
         }
 
         if approved_by.is_some() {
-            return Err(ApiError::Conflict("batch has already been approved".to_owned()));
+            return Err(ApiError::Conflict(
+                "batch has already been approved".to_owned(),
+            ));
         }
 
         // CRITICAL INVARIANT: Creator cannot approve their own batch.
         // A second account is required.
         if creator_id == approver_id.as_uuid() {
             return Err(ApiError::BadRequest(
-                "batch cannot be approved by its creator; approval requires a second account".to_owned(),
+                "batch cannot be approved by its creator; approval requires a second account"
+                    .to_owned(),
             ));
         }
 
@@ -311,7 +325,10 @@ pub async fn execute_batch(
 ) -> Result<impl IntoResponse, ApiError> {
     let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
 
-    let pool = state.database.clone().ok_or(ApiError::DatabaseUnavailable)?;
+    let pool = state
+        .database
+        .clone()
+        .ok_or(ApiError::DatabaseUnavailable)?;
 
     // Fetch batch
     let batch = sqlx::query_as::<_, (Uuid, String, i32, i32, i32, i32, bool, Option<Uuid>)>(
@@ -330,15 +347,21 @@ pub async fn execute_batch(
     let (creator_id, status_str, total_rows, _, _, _, requires_approval, approved_by) = batch;
 
     if creator_id != user_id.as_uuid() {
-        return Err(ApiError::Unauthorized("cannot execute another user's batch".to_owned()));
+        return Err(ApiError::Unauthorized(
+            "cannot execute another user's batch".to_owned(),
+        ));
     }
 
     if status_str == "awaiting_approval" && approved_by.is_none() {
-        return Err(ApiError::BadRequest("batch requires approval by a second account before execution".to_owned()));
+        return Err(ApiError::BadRequest(
+            "batch requires approval by a second account before execution".to_owned(),
+        ));
     }
 
     if status_str == "cancelled" {
-        return Err(ApiError::BadRequest("cannot execute a cancelled batch".to_owned()));
+        return Err(ApiError::BadRequest(
+            "cannot execute a cancelled batch".to_owned(),
+        ));
     }
 
     // Set batch to processing
@@ -363,11 +386,26 @@ pub async fn execute_batch(
     .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch batch rows: {}", e)))?;
 
     for row in rows {
-        let (row_id, row_number, destination, asset, amount, _memo, status, tx_hash, withdrawal_id, transfer_id) = row;
+        let (
+            row_id,
+            row_number,
+            destination,
+            asset,
+            amount,
+            _memo,
+            status,
+            tx_hash,
+            withdrawal_id,
+            transfer_id,
+        ) = row;
 
         // IDEMPOTENCY INVARIANT:
         // Re-running a partially processed batch never pays a row twice.
-        if status == "success" || tx_hash.is_some() || transfer_id.is_some() || withdrawal_id.is_some() {
+        if status == "success"
+            || tx_hash.is_some()
+            || transfer_id.is_some()
+            || withdrawal_id.is_some()
+        {
             // Already paid! Skip immediately.
             continue;
         }
@@ -404,7 +442,13 @@ pub async fn execute_batch(
                 .bind(row_id)
                 .execute(&pool)
                 .await
-                .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to update row {}: {}", row_number, e)))?;
+                .map_err(|e| {
+                    ApiError::Internal(anyhow::anyhow!(
+                        "failed to update row {}: {}",
+                        row_number,
+                        e
+                    ))
+                })?;
             }
         }
     }
@@ -440,7 +484,11 @@ pub async fn execute_batch(
 }
 
 /// Helper to simulate/execute a single payment row.
-async fn execute_row_payment(destination: &str, asset: &str, amount: &str) -> Result<String, String> {
+async fn execute_row_payment(
+    destination: &str,
+    asset: &str,
+    amount: &str,
+) -> Result<String, String> {
     if destination.is_empty() || amount.is_empty() {
         return Err("missing destination or amount".to_owned());
     }
@@ -485,10 +533,21 @@ pub async fn get_batch_status(
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch batch: {}", e)))?
         .ok_or(ApiError::NotFound)?;
 
-        let (creator_id, status_str, total_rows, processed_rows, successful, failed, requires_approval, approved_by) = batch;
+        let (
+            creator_id,
+            status_str,
+            total_rows,
+            processed_rows,
+            successful,
+            failed,
+            requires_approval,
+            approved_by,
+        ) = batch;
 
         if creator_id != user_id.as_uuid() && approved_by != Some(user_id.as_uuid()) {
-            return Err(ApiError::Unauthorized("access denied to this batch".to_owned()));
+            return Err(ApiError::Unauthorized(
+                "access denied to this batch".to_owned(),
+            ));
         }
 
         let status = match status_str.as_str() {
@@ -534,21 +593,35 @@ pub async fn get_batch_rows(
 
     if let Some(ref pool) = state.database {
         // Verify user owns or can view batch
-        let creator_id: Option<Uuid> = sqlx::query_scalar("SELECT user_id FROM batch_payments WHERE batch_id = $1")
-            .bind(batch_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to query batch: {}", e)))?;
+        let creator_id: Option<Uuid> =
+            sqlx::query_scalar("SELECT user_id FROM batch_payments WHERE batch_id = $1")
+                .bind(batch_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to query batch: {}", e)))?;
 
         if let Some(creator) = creator_id {
             if creator != user_id.as_uuid() {
-                return Err(ApiError::Unauthorized("access denied to this batch".to_owned()));
+                return Err(ApiError::Unauthorized(
+                    "access denied to this batch".to_owned(),
+                ));
             }
         } else {
             return Err(ApiError::NotFound);
         }
 
-        let db_rows = sqlx::query_as::<_, (i32, String, String, String, String, Option<String>, Option<String>)>(
+        let db_rows = sqlx::query_as::<
+            _,
+            (
+                i32,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
             r#"
             SELECT row_number, destination, asset, amount, status::text, tx_hash, error
             FROM batch_payment_rows
@@ -658,8 +731,10 @@ pub fn validate_row(row: &BatchPaymentRow, row_number: usize) -> Result<(Asset, 
     // Validate destination format
     let is_stellar = engipay_core::stellar::parse_address(dest).is_ok();
     let is_evm = dest.starts_with("0x") && dest.len() == 42 && hex::decode(&dest[2..]).is_ok();
-    let is_btc = (dest.starts_with("bc1") || dest.starts_with('1') || dest.starts_with('3')) && dest.len() >= 26;
-    let is_tag = dest.starts_with('@') || dest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let is_btc = (dest.starts_with("bc1") || dest.starts_with('1') || dest.starts_with('3'))
+        && dest.len() >= 26;
+    let is_tag =
+        dest.starts_with('@') || dest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
 
     if !is_stellar && !is_evm && !is_btc && !is_tag {
         return Err(ApiError::BadRequest(format!(
@@ -686,7 +761,10 @@ pub fn validate_row(row: &BatchPaymentRow, row_number: usize) -> Result<(Asset, 
     }
 
     let money = Money::parse(amt_str, asset).map_err(|e| {
-        ApiError::BadRequest(format!("row {}: invalid amount '{}': {}", row_number, amt_str, e))
+        ApiError::BadRequest(format!(
+            "row {}: invalid amount '{}': {}",
+            row_number, amt_str, e
+        ))
     })?;
 
     if !money.is_positive() {
@@ -722,7 +800,10 @@ GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5,XLM,10.5,Payment 1
 
         let rows = parse_csv(csv).unwrap();
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].destination, "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5");
+        assert_eq!(
+            rows[0].destination,
+            "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+        );
         assert_eq!(rows[0].amount, "10.5");
         assert_eq!(rows[1].memo, None);
         assert_eq!(rows[2].memo, Some("Refund".to_owned()));
@@ -795,7 +876,9 @@ GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5,XLM,10.5,Payment 1
             destination: "@alice".to_owned(),
             asset: "XLM".to_owned(),
             amount: "10".to_owned(),
-            memo: Some("this memo is definitely way longer than twenty eight bytes long!".to_owned()),
+            memo: Some(
+                "this memo is definitely way longer than twenty eight bytes long!".to_owned(),
+            ),
         };
         assert!(validate_row(&row, 1).is_err());
     }
@@ -812,11 +895,7 @@ GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5,XLM,10.5,Payment 1
     #[test]
     fn idempotency_skips_successful_rows() {
         // If a row has already succeeded, it must never be executed twice
-        let mut row_statuses = vec![
-            RowStatus::Success,
-            RowStatus::Pending,
-            RowStatus::Success,
-        ];
+        let mut row_statuses = vec![RowStatus::Success, RowStatus::Pending, RowStatus::Success];
 
         let mut executed_indices = Vec::new();
         for (idx, status) in row_statuses.iter().enumerate() {

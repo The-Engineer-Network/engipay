@@ -12,8 +12,8 @@
 
 use std::collections::HashMap;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -103,8 +103,7 @@ impl ReceiptSigner {
         historical_public_keys: HashMap<String, String>,
     ) -> Result<Self, ReceiptError> {
         let key_id = key_id.into();
-        let secret_bytes = decode_key(secret)
-            .map_err(|e| ReceiptError::InvalidSigningKey(e))?;
+        let secret_bytes = decode_key(secret).map_err(|e| ReceiptError::InvalidSigningKey(e))?;
 
         let signing_key = match secret_bytes.len() {
             32 => {
@@ -122,7 +121,7 @@ impl ReceiptSigner {
             n => {
                 return Err(ReceiptError::InvalidSigningKey(format!(
                     "unexpected key length {n}"
-                )))
+                )));
             }
         };
 
@@ -131,8 +130,8 @@ impl ReceiptSigner {
         public_keys.insert(key_id.clone(), signing_key.verifying_key());
 
         for (id, encoded) in historical_public_keys {
-            let bytes = decode_key(&encoded)
-                .map_err(|_| ReceiptError::InvalidPublicKey(id.clone()))?;
+            let bytes =
+                decode_key(&encoded).map_err(|_| ReceiptError::InvalidPublicKey(id.clone()))?;
             let bytes: [u8; 32] = bytes
                 .as_slice()
                 .try_into()

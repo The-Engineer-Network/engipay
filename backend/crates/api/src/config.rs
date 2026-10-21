@@ -108,12 +108,11 @@ impl Config {
                 .map(|entry| entry.trim())
                 .filter(|entry| !entry.is_empty())
                 .map(|entry| {
-                    let (key_id, public_key) = entry.split_once(':').ok_or_else(|| ConfigError {
-                        name: "RECEIPT_PUBLIC_KEYS",
-                        reason: format!(
-                            "expected `keyid:base64pubkey` entries, got {entry:?}"
-                        ),
-                    })?;
+                    let (key_id, public_key) =
+                        entry.split_once(':').ok_or_else(|| ConfigError {
+                            name: "RECEIPT_PUBLIC_KEYS",
+                            reason: format!("expected `keyid:base64pubkey` entries, got {entry:?}"),
+                        })?;
                     let key_id = key_id.trim();
                     let public_key = public_key.trim();
                     if key_id.is_empty() || public_key.is_empty() {
@@ -190,9 +189,7 @@ impl Config {
             receipt_signing_key_id: "test-receipt-key".to_owned(),
             // Deterministic Ed25519 test keypair (seed of 32 zero bytes) so
             // tests can both sign and verify receipts. Never use in production.
-            receipt_signing_key: Some(
-                "nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A=".to_owned(),
-            ),
+            receipt_signing_key: Some("nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A=".to_owned()),
             receipt_historical_public_keys: vec![(
                 "test-receipt-key".to_owned(),
                 "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=".to_owned(),

@@ -1,4 +1,4 @@
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{Json, Router, extract::State, routing::post};
 use k256::ecdsa::{RecoveryId, Signature};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
@@ -6,7 +6,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::auth::jwt::create_token;
-use crate::{error::ApiError, AppState};
+use crate::{AppState, error::ApiError};
 
 #[derive(Debug, Deserialize)]
 pub struct VerifyEvmRequest {
@@ -38,11 +38,14 @@ async fn verify_evm(
     let recovered = recover_address(&req.message, &req.signature)
         .ok_or_else(|| ApiError::Unauthorized("signature is not valid".to_string()))?;
 
-    let claimed = normalise_address(&req.address)
-        .ok_or_else(|| ApiError::BadRequest("address must be a valid Ethereum address".to_string()))?;
+    let claimed = normalise_address(&req.address).ok_or_else(|| {
+        ApiError::BadRequest("address must be a valid Ethereum address".to_string())
+    })?;
 
     if recovered != claimed {
-        return Err(ApiError::Unauthorized("signature does not match the address".to_string()));
+        return Err(ApiError::Unauthorized(
+            "signature does not match the address".to_string(),
+        ));
     }
 
     // Find or create user and issue token in one transaction
@@ -51,11 +54,12 @@ async fn verify_evm(
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to start transaction: {}", e)))?;
 
-    let existing_user = sqlx::query_as::<_, (Uuid,)>("SELECT id FROM users WHERE wallet_address = $1")
-        .bind(&claimed)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to query user: {}", e)))?;
+    let existing_user =
+        sqlx::query_as::<_, (Uuid,)>("SELECT id FROM users WHERE wallet_address = $1")
+            .bind(&claimed)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to query user: {}", e)))?;
 
     let user_id = if let Some((id,)) = existing_user {
         id
@@ -81,8 +85,8 @@ async fn verify_evm(
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to commit transaction: {}", e)))?;
 
-    let token = create_token(user_id, &state.config.jwt_secret)
-        .map_err(|e| ApiError::Internal(e))?;
+    let token =
+        create_token(user_id, &state.config.jwt_secret).map_err(|e| ApiError::Internal(e))?;
 
     Ok(Json(VerifyEvmResponse { token, user_id }))
 }
@@ -159,7 +163,13 @@ mod tests {
         use sha2::Digest;
 
         // Known test private key
-        let signing_key = SigningKey::from_bytes(&hex::decode("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap().try_into().unwrap()).unwrap();
+        let signing_key = SigningKey::from_bytes(
+            &hex::decode("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        )
+        .unwrap();
         let public_key = signing_key.verifying_key();
         let expected_address = public_key_to_address(&public_key.into());
 
@@ -178,7 +188,10 @@ mod tests {
         // Verify
         let result = verify_signature(message, &sig_hex, &expected_address);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().to_lowercase(), expected_address.to_lowercase());
+        assert_eq!(
+            result.unwrap().to_lowercase(),
+            expected_address.to_lowercase()
+        );
     }
 
     #[tokio::test]
@@ -195,7 +208,13 @@ mod tests {
     async fn signature_mismatch_fails_verification() {
         use k256::ecdsa::SigningKey;
 
-        let signing_key = SigningKey::from_bytes(&hex::decode("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap().try_into().unwrap()).unwrap();
+        let signing_key = SigningKey::from_bytes(
+            &hex::decode("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        )
+        .unwrap();
         let message = "Test message";
 
         let message_hash = hash_eip191_message(message);

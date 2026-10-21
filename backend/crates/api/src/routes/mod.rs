@@ -10,17 +10,11 @@ pub mod health;
 pub mod kyc;
 pub mod me;
 pub mod metrics;
-pub mod openapi;
-pub mod payment_requests;
-pub mod receipts;
-pub mod requests;
-pub mod transactions;
-pub mod transfers;
-pub mod withdrawals;
 pub mod naira;
 pub mod openapi;
 pub mod payment_requests;
 pub mod quotes;
+pub mod receipts;
 pub mod requests;
 pub mod settles;
 pub mod transactions;
@@ -44,17 +38,11 @@ pub fn v1() -> Router<AppState> {
         .merge(deposits::routes())
         .merge(kyc::routes())
         .merge(me::routes())
-        .merge(transactions::routes())
-        .merge(requests::routes())
-        .merge(payment_requests::routes())
-        .merge(receipts::routes())
-        .merge(transfers::routes())
-        .merge(withdrawals::router())
-}
         .merge(naira::routes())
         .merge(transactions::routes())
         .merge(requests::routes())
         .merge(payment_requests::routes())
+        .merge(receipts::router())
         .merge(transfers::routes())
         .merge(withdrawals::router())
         .merge(quotes::routes())

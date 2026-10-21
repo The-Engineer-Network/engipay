@@ -1,7 +1,7 @@
 use axum::{
+    Json, Router,
     extract::{Query, State},
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -9,9 +9,9 @@ use stellar_xdr::TransactionEnvelope;
 use uuid::Uuid;
 
 use crate::{
+    AppState,
     auth::{jwt, stellar as sep10},
     error::ApiError,
-    AppState,
 };
 use engipay_core::stellar::parse_address;
 
@@ -53,9 +53,8 @@ async fn get_challenge(
     Query(req): Query<ChallengeRequest>,
 ) -> Result<Json<ChallengeResponse>, ApiError> {
     // Validate the Stellar account
-    let _address = parse_address(&req.account).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid Stellar account: {}", e))
-    })?;
+    let _address = parse_address(&req.account)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid Stellar account: {}", e)))?;
 
     // Build the challenge transaction
     let mut challenge = build_challenge_transaction(&req.account)?;
@@ -102,7 +101,7 @@ async fn verify(
         _ => {
             return Err(ApiError::Unauthorized(
                 "challenge transaction must carry a signature".to_string(),
-            ))
+            ));
         }
     };
 
@@ -112,8 +111,9 @@ async fn verify(
         .map_err(|_| ApiError::Internal(anyhow::anyhow!("time error")))?
         .as_secs();
 
-    sep10::validate_challenge(&tx_v1.tx, now)
-        .map_err(|_| ApiError::Unauthorized("challenge transaction is invalid or expired".to_string()))?;
+    sep10::validate_challenge(&tx_v1.tx, now).map_err(|_| {
+        ApiError::Unauthorized("challenge transaction is invalid or expired".to_string())
+    })?;
 
     // The client's transaction must be for the account it claims.
     if !source_account_matches(&tx_v1.tx.source_account, &claimed_address) {
@@ -158,7 +158,9 @@ async fn verify(
         .map_err(|e| ApiError::Internal(e.into()))?;
 
     let user_id = if let Some(user) = existing_user {
-        let id: Uuid = user.try_get("id").map_err(|e| ApiError::Internal(e.into()))?;
+        let id: Uuid = user
+            .try_get("id")
+            .map_err(|e| ApiError::Internal(e.into()))?;
         id
     } else {
         let new_user_id = Uuid::new_v4();
@@ -232,10 +234,10 @@ fn signature_matches(public_key: &[u8; 32], message: &[u8; 32], signature: &[u8]
 
 fn build_challenge_transaction(account: &str) -> Result<ChallengeResponse, ApiError> {
     use rand::Rng;
-    use stellar_xdr::{
-        int64, uint32, uint64, ManageDataOp, Operation, OperationBody, TransactionExt, Uint256,
-    };
     use std::time::{SystemTime, UNIX_EPOCH};
+    use stellar_xdr::{
+        ManageDataOp, Operation, OperationBody, TransactionExt, Uint256, int64, uint32, uint64,
+    };
 
     // Get current time
     let now = SystemTime::now()
@@ -287,9 +289,8 @@ fn build_challenge_transaction(account: &str) -> Result<ChallengeResponse, ApiEr
     // Encode to XDR
     let envelope = TransactionEnvelope::Tx(transaction);
 
-    let xdr = stellar_xdr::WriteXdr::to_xdr(&envelope).map_err(|e| {
-        ApiError::Internal(format!("failed to encode transaction: {}", e).into())
-    })?;
+    let xdr = stellar_xdr::WriteXdr::to_xdr(&envelope)
+        .map_err(|e| ApiError::Internal(format!("failed to encode transaction: {}", e).into()))?;
 
     Ok(ChallengeResponse {
         transaction: xdr,
@@ -337,13 +338,15 @@ fn sign_transaction_envelope(xdr: &str, server_secret: &str) -> Result<String, A
             };
 
             let signed_envelope = TransactionEnvelope::TxV1(tx_v0);
-            let signed_xdr = signed_envelope
-                .to_xdr()
-                .map_err(|e| ApiError::Internal(format!("failed to encode signed transaction: {}", e).into()))?;
+            let signed_xdr = signed_envelope.to_xdr().map_err(|e| {
+                ApiError::Internal(format!("failed to encode signed transaction: {}", e).into())
+            })?;
 
             Ok(signed_xdr)
         }
-        _ => Err(ApiError::Internal("unexpected transaction envelope type".into())),
+        _ => Err(ApiError::Internal(
+            "unexpected transaction envelope type".into(),
+        )),
     }
 }
 
@@ -365,12 +368,16 @@ fn hash_transaction_with_network(envelope: &TransactionEnvelope) -> Result<[u8; 
     match envelope {
         TransactionEnvelope::Tx(tx) => {
             let tx_xdr = tx.to_xdr().map_err(|e| {
-                ApiError::Internal(format!("failed to encode transaction for hashing: {}", e).into())
+                ApiError::Internal(
+                    format!("failed to encode transaction for hashing: {}", e).into(),
+                )
             })?;
             hasher.update(&tx_xdr);
         }
         _ => {
-            return Err(ApiError::Internal("unexpected transaction envelope type".into()))
+            return Err(ApiError::Internal(
+                "unexpected transaction envelope type".into(),
+            ));
         }
     }
 
@@ -395,7 +402,12 @@ fn hash_network_passphrase(passphrase: &str) -> [u8; 32] {
 fn get_hint(signature: &[u8]) -> [u8; 4] {
     let len = signature.len();
     if len >= 4 {
-        [signature[len - 4], signature[len - 3], signature[len - 2], signature[len - 1]]
+        [
+            signature[len - 4],
+            signature[len - 3],
+            signature[len - 2],
+            signature[len - 1],
+        ]
     } else {
         let mut hint = [0u8; 4];
         hint[..len].copy_from_slice(signature);
@@ -424,7 +436,8 @@ mod tests {
         let response = build_challenge_transaction(&account).unwrap();
 
         // Should be able to decode the XDR
-        let result: Result<TransactionEnvelope, _> = stellar_xdr::ReadXdr::from_xdr(&response.transaction);
+        let result: Result<TransactionEnvelope, _> =
+            stellar_xdr::ReadXdr::from_xdr(&response.transaction);
         assert!(result.is_ok());
     }
 
@@ -433,16 +446,24 @@ mod tests {
         let account = test_account();
         let response = build_challenge_transaction(&account).unwrap();
 
-        let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(&response.transaction).unwrap();
+        let envelope: TransactionEnvelope =
+            stellar_xdr::ReadXdr::from_xdr(&response.transaction).unwrap();
 
         match envelope {
             TransactionEnvelope::Tx(tx) => {
-                assert!(!tx.operations.is_empty(), "transaction should have operations");
+                assert!(
+                    !tx.operations.is_empty(),
+                    "transaction should have operations"
+                );
                 // Check that at least one operation is ManageData
-                let has_manage_data = tx.operations.iter().any(|op| {
-                    matches!(op.body, stellar_xdr::OperationBody::ManageData(_))
-                });
-                assert!(has_manage_data, "transaction should have ManageData operation");
+                let has_manage_data = tx
+                    .operations
+                    .iter()
+                    .any(|op| matches!(op.body, stellar_xdr::OperationBody::ManageData(_)));
+                assert!(
+                    has_manage_data,
+                    "transaction should have ManageData operation"
+                );
             }
             _ => panic!("unexpected envelope type"),
         }
@@ -453,7 +474,8 @@ mod tests {
         let account = test_account();
         let response = build_challenge_transaction(&account).unwrap();
 
-        let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(&response.transaction).unwrap();
+        let envelope: TransactionEnvelope =
+            stellar_xdr::ReadXdr::from_xdr(&response.transaction).unwrap();
 
         match envelope {
             TransactionEnvelope::Tx(tx) => {
@@ -462,7 +484,10 @@ mod tests {
                     "transaction should have time bounds"
                 );
                 let bounds = tx.time_bounds.unwrap();
-                assert!(bounds.max_time.0 > bounds.min_time.0, "max time should be greater than min time");
+                assert!(
+                    bounds.max_time.0 > bounds.min_time.0,
+                    "max time should be greater than min time"
+                );
                 assert_eq!(
                     bounds.max_time.0 - bounds.min_time.0,
                     300,
@@ -489,7 +514,11 @@ mod tests {
                     !tx_v1.signatures.is_empty(),
                     "signed transaction should have signatures"
                 );
-                assert_eq!(tx_v1.signatures.len(), 1, "should have exactly one signature");
+                assert_eq!(
+                    tx_v1.signatures.len(),
+                    1,
+                    "should have exactly one signature"
+                );
             }
             _ => panic!("signed envelope should be TxV1"),
         }
@@ -553,7 +582,8 @@ mod tests {
             TransactionEnvelope::TxV1(tx_v1) => tx_v1,
             _ => panic!("expected TxV1"),
         };
-        let tx_hash = hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone())).unwrap();
+        let tx_hash =
+            hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone())).unwrap();
         let server_key = server_public_key_bytes(&secret).unwrap();
 
         let matches = tx_v1
@@ -576,7 +606,8 @@ mod tests {
             TransactionEnvelope::TxV1(tx_v1) => tx_v1,
             _ => panic!("expected TxV1"),
         };
-        let tx_hash = hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone())).unwrap();
+        let tx_hash =
+            hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone())).unwrap();
         let wrong_key = [9u8; 32];
 
         let matches = tx_v1
@@ -616,7 +647,8 @@ mod tests {
         let server_secret = server_secret_key.as_unredacted().to_string();
 
         let response = build_challenge_transaction(&client_account).unwrap();
-        let server_signed = sign_transaction_envelope(&response.transaction, &server_secret).unwrap();
+        let server_signed =
+            sign_transaction_envelope(&response.transaction, &server_secret).unwrap();
         let fully_signed = add_client_signature(&server_signed, &client_secret);
 
         let envelope: TransactionEnvelope = stellar_xdr::ReadXdr::from_xdr(&fully_signed).unwrap();
@@ -626,7 +658,8 @@ mod tests {
         };
         assert_eq!(tx_v1.signatures.len(), 2);
 
-        let tx_hash = hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone())).unwrap();
+        let tx_hash =
+            hash_transaction_with_network(&TransactionEnvelope::Tx(tx_v1.tx.clone())).unwrap();
         let server_key = server_public_key_bytes(&server_secret).unwrap();
         let client_key = server_public_key_bytes(&client_secret).unwrap();
 

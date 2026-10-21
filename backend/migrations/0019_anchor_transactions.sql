@@ -81,6 +81,15 @@ WHERE deposit_transfer_id IS NOT NULL;
 CREATE INDEX idx_anchor_transactions_withdrawal ON anchor_transactions(withdrawal_id)
 WHERE withdrawal_id IS NOT NULL;
 
+-- Keeps a row's updated_at honest. Shared with the batch payments table.
+CREATE OR REPLACE FUNCTION update_updated_at() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
 -- Trigger to update updated_at
 CREATE TRIGGER update_anchor_transactions_updated_at
     BEFORE UPDATE ON anchor_transactions
