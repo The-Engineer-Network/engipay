@@ -20,6 +20,7 @@ use axum::routing::{get, post};
 
 pub mod create_wallet;
 pub mod estimate_fee;
+pub mod path_payment;
 
 use crate::routes::estimate_fee::FeeOracle;
 
@@ -130,6 +131,14 @@ async fn track_request_metrics(
             crate::metrics::REQUESTS_CREATE_WALLET.fetch_add(1, Ordering::Relaxed);
             crate::metrics::DURATION_US_CREATE_WALLET.fetch_add(elapsed_us, Ordering::Relaxed);
         }
+        "/internal/stellar/path-quote" => {
+            crate::metrics::REQUESTS_PATH_QUOTE.fetch_add(1, Ordering::Relaxed);
+            crate::metrics::DURATION_US_PATH_QUOTE.fetch_add(elapsed_us, Ordering::Relaxed);
+        }
+        "/internal/stellar/path-payment" => {
+            crate::metrics::REQUESTS_PATH_PAYMENT.fetch_add(1, Ordering::Relaxed);
+            crate::metrics::DURATION_US_PATH_PAYMENT.fetch_add(elapsed_us, Ordering::Relaxed);
+        }
         _ => {}
     }
 
@@ -162,6 +171,7 @@ pub fn router_with_state(state: ChainHttpState) -> Router {
 fn internal(state: ChainHttpState) -> Router {
     Router::new()
         .route("/internal/estimate-fee", post(estimate_fee::estimate_fee))
+        .merge(path_payment::routes())
         .merge(create_wallet::routes())
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
         .layer(axum::middleware::from_fn(track_request_metrics))

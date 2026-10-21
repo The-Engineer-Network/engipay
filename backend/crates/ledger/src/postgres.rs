@@ -180,6 +180,163 @@ impl PostgresLedgerStore {
         Ok(out)
     }
 
+    /// Records a cross-asset Stellar path payment (issue #513).
+    ///
+    /// Persists what the user sent and what the recipient received, along with
+    /// the slippage limit the user agreed to and the on-chain transaction hash.
+    /// Idempotent on `tx_hash`: replaying the same hash returns the original
+    /// receipt with `replayed: true` and writes nothing.
+    pub async fn record_path_payment(
+        &self,
+        sent: Money,
+        received: Money,
+        slippage_bps: u32,
+        tx_hash: &str,
+    ) -> Result<Receipt, LedgerError> {
+        crate::require_positive(sent)?;
+        crate::require_positive(received)?;
+        require_non_empty(tx_hash)?;
+
+        with_serializable_retry(|| {
+            self.record_path_payment_inner(sent, received, slippage_bps, tx_hash)
+        })
+        .await
+    }
+
+    async fn record_path_payment_inner(
+        &self,
+        sent: Money,
+        received: Money,
+        slippage_bps: u32,
+        tx_hash: &str,
+    ) -> Result<Receipt, LedgerError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        set_serializable(&mut tx).await?;
+
+        let reference = format!("path_payment:{tx_hash}");
+        let fingerprint = path_payment_fingerprint(sent, received, slippage_bps);
+        if let Some(receipt) = check_idempotency(&mut tx, &reference, &fingerprint).await? {
+            return Ok(receipt);
+        }
+
+        let tx_id = Uuid::new_v4();
+        insert_transaction(&mut tx, tx_id, "path_payment", &reference, &fingerprint).await?;
+
+        sqlx::query(
+            "INSERT INTO stellar_path_payments \
+                (transaction_id, tx_hash, sent_asset, sent_amount, \
+                 received_asset, received_amount, slippage_bps) \
+             VALUES ($1, $2, $3, $4::numeric, $5, $6::numeric, $7)",
+        )
+        .bind(tx_id)
+        .bind(tx_hash)
+        .bind(sent.asset.symbol())
+        .bind(sent.minor.to_string())
+        .bind(received.asset.symbol())
+        .bind(received.minor.to_string())
+        .bind(i64::from(slippage_bps))
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+
+        tx.commit().await.map_err(db_err)?;
+        Ok(Receipt {
+            transaction_id: tx_id,
+            replayed: false,
+        })
+    }
+
+    /// Records an inbound SEP-31 cross-border payment (issue #515) and credits
+    /// the recipient's available balance.
+    ///
+    /// Idempotent on the Stellar transaction hash: replaying the same hash
+    /// returns the original receipt with `replayed: true` and moves nothing.
+    pub async fn record_sep31_transaction(
+        &self,
+        recipient: UserId,
+        money: Money,
+        stellar_tx_hash: &str,
+        sender_info: &str,
+    ) -> Result<Receipt, LedgerError> {
+        crate::require_positive(money)?;
+        require_non_empty(stellar_tx_hash)?;
+
+        with_serializable_retry(|| {
+            self.record_sep31_transaction_inner(recipient, money, stellar_tx_hash, sender_info)
+        })
+        .await
+    }
+
+    async fn record_sep31_transaction_inner(
+        &self,
+        recipient: UserId,
+        money: Money,
+        stellar_tx_hash: &str,
+        sender_info: &str,
+    ) -> Result<Receipt, LedgerError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        set_serializable(&mut tx).await?;
+
+        let reference = format!("sep31:{stellar_tx_hash}");
+        let fingerprint = sep31_fingerprint(recipient, money, sender_info);
+        if let Some(receipt) = check_idempotency(&mut tx, &reference, &fingerprint).await? {
+            return Ok(receipt);
+        }
+
+        let tx_id = Uuid::new_v4();
+        insert_transaction(&mut tx, tx_id, "sep31_receive", &reference, &fingerprint).await?;
+
+        sqlx::query(
+            "INSERT INTO sep31_transactions \
+                (transaction_id, stellar_tx_hash, recipient_id, asset, amount, sender_info) \
+             VALUES ($1, $2, $3, $4, $5::numeric, $6)",
+        )
+        .bind(tx_id)
+        .bind(stellar_tx_hash)
+        .bind(recipient.as_uuid())
+        .bind(money.asset.symbol())
+        .bind(money.minor.to_string())
+        .bind(sender_info)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+
+        // Credit the recipient: money arrives from the external anchor.
+        let neg = negate(money.minor)?;
+        insert_posting_system(&mut tx, tx_id, "external_inflow", money.asset, neg).await?;
+        insert_posting_user(
+            &mut tx,
+            tx_id,
+            recipient,
+            money.asset,
+            "available",
+            money.minor,
+        )
+        .await?;
+
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::FundsDeposited {
+            user_id: recipient,
+            asset: money.asset,
+            amount: money.minor,
+            reference: reference.clone(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(&reference),
+        )
+        .await?;
+
+        tx.commit().await.map_err(db_err)?;
+        Ok(Receipt {
+            transaction_id: tx_id,
+            replayed: false,
+        })
+    }
+
     /// Records the result of one reconciliation run in `reconciliation_runs`.
     ///
     /// `asset` is the asset symbol (e.g. `"XLM"`, `"USDC"`).
@@ -877,6 +1034,20 @@ fn hold_fingerprint(user: UserId, money: Money) -> String {
 
 fn transfer_fingerprint(from: UserId, to: UserId, money: Money) -> String {
     format!("transfer|{}|{}|{}|{}", from, to, money.asset, money.minor)
+}
+
+fn path_payment_fingerprint(sent: Money, received: Money, slippage_bps: u32) -> String {
+    format!(
+        "path_payment|{}|{}|{}|{}|{}",
+        sent.asset, sent.minor, received.asset, received.minor, slippage_bps
+    )
+}
+
+fn sep31_fingerprint(recipient: UserId, money: Money, sender_info: &str) -> String {
+    format!(
+        "sep31|{}|{}|{}|{}",
+        recipient, money.asset, money.minor, sender_info
+    )
 }
 
 // ── Error conversion ───────────────────────────────────────────────────

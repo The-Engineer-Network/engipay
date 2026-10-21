@@ -8,8 +8,10 @@ pub mod cursor;
 pub mod horizon;
 pub mod network;
 pub mod payment;
+pub mod path_payment;
 pub mod sep10;
 pub mod sep24;
+pub mod sep31;
 pub mod settlement;
 pub mod soroban;
 pub mod watcher;
@@ -24,6 +26,11 @@ use tracing::{error, warn};
 use self::horizon::{Account, Page, PaymentRecord, Root, Submitted, TransactionCache};
 pub use self::network::StellarNetwork;
 use self::payment::{PaymentRequest, StellarSigner};
+pub use self::path_payment::{
+    PathPaymentRequest, PathQuote, PathQuoteRequest, SlippageBound, build_path_payment,
+    find_paths,
+};
+pub use self::sep31::router as sep31_router;
 use crate::{ChainClient, ChainError, EventStream, ObservedDeposit};
 
 /// Records per Horizon page, the maximum it allows.
@@ -345,6 +352,67 @@ impl StellarClient {
             hash: hex_lower(&hash),
             envelope_xdr,
         })
+    }
+
+    /// Finds a path from `request.source_asset` to `request.destination_asset`
+    /// through Horizon's strict-send/strict-receive path finding and returns
+    /// the quote, including the slippage bound the caller must agree to.
+    ///
+    /// Errors: [`ChainError::Unavailable`] if Horizon could not be read,
+    /// [`ChainError::Rejected`] if no path exists or the request is invalid.
+    pub async fn quote_path_payment(
+        &self,
+        request: &PathQuoteRequest,
+    ) -> Result<PathQuote, ChainError> {
+        find_paths(
+            &self.http,
+            &self.config.horizon_url,
+            self.config.network,
+            request,
+        )
+        .await
+    }
+
+    /// Builds, signs and submits a path payment, enforcing the slippage bound
+    /// carried in `request.slippage`. Returns the transaction hash once the
+    /// network has accepted it into a ledger.
+    ///
+    /// The quote is re-checked against the bound before signing, so a path
+    /// that moved past the user's limit is refused with
+    /// [`ChainError::Rejected`] rather than submitted.
+    pub async fn send_path_payment(
+        &self,
+        signer: &dyn StellarSigner,
+        request: &PathPaymentRequest,
+    ) -> Result<String, ChainError> {
+        let source = signer.account();
+        let (sequence, fee) = tokio::join!(self.sequence(&source), self.recommended_fee());
+        let sequence = sequence?;
+        let valid_until = SystemTime::now()
+            .checked_add(PAYMENT_VALIDITY)
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|elapsed| elapsed.as_secs())
+            .ok_or_else(|| ChainError::Config("system clock is before 1970".to_owned()))?;
+
+        let transaction = build_path_payment(
+            &signer.public_key(),
+            sequence,
+            request,
+            self.config.network,
+            valid_until,
+            fee,
+        )
+        .map_err(|error| ChainError::Rejected(error.to_string()))?;
+        let (envelope, hash) = payment::sign(transaction, signer, self.config.network)
+            .map_err(|error| ChainError::Rejected(error.to_string()))?;
+        let envelope_xdr = payment::envelope_base64(&envelope)
+            .map_err(|error| ChainError::Rejected(error.to_string()))?;
+
+        self.submit_prepared(&PreparedPayment {
+            hash: hex_lower(&hash),
+            envelope_xdr,
+        })
+        .await
     }
 
     /// Submits a payment from [`prepare_payment`](Self::prepare_payment).

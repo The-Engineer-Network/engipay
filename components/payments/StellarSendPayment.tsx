@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import { AlertTriangle, CheckCircle2, ClipboardPaste, ExternalLink, QrCode } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -19,6 +19,19 @@ import {
 import { type StellarAssetCode, stellarNetwork, stellarTransactionUrl } from "@/lib/stellar"
 import { broadcastPosPayment } from "@/lib/pos"
 import { cn } from "@/lib/utils"
+
+const SLIPPAGE_OPTIONS = [0.5, 1, 2] as const
+
+interface PathQuote {
+  sourceAsset: StellarAssetCode
+  destinationAsset: StellarAssetCode
+  sourceAmount: string
+  destinationAmount: string
+  /** Minimum destination amount the user will accept, after slippage. */
+  minDestinationAmount: string
+  slippagePercent: number
+  path: { asset_code: string; asset_issuer?: string }[]
+}
 
 const ASSETS: { code: StellarAssetCode; icon: string }[] = [
   { code: "XLM", icon: "\u{2728}" },
@@ -48,7 +61,26 @@ export function StellarSendPayment({
   const [memoType, setMemoType] = useState<StellarMemo["type"]>(initialMemo?.type ?? "text")
   const [memo, setMemo] = useState(initialMemo?.value ?? "")
   const [isSending, setIsSending] = useState(false)
-  const [sent, setSent] = useState<{ hash: string; createsAccount: boolean } | null>(null)
+  const [sent, setSent] = useState<{
+    hash: string
+    createsAccount: boolean
+    sentAmount: string
+    sentAsset: StellarAssetCode
+    receivedAmount: string
+    receivedAsset: StellarAssetCode
+  } | null>(null)
+
+  // Cross-asset sends: the user pays in `asset` but the recipient receives `destinationAsset`.
+  const [destinationAsset, setDestinationAsset] = useState<StellarAssetCode>(
+    initialAsset === "USDC" ? "XLM" : "USDC"
+  )
+  const [slippagePercent, setSlippagePercent] = useState<number>(1)
+  const [quote, setQuote] = useState<PathQuote | null>(null)
+  const [isQuoting, setIsQuoting] = useState(false)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+  const [slippageConfirmed, setSlippageConfirmed] = useState(false)
+
+  const isCrossAsset = asset !== destinationAsset
 
   const pastedSecret = isStellarSecretKey(recipient)
   const recipientValid = recipient === "" || isStellarAddress(recipient)
@@ -61,6 +93,61 @@ export function StellarSendPayment({
 
   const available =
     asset === "XLM" ? balances?.xlmSpendable : balances?.usdc ?? (balances?.funded ? "0" : undefined)
+
+  // Fetch a path quote from Horizon whenever the cross-asset inputs change.
+  useEffect(() => {
+    if (!isCrossAsset || !recipientValid || !recipient || !amountValid || !amount) {
+      setQuote(null)
+      setQuoteError(null)
+      setIsQuoting(false)
+      return
+    }
+
+    let cancelled = false
+    setIsQuoting(true)
+    setQuoteError(null)
+
+    const controller = new AbortController()
+    const timer = setTimeout(async () => {
+      try {
+        const response = await fetch("/api/stellar/path-quote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceAsset: asset,
+            destinationAsset,
+            sourceAmount: amount,
+            destinationAccount: recipient,
+            slippagePercent,
+          }),
+          signal: controller.signal,
+        })
+        if (!response.ok) {
+          const body = await response.json().catch(() => null)
+          throw new Error(body?.error ?? "No path could be found for this payment.")
+        }
+        const data = (await response.json()) as PathQuote
+        if (!cancelled) setQuote(data)
+      } catch (error) {
+        if (cancelled || (error instanceof DOMException && error.name === "AbortError")) return
+        setQuote(null)
+        setQuoteError(error instanceof Error ? error.message : "No path could be found for this payment.")
+      } finally {
+        if (!cancelled) setIsQuoting(false)
+      }
+    }, 400)
+
+    return () => {
+      cancelled = true
+      controller.abort()
+      clearTimeout(timer)
+    }
+  }, [isCrossAsset, asset, destinationAsset, amount, recipient, recipientValid, amountValid, slippagePercent])
+
+  // Any change to the quote inputs invalidates the user's slippage acknowledgement.
+  useEffect(() => {
+    setSlippageConfirmed(false)
+  }, [quote])
 
   const pasteAddress = async () => {
     try {
@@ -79,13 +166,29 @@ export function StellarSendPayment({
         amount,
         asset,
         memo: memo ? { type: memoType, value: memo } : undefined,
+        ...(isCrossAsset && quote
+          ? {
+              pathPayment: {
+                destinationAsset,
+                destinationAmount: quote.destinationAmount,
+                minDestinationAmount: quote.minDestinationAmount,
+                path: quote.path,
+              },
+            }
+          : {}),
       })
-      setSent(result)
+      setSent({
+        ...result,
+        sentAmount: quote?.sourceAmount ?? amount,
+        sentAsset: asset,
+        receivedAmount: quote?.destinationAmount ?? amount,
+        receivedAsset: isCrossAsset ? destinationAsset : asset,
+      })
       broadcastPosPayment({
         type: "payment_received",
         recipient,
-        amount,
-        asset,
+        amount: quote?.destinationAmount ?? amount,
+        asset: isCrossAsset ? destinationAsset : asset,
         txHash: result.hash,
         chain: "stellar",
       })
@@ -123,10 +226,24 @@ export function StellarSendPayment({
         </span>
         <p className="text-lg font-semibold">Payment sent</p>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          {amount} {asset} arrived on {stellarNetwork.label}
+          {sent.receivedAmount} {sent.receivedAsset} arrived on {stellarNetwork.label}
           {sent.createsAccount ? ", and opened the recipient's Stellar account" : ""}. Stellar
           payments are final in seconds.
         </p>
+        <dl className="mx-auto mt-4 max-w-xs space-y-1 rounded-lg border border-border p-3 text-left text-sm">
+          <div className="flex items-center justify-between gap-4">
+            <dt className="text-muted-foreground">You sent</dt>
+            <dd className="font-medium tabular-nums">
+              {sent.sentAmount} {sent.sentAsset}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <dt className="text-muted-foreground">They received</dt>
+            <dd className="font-medium tabular-nums">
+              {sent.receivedAmount} {sent.receivedAsset}
+            </dd>
+          </div>
+        </dl>
         <a
           href={stellarTransactionUrl(sent.hash)}
           target="_blank"
@@ -144,6 +261,8 @@ export function StellarSendPayment({
             setRecipient("")
             setAmount("")
             setMemo("")
+            setQuote(null)
+            setSlippageConfirmed(false)
           }}
         >
           Send another
@@ -185,6 +304,35 @@ export function StellarSendPayment({
       </div>
 
       <div className="space-y-2">
+        <Label>Recipient receives</Label>
+        <div className="flex flex-wrap gap-2">
+          {ASSETS.map((option) => (
+            <button
+              key={option.code}
+              type="button"
+              onClick={() => setDestinationAsset(option.code)}
+              aria-pressed={destinationAsset === option.code}
+              className={cn(
+                "flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors",
+                destinationAsset === option.code
+                  ? "border-primary/60 bg-primary/15 text-foreground"
+                  : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+              )}
+            >
+              <span aria-hidden="true">{option.icon}</span>
+              {option.code}
+            </button>
+          ))}
+        </div>
+        {isCrossAsset && (
+          <p className="text-xs text-muted-foreground">
+            You pay in {asset}; the recipient gets {destinationAsset}. Stellar finds a path and converts
+            the amount for you.
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-2">
         <div className="flex items-baseline justify-between gap-4">
           <Label htmlFor="stellar-amount">Amount</Label>
           {available !== undefined && (
@@ -221,6 +369,79 @@ export function StellarSendPayment({
           </p>
         )}
       </div>
+
+      {isCrossAsset && (
+        <div className="space-y-3 rounded-lg border border-border p-4">
+          <div className="flex items-center justify-between gap-4">
+            <Label>Slippage limit</Label>
+            <div className="flex gap-1 rounded-full border border-border p-0.5 text-xs">
+              {SLIPPAGE_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setSlippagePercent(option)}
+                  aria-pressed={slippagePercent === option}
+                  className={cn(
+                    "rounded-full px-2.5 py-0.5 transition-colors",
+                    slippagePercent === option ? "bg-primary/15 text-foreground" : "text-muted-foreground"
+                  )}
+                >
+                  {option}%
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {isQuoting && (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader className="h-4 w-4" />
+              Finding a path…
+            </p>
+          )}
+
+          {!isQuoting && quoteError && (
+            <p className="flex items-start gap-2 text-sm text-destructive">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              {quoteError}
+            </p>
+          )}
+
+          {!isQuoting && quote && (
+            <>
+              <dl className="space-y-1 text-sm">
+                <div className="flex items-center justify-between gap-4">
+                  <dt className="text-muted-foreground">You send</dt>
+                  <dd className="font-medium tabular-nums">
+                    {quote.sourceAmount} {quote.sourceAsset}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <dt className="text-muted-foreground">They receive (estimated)</dt>
+                  <dd className="font-medium tabular-nums">
+                    {quote.destinationAmount} {quote.destinationAsset}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <dt className="text-muted-foreground">Minimum they receive</dt>
+                  <dd className="font-medium tabular-nums">
+                    {quote.minDestinationAmount} {quote.destinationAsset}
+                  </dd>
+                </div>
+              </dl>
+              <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={slippageConfirmed}
+                  onChange={(event) => setSlippageConfirmed(event.target.checked)}
+                  className="mt-0.5"
+                />
+                I accept that the recipient may receive as little as {quote.minDestinationAmount}{" "}
+                {quote.destinationAsset} if the rate moves by up to {slippagePercent}%.
+              </label>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-4">
@@ -294,7 +515,14 @@ export function StellarSendPayment({
       <Button
         onClick={handleSend}
         disabled={
-          isSending || !recipient || !amount || !recipientValid || !amountValid || !memoValid || Boolean(networkMismatch)
+          isSending ||
+          !recipient ||
+          !amount ||
+          !recipientValid ||
+          !amountValid ||
+          !memoValid ||
+          Boolean(networkMismatch) ||
+          (isCrossAsset && (!quote || isQuoting || Boolean(quoteError) || !slippageConfirmed))
         }
         className="glow-button h-12 w-full rounded-full text-base font-semibold"
       >
@@ -303,6 +531,8 @@ export function StellarSendPayment({
             <Loader className="mr-2 h-4 w-4" />
             Check {stellarWalletName ?? "your wallet"}…
           </>
+        ) : isCrossAsset ? (
+          `Send ${asset} → ${destinationAsset}`
         ) : (
           `Send ${asset}`
         )}

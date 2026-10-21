@@ -166,6 +166,49 @@ export interface RowResult {
   error?: string | null
 }
 
+// ── Cross-asset Stellar path payments (#513) ─────────────────────────────────
+
+export interface StellarPathQuoteRequest {
+  source_asset: string
+  source_amount?: string
+  destination_asset: string
+  destination_amount?: string
+  destination_account?: string
+  mode: "strict_send" | "strict_receive"
+}
+
+export interface StellarPathQuote {
+  quote_id: string
+  mode: "strict_send" | "strict_receive"
+  source_asset: string
+  source_amount: string
+  destination_asset: string
+  destination_amount: string
+  path: string[]
+  slippage_bps: number
+  min_destination_amount?: string
+  max_source_amount?: string
+  expires_at: string
+}
+
+export interface StellarPathPaymentRequest {
+  quote_id: string
+  destination_account: string
+  slippage_bps: number
+  memo?: string
+}
+
+export interface StellarPathPaymentResult {
+  transfer_id: string
+  tx_hash: string
+  source_asset: string
+  source_amount: string
+  destination_asset: string
+  destination_amount: string
+  path: string[]
+  status: string
+}
+
 // ── Naira SEP-24 Anchor (#514) ────────────────────────────────────────────────
 
 export interface InteractiveFlowResponse {
@@ -415,6 +458,34 @@ export async function cancelBatchPayment(batchId: string): Promise<void> {
   await apiRequest<void>(`/v1/batch-payments/${batchId}/cancel`, {
     method: "POST",
   })
+}
+
+// ── Cross-asset Stellar path payment functions (#513) ────────────────────────
+
+/** POST /v1/quotes/stellar-path — find a path with Horizon and quote a strict-send or strict-receive payment. */
+export async function quoteStellarPath(req: StellarPathQuoteRequest): Promise<StellarPathQuote> {
+  const result = await apiRequest<StellarPathQuote>("/v1/quotes/stellar-path", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a path quote.")
+  return result
+}
+
+/**
+ * POST /v1/transfers/stellar-path — execute a quoted path payment.
+ * The slippage limit is enforced server-side; exceeding it rejects with
+ * ApiRequestError(400, "slippage_exceeded").
+ */
+export async function sendStellarPathPayment(
+  req: StellarPathPaymentRequest
+): Promise<StellarPathPaymentResult> {
+  const result = await apiRequest<StellarPathPaymentResult>("/v1/transfers/stellar-path", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return path payment result.")
+  return result
 }
 
 // ── Naira SEP-24 Anchor Functions (#514) ──────────────────────────────────────

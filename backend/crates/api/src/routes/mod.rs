@@ -15,6 +15,9 @@ pub mod openapi;
 pub mod payment_requests;
 pub mod quotes;
 pub mod requests;
+pub mod sep10;
+pub mod sep24;
+pub mod sep31;
 pub mod settles;
 pub mod transactions;
 pub mod transfers;
@@ -45,4 +48,7 @@ pub fn v1() -> Router<AppState> {
         .merge(withdrawals::router())
         .merge(quotes::routes())
         .merge(settles::routes())
+        .merge(sep10::routes())
+        .merge(sep24::routes())
+        .merge(sep31::routes())
 }

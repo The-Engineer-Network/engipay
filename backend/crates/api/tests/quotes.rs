@@ -212,6 +212,155 @@ async fn each_product_has_a_distinct_schedule_version() {
     }
 }
 
+// ─── POST /v1/quotes/stellar-path ────────────────────────────────────────────
+
+#[tokio::test]
+async fn stellar_path_quote_returns_send_and_receive_amounts() {
+    // Strict-send: 10 XLM in, USDC out. The fallback path finder quotes
+    // 1 XLM = 0.10 USDC, so 10 XLM → 1 USDC = 10_000_000 smallest units.
+    let (status, body) = post_json(
+        "/v1/quotes/stellar-path",
+        json!({
+            "source_asset": "XLM",
+            "dest_asset": "USDC",
+            "mode": "strict_send",
+            "amount_minor": 100_000_000_i64,
+            "max_slippage_bps": 50
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["source_asset"], "XLM");
+    assert_eq!(body["dest_asset"], "USDC");
+    assert_eq!(body["mode"], "strict_send");
+    assert_eq!(body["send_minor"], 100_000_000_i64);
+    assert_eq!(body["receive_minor"], 10_000_000_i64);
+    assert_eq!(body["max_slippage_bps"], 50);
+    // The quoted receive amount must respect the slippage bound.
+    let min_receive = body["min_receive_minor"].as_i64().unwrap();
+    assert!(min_receive > 0);
+    assert!(min_receive <= 10_000_000);
+    // A path must be reported so the caller can submit it.
+    assert!(body["path"].is_array());
+    assert!(body["quote_id"].is_string());
+}
+
+#[tokio::test]
+async fn stellar_path_quote_supports_strict_receive() {
+    // Strict-receive: want exactly 1 USDC out; the send amount is derived.
+    let (status, body) = post_json(
+        "/v1/quotes/stellar-path",
+        json!({
+            "source_asset": "XLM",
+            "dest_asset": "USDC",
+            "mode": "strict_receive",
+            "amount_minor": 10_000_000_i64,
+            "max_slippage_bps": 50
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["mode"], "strict_receive");
+    assert_eq!(body["receive_minor"], 10_000_000_i64);
+    assert_eq!(body["send_minor"], 100_000_000_i64);
+}
+
+#[tokio::test]
+async fn stellar_path_quote_rejects_insufficient_liquidity() {
+    // The fallback path finder has no route for XLM → EURC, so the quote
+    // cannot be produced and the endpoint must fail rather than invent a rate.
+    let (status, body) = post_json(
+        "/v1/quotes/stellar-path",
+        json!({
+            "source_asset": "XLM",
+            "dest_asset": "EURC",
+            "mode": "strict_send",
+            "amount_minor": 100_000_000_i64,
+            "max_slippage_bps": 50
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+    assert_eq!(body["error"]["code"], "no_path_found");
+}
+
+#[tokio::test]
+async fn stellar_path_quote_rejects_slippage_beyond_limit() {
+    // A zero slippage tolerance cannot be honoured by any real path, so the
+    // quote must be rejected instead of silently widening the bound.
+    let (status, body) = post_json(
+        "/v1/quotes/stellar-path",
+        json!({
+            "source_asset": "XLM",
+            "dest_asset": "USDC",
+            "mode": "strict_send",
+            "amount_minor": 100_000_000_i64,
+            "max_slippage_bps": 0
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+    assert_eq!(body["error"]["code"], "slippage_exceeded");
+}
+
+#[tokio::test]
+async fn stellar_path_quote_rejects_same_source_and_dest() {
+    let (status, body) = post_json(
+        "/v1/quotes/stellar-path",
+        json!({
+            "source_asset": "USDC",
+            "dest_asset": "USDC",
+            "mode": "strict_send",
+            "amount_minor": 100_000_000_i64,
+            "max_slippage_bps": 50
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert_eq!(body["error"]["code"], "bad_request");
+}
+
+#[tokio::test]
+async fn stellar_path_quote_rejects_non_positive_amount() {
+    let (status, body) = post_json(
+        "/v1/quotes/stellar-path",
+        json!({
+            "source_asset": "XLM",
+            "dest_asset": "USDC",
+            "mode": "strict_send",
+            "amount_minor": 0,
+            "max_slippage_bps": 50
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert_eq!(body["error"]["code"], "bad_request");
+}
+
+#[tokio::test]
+async fn stellar_path_quote_rejects_unknown_mode() {
+    let (status, body) = post_json(
+        "/v1/quotes/stellar-path",
+        json!({
+            "source_asset": "XLM",
+            "dest_asset": "USDC",
+            "mode": "exact",
+            "amount_minor": 100_000_000_i64,
+            "max_slippage_bps": 50
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert_eq!(body["error"]["code"], "bad_request");
+}
+
 // ─── POST /v1/settles ────────────────────────────────────────────────────────
 
 #[tokio::test]

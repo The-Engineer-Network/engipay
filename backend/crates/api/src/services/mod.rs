@@ -13,4 +13,5 @@ pub mod payment_requests;
 pub mod price_source;
 pub mod recipient;
 pub mod stellar_muxed;
+pub mod stellar_path;
 pub mod withdrawal_review;

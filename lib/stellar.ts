@@ -194,3 +194,146 @@ export async function submitStellarTransaction(signedXdr: string): Promise<strin
 export function stellarTransactionUrl(hash: string): string {
   return `${stellarNetwork.explorerUrl}/tx/${hash}`
 }
+
+/** One hop of a path payment: an asset to convert through. */
+export interface StellarPathAsset {
+  code: StellarAssetCode
+  issuer?: string
+}
+
+/** A quoted path payment. Amounts are human units, not stroops. */
+export interface StellarPathQuote {
+  /** Assets the payment converts through, in order. Empty for a direct payment. */
+  path: StellarPathAsset[]
+  /** What the sender gives up, including the source asset. */
+  sourceAmount: string
+  sourceAsset: StellarPathAsset
+  /** What the recipient gets, in the destination asset. */
+  destinationAmount: string
+  destinationAsset: StellarPathAsset
+}
+
+export type StellarPathMode = "strict-send" | "strict-receive"
+
+interface HorizonPathRecord {
+  source_asset_type: string
+  source_asset_code?: string
+  source_asset_issuer?: string
+  source_amount: string
+  destination_asset_type: string
+  destination_asset_code?: string
+  destination_asset_issuer?: string
+  destination_amount: string
+  path: Array<{ asset_type: string; asset_code?: string; asset_issuer?: string }>
+}
+
+function assetFromHorizon(record: {
+  asset_type: string
+  asset_code?: string
+  asset_issuer?: string
+}): StellarPathAsset {
+  if (record.asset_type === "native") return { code: "XLM" }
+  return { code: record.asset_code as StellarAssetCode, issuer: record.asset_issuer }
+}
+
+function assetToHorizonParams(asset: StellarPathAsset, prefix: "source" | "destination"): URLSearchParams {
+  const params = new URLSearchParams()
+  if (asset.code === "XLM") {
+    params.set(`${prefix}_asset_type`, "native")
+  } else {
+    if (!asset.issuer) throw new Error(`${asset.code} needs an issuer`)
+    params.set(`${prefix}_asset_type`, "credit_alphanum4")
+    params.set(`${prefix}_asset_code`, asset.code)
+    params.set(`${prefix}_asset_issuer`, asset.issuer)
+  }
+  return params
+}
+
+/**
+ * Asks Horizon for the best path between two assets.
+ *
+ * Strict-send fixes what the sender pays and quotes what arrives; strict-receive
+ * fixes what the recipient gets and quotes what it costs. Returns null when no
+ * path exists, which is a normal answer, not an error.
+ */
+export async function findStellarPath(options: {
+  mode: StellarPathMode
+  sourceAsset: StellarPathAsset
+  destinationAsset: StellarPathAsset
+  /** Amount in the asset the mode fixes: source for strict-send, destination for strict-receive. */
+  amount: string
+}): Promise<StellarPathQuote | null> {
+  const { mode, sourceAsset, destinationAsset, amount } = options
+  const params = assetToHorizonParams(sourceAsset, "source")
+  for (const [key, value] of assetToHorizonParams(destinationAsset, "destination")) {
+    params.set(key, value)
+  }
+  params.set(mode === "strict-send" ? "source_amount" : "destination_amount", amount)
+
+  const records = await horizon<{ records: HorizonPathRecord[] }>(`/paths/${mode}?${params.toString()}`)
+  const best = records?.records?.[0]
+  if (!best) return null
+
+  return {
+    path: best.path.map(assetFromHorizon),
+    sourceAmount: fromStroops(toStroops(best.source_amount)),
+    sourceAsset: assetFromHorizon({
+      asset_type: best.source_asset_type,
+      asset_code: best.source_asset_code,
+      asset_issuer: best.source_asset_issuer,
+    }),
+    destinationAmount: fromStroops(toStroops(best.destination_amount)),
+    destinationAsset: assetFromHorizon({
+      asset_type: best.destination_asset_type,
+      asset_code: best.destination_asset_code,
+      asset_issuer: best.destination_asset_issuer,
+    }),
+  }
+}
+
+export interface SlippageCheck {
+  ok: boolean
+  /** How much worse than the quote the payment is, in basis points. */
+  slippageBps: number
+  /** The worst amount still acceptable, in the asset the user cares about. */
+  minimumReceived?: string
+  maximumSent?: string
+}
+
+/**
+ * Compares a fresh quote against the one the user agreed to.
+ *
+ * For strict-send the recipient must still get at least `expectedAmount` minus
+ * the tolerance; for strict-receive the sender must not pay more than
+ * `expectedAmount` plus the tolerance. `toleranceBps` is the slippage limit the
+ * user agreed to, in basis points (100 = 1%).
+ */
+export function checkSlippage(options: {
+  mode: StellarPathMode
+  expectedAmount: string
+  quotedAmount: string
+  toleranceBps: number
+}): SlippageCheck {
+  const { mode, expectedAmount, quotedAmount, toleranceBps } = options
+  if (!Number.isFinite(toleranceBps) || toleranceBps < 0) {
+    throw new Error(`not a slippage tolerance: ${toleranceBps}`)
+  }
+
+  const expected = toStroops(expectedAmount)
+  const quoted = toStroops(quotedAmount)
+  const tolerance = BigInt(Math.round(toleranceBps))
+
+  if (mode === "strict-send") {
+    // Quoted destination below the agreed floor is too much slippage.
+    const floor = (expected * (10_000n - tolerance)) / 10_000n
+    const ok = quoted >= floor
+    const slippageBps = expected > 0n && quoted < expected ? Number(((expected - quoted) * 10_000n) / expected) : 0
+    return { ok, slippageBps, minimumReceived: fromStroops(floor) }
+  }
+
+  // Strict-receive: quoted source above the agreed ceiling is too much slippage.
+  const ceiling = (expected * (10_000n + tolerance)) / 10_000n
+  const ok = quoted <= ceiling
+  const slippageBps = expected > 0n && quoted > expected ? Number(((quoted - expected) * 10_000n) / expected) : 0
+  return { ok, slippageBps, maximumSent: fromStroops(ceiling) }
+}

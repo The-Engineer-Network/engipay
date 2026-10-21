@@ -60,6 +60,7 @@ use engipay_ledger::postgres::PostgresLedgerStore;
 use sqlx::PgPool;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use crate::ObservedDeposit;
 use crate::dlq::{DlqReason, push_to_dlq};
@@ -161,6 +162,103 @@ impl DepositCreditor {
         }
     }
 
+    /// Credits an inbound SEP-31 cross-border payment to its recipient.
+    ///
+    /// SEP-31 payments do not arrive at a muxed deposit address: the sending
+    /// anchor submits a Stellar payment to EngiPay's receiving account and
+    /// identifies the recipient out-of-band via the SEP-31 transaction's
+    /// `receiver_id`. This method therefore resolves the recipient directly
+    /// from `receiver_id` (an EngiPay user UUID) instead of the deposit
+    /// address, then credits the ledger exactly like [`Self::process`].
+    ///
+    /// # Idempotency
+    ///
+    /// The Stellar transaction hash is used as the idempotency key, so a
+    /// payment re-delivered by the anchor (or replayed after a restart) is
+    /// credited at most once.
+    ///
+    /// # Arguments
+    ///
+    /// * `receiver_id` — the SEP-31 `receiver_id` identifying the EngiPay
+    ///   recipient.
+    /// * `money` — the amount and asset received on-chain.
+    /// * `stellar_tx_hash` — the hash of the Stellar transaction that carried
+    ///   the payment; used verbatim as the idempotency reference.
+    pub async fn credit_sep31_payment(
+        &self,
+        receiver_id: &str,
+        money: engipay_core::Money,
+        stellar_tx_hash: &str,
+    ) -> CreditOutcome {
+        // 1. Resolve the SEP-31 receiver_id → UserId.
+        let user_id = match parse_sep31_receiver_id(receiver_id) {
+            Ok(id) => id,
+            Err(_) => {
+                warn!(
+                    receiver_id = %receiver_id,
+                    tx_hash     = %stellar_tx_hash,
+                    "SEP-31 receiver_id is not a valid EngiPay user id; routing to DLQ"
+                );
+                self.dlq_sep31(receiver_id, money, stellar_tx_hash, DlqReason::UnknownRecipient)
+                    .await;
+                return CreditOutcome::Dlq(DlqReason::UnknownRecipient);
+            }
+        };
+
+        // 2. Credit the ledger, keyed on the Stellar transaction hash.
+        let reference = sep31_reference(stellar_tx_hash);
+        match self.ledger.deposit(user_id, money, &reference).await {
+            Ok(receipt) if receipt.replayed => {
+                info!(
+                    reference = %reference,
+                    user_id   = %user_id,
+                    amount    = %money,
+                    "SEP-31 payment already credited (idempotent replay)"
+                );
+                CreditOutcome::Replayed
+            }
+            Ok(_receipt) => {
+                info!(
+                    reference = %reference,
+                    user_id   = %user_id,
+                    amount    = %money,
+                    "SEP-31 payment credited"
+                );
+                CreditOutcome::Credited
+            }
+            Err(err) => {
+                warn!(
+                    reference = %reference,
+                    user_id   = %user_id,
+                    amount    = %money,
+                    error     = %err,
+                    "SEP-31 ledger credit failed; routing to DLQ"
+                );
+                let reason = ledger_error_to_dlq_reason(&err);
+                self.dlq_sep31(receiver_id, money, stellar_tx_hash, reason.clone())
+                    .await;
+                CreditOutcome::Dlq(reason)
+            }
+        }
+    }
+
+    /// Writes a failed SEP-31 payment to the DLQ, logging if the write fails.
+    async fn dlq_sep31(
+        &self,
+        receiver_id: &str,
+        money: engipay_core::Money,
+        stellar_tx_hash: &str,
+        reason: DlqReason,
+    ) {
+        let deposit = ObservedDeposit {
+            money,
+            address: receiver_id.to_owned(),
+            reference: sep31_reference(stellar_tx_hash),
+            confirmations: 0,
+        };
+        self.dlq(&deposit, reason).await;
+    }
+
     /// Resolves the deposit address to a [`UserId`].
     ///
     /// Returns `Err(CreditOutcome)` on failure so `process` can return early.
@@ -221,6 +319,20 @@ pub enum CreditOutcome {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+/// Parses a SEP-31 `receiver_id` into an EngiPay [`UserId`].
+///
+/// EngiPay issues `receiver_id` values as UUID strings; anything else is
+/// rejected so an unknown recipient is never credited.
+fn parse_sep31_receiver_id(receiver_id: &str) -> Result<UserId, uuid::Error> {
+    Uuid::parse_str(receiver_id.trim()).map(UserId::from_uuid)
+}
+
+/// Builds the ledger idempotency reference for a SEP-31 payment from the
+/// Stellar transaction hash.
+fn sep31_reference(stellar_tx_hash: &str) -> String {
+    format!("sep31:{stellar_tx_hash}")
+}
 
 fn ledger_error_to_dlq_reason(err: &LedgerError) -> DlqReason {
     match err {
@@ -584,6 +696,27 @@ mod tests {
 
         assert_eq!(ledger.calls[0].1.minor, 500_000_000_i128);
         assert_eq!(ledger.calls[0].1.asset, Asset::Usdc);
+    }
+
+    #[test]
+    fn sep31_receiver_id_parses_uuid() {
+        use super::parse_sep31_receiver_id;
+        let uuid = Uuid::new_v4();
+        let parsed = parse_sep31_receiver_id(&uuid.to_string()).unwrap();
+        assert_eq!(parsed, UserId::from_uuid(uuid));
+    }
+
+    #[test]
+    fn sep31_receiver_id_rejects_non_uuid() {
+        use super::parse_sep31_receiver_id;
+        assert!(parse_sep31_receiver_id("not-a-uuid").is_err());
+        assert!(parse_sep31_receiver_id("").is_err());
+    }
+
+    #[test]
+    fn sep31_reference_uses_tx_hash() {
+        use super::sep31_reference;
+        assert_eq!(sep31_reference("abc123"), "sep31:abc123");
     }
 
     #[test]

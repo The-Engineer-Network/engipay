@@ -28,8 +28,17 @@ use crate::error::ApiError;
 /// How long a quote is valid for.
 const QUOTE_TTL_SECS: i64 = 300; // 5 minutes
 
+/// How long a Stellar path quote is valid for.  Paths move quickly, so this is
+/// deliberately shorter than the fee-quote TTL.
+const STELLAR_PATH_QUOTE_TTL_SECS: i64 = 60; // 1 minute
+
+/// Upper bound on the slippage a client may ask for, in basis points (5%).
+const MAX_SLIPPAGE_BPS: u32 = 500;
+
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/quotes", post(create_quote))
+    Router::new()
+        .route("/quotes", post(create_quote))
+        .route("/quotes/stellar-path", post(create_stellar_path_quote))
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +122,207 @@ async fn create_quote(
         gross_minor: req.gross_minor,
         fee_minor,
         schedule_version: fee_result.schedule_version,
+        expires_at: expires_at.to_rfc3339(),
+    }))
+}
+
+/// Which side of a Stellar path payment the caller is fixing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StellarPathMode {
+    /// The source amount is fixed; the destination amount may vary within the
+    /// slippage bound.
+    StrictSend,
+    /// The destination amount is fixed; the source amount may vary within the
+    /// slippage bound.
+    StrictReceive,
+}
+
+impl StellarPathMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StellarPathMode::StrictSend => "strict_send",
+            StellarPathMode::StrictReceive => "strict_receive",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StellarPathQuoteRequest {
+    /// Asset the sender holds and will spend (e.g. `XLM`).
+    pub source_asset: Asset,
+    /// Asset the recipient wants to receive (e.g. `USDC`).
+    pub destination_asset: Asset,
+    /// Whether `amount_minor` fixes the source or the destination side.
+    pub mode: StellarPathMode,
+    /// Amount in the fixed side's smallest units.
+    pub amount_minor: i64,
+    /// Slippage the user agreed to, in basis points (e.g. `50` = 0.5%).
+    pub slippage_bps: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StellarPathQuoteResponse {
+    /// Stable id for this quote. Pass it to the send endpoint.
+    pub quote_id: Uuid,
+    pub mode: StellarPathMode,
+    pub source_asset: Asset,
+    pub destination_asset: Asset,
+    /// Amount the sender will spend, in the source asset's smallest units.
+    pub source_amount_minor: i64,
+    /// Amount the recipient will receive, in the destination asset's smallest
+    /// units.
+    pub destination_amount_minor: i64,
+    /// Intermediate assets in the path (empty for a direct path).
+    pub path: Vec<Asset>,
+    /// Slippage the user agreed to, in basis points.
+    pub slippage_bps: u32,
+    /// Worst-case amount on the variable side, derived from `slippage_bps`.
+    /// For strict-send this is the minimum destination amount; for
+    /// strict-receive it is the maximum source amount.
+    pub slippage_bound_minor: i64,
+    /// ISO-8601 expiry time. The client must re-quote after this.
+    pub expires_at: String,
+}
+
+/// Quote returned by the chain service's path-quote endpoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChainPathQuote {
+    pub source_amount_minor: i64,
+    pub destination_amount_minor: i64,
+    #[serde(default)]
+    pub path: Vec<Asset>,
+}
+
+/// Compute the worst-case amount on the variable side of a path payment.
+///
+/// For strict-send the destination amount may fall by `slippage_bps`; for
+/// strict-receive the source amount may rise by `slippage_bps`.  Rounding is
+/// always in the user's disfavour so the bound is never looser than requested.
+fn slippage_bound(mode: StellarPathMode, amount_minor: i64, slippage_bps: u32) -> i64 {
+    let bps = i128::from(slippage_bps);
+    let amount = i128::from(amount_minor);
+    let delta = amount * bps / 10_000;
+    let bound = match mode {
+        // Minimum destination: round the reduction up.
+        StellarPathMode::StrictSend => amount - (amount * bps).div_ceil(10_000),
+        // Maximum source: round the increase up.
+        StellarPathMode::StrictReceive => amount + delta.max(0),
+    };
+    i64::try_from(bound).unwrap_or(i64::MAX)
+}
+
+async fn create_stellar_path_quote(
+    State(state): State<AppState>,
+    Json(req): Json<StellarPathQuoteRequest>,
+) -> Result<Json<StellarPathQuoteResponse>, ApiError> {
+    if req.amount_minor <= 0 {
+        return Err(ApiError::BadRequest(
+            "amount_minor must be greater than zero".to_owned(),
+        ));
+    }
+    if req.source_asset == req.destination_asset {
+        return Err(ApiError::BadRequest(
+            "source_asset and destination_asset must differ".to_owned(),
+        ));
+    }
+    if req.slippage_bps > MAX_SLIPPAGE_BPS {
+        return Err(ApiError::BadRequest(format!(
+            "slippage_bps must not exceed {MAX_SLIPPAGE_BPS}"
+        )));
+    }
+
+    let chain = state.chain.as_ref().ok_or_else(|| {
+        ApiError::Internal(anyhow::anyhow!("chain service is not configured"))
+    })?;
+
+    let quote = chain
+        .quote_path(
+            req.source_asset,
+            req.destination_asset,
+            req.mode,
+            req.amount_minor,
+        )
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("could not find a path: {e}")))?;
+
+    // Sanity-check the chain service's answer against the fixed side.
+    let (source_amount_minor, destination_amount_minor) = match req.mode {
+        StellarPathMode::StrictSend => {
+            if quote.source_amount_minor != req.amount_minor {
+                return Err(ApiError::Internal(anyhow::anyhow!(
+                    "chain service returned source amount {} for strict-send of {}",
+                    quote.source_amount_minor,
+                    req.amount_minor
+                )));
+            }
+            (quote.source_amount_minor, quote.destination_amount_minor)
+        }
+        StellarPathMode::StrictReceive => {
+            if quote.destination_amount_minor != req.amount_minor {
+                return Err(ApiError::Internal(anyhow::anyhow!(
+                    "chain service returned destination amount {} for strict-receive of {}",
+                    quote.destination_amount_minor,
+                    req.amount_minor
+                )));
+            }
+            (quote.source_amount_minor, quote.destination_amount_minor)
+        }
+    };
+
+    if source_amount_minor <= 0 || destination_amount_minor <= 0 {
+        return Err(ApiError::BadRequest(
+            "path quote produced a non-positive amount".to_owned(),
+        ));
+    }
+
+    let variable_amount = match req.mode {
+        StellarPathMode::StrictSend => destination_amount_minor,
+        StellarPathMode::StrictReceive => source_amount_minor,
+    };
+    let slippage_bound_minor = slippage_bound(req.mode, variable_amount, req.slippage_bps);
+
+    let now = Utc::now();
+    let expires_at = now
+        + chrono::Duration::try_seconds(STELLAR_PATH_QUOTE_TTL_SECS)
+            .expect("constant STELLAR_PATH_QUOTE_TTL_SECS is always valid");
+
+    let quote_id = Uuid::new_v4();
+
+    // Persist when a database is available so the send can reference it.
+    if let Some(pool) = &state.database {
+        let path_symbols: Vec<String> = quote.path.iter().map(|a| a.symbol().to_owned()).collect();
+        sqlx::query(
+            "INSERT INTO stellar_path_quotes
+                 (id, mode, source_asset, destination_asset, source_amount_minor,
+                  destination_amount_minor, path, slippage_bps, slippage_bound_minor, expires_at)
+             VALUES ($1, $2, $3, $4, $5::numeric, $6::numeric, $7, $8, $9::numeric, $10)",
+        )
+        .bind(quote_id)
+        .bind(req.mode.as_str())
+        .bind(req.source_asset.symbol())
+        .bind(req.destination_asset.symbol())
+        .bind(source_amount_minor)
+        .bind(destination_amount_minor)
+        .bind(&path_symbols)
+        .bind(i32::try_from(req.slippage_bps).unwrap_or(i32::MAX))
+        .bind(slippage_bound_minor)
+        .bind(expires_at)
+        .execute(pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+    }
+
+    Ok(Json(StellarPathQuoteResponse {
+        quote_id,
+        mode: req.mode,
+        source_asset: req.source_asset,
+        destination_asset: req.destination_asset,
+        source_amount_minor,
+        destination_amount_minor,
+        path: quote.path,
+        slippage_bps: req.slippage_bps,
+        slippage_bound_minor,
         expires_at: expires_at.to_rfc3339(),
     }))
 }

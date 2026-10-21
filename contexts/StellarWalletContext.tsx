@@ -30,6 +30,26 @@ export interface StellarSendInput {
   memo?: StellarMemo
 }
 
+/**
+ * A cross-asset payment: the sender spends `sendAsset`/`sendAmount` and the
+ * recipient receives at least `destMin` of `destAsset`.  The quote comes from
+ * Horizon path finding; `slippageBps` is the limit the user agreed to.
+ */
+export interface StellarPathSendInput {
+  destination: string
+  /** Asset the sender spends, e.g. "XLM". */
+  sendAsset: StellarAssetCode
+  /** Amount of `sendAsset` to spend, as a decimal string. */
+  sendAmount: string
+  /** Asset the recipient receives, e.g. "USDC". */
+  destAsset: StellarAssetCode
+  /** Minimum the recipient must receive, as a decimal string. */
+  destMin: string
+  /** Slippage tolerance in basis points that the user agreed to. */
+  slippageBps: number
+  memo?: StellarMemo
+}
+
 /** How the Stellar account is connected. */
 export type StellarConnection = { kind: "extension" } | { kind: "walletconnect"; session: StellarWcSession }
 
@@ -71,6 +91,20 @@ interface StellarWalletContextType {
   refetchStellarBalances: () => void
   /** Builds, signs in the wallet and submits. Resolves with the transaction hash. */
   sendStellarPayment: (input: StellarSendInput) => Promise<{ hash: string; createsAccount: boolean }>
+  /**
+   * Builds, signs and submits a cross-asset path payment.  Resolves with the
+   * transaction hash and what was actually sent and received.
+   */
+  sendStellarPathPayment: (input: StellarPathSendInput) => Promise<StellarPathSendResult>
+}
+
+/** What a path payment actually moved, as recorded in the ledger. */
+export interface StellarPathSendResult {
+  hash: string
+  /** Asset and amount the sender spent. */
+  sent: { asset: StellarAssetCode; amount: string }
+  /** Asset and amount the recipient received. */
+  received: { asset: StellarAssetCode; amount: string }
 }
 
 const StellarWalletContext = createContext<StellarWalletContextType | undefined>(undefined)
@@ -377,6 +411,69 @@ export function StellarWalletProvider({ children }: { children: ReactNode }) {
     [checkExtensionNetwork, connection, refetchStellarBalances, stellarAddress]
   )
 
+  const sendStellarPathPayment = useCallback(
+    async (input: StellarPathSendInput): Promise<StellarPathSendResult> => {
+      if (!stellarAddress || !connection) throw new Error("Connect a Stellar wallet to send.")
+
+      const { buildStellarPathPayment } = await import("@/lib/stellar-tx")
+      let signedXdr: string
+
+      if (connection.kind === "extension") {
+        await checkExtensionNetwork()
+        const api = await freighter()
+        const details = await api.getNetworkDetails()
+        if (!details.error && details.networkPassphrase !== stellarNetwork.passphrase) {
+          throw new Error(`Switch Freighter to ${stellarNetwork.label}, then try again.`)
+        }
+        const built = await buildStellarPathPayment({ source: stellarAddress, ...input })
+        const signed = await api.signTransaction(built.xdr, {
+          networkPassphrase: stellarNetwork.passphrase,
+          address: stellarAddress,
+        })
+        if (signed.error || !signed.signedTxXdr) {
+          const message = signed.error?.message ?? ""
+          throw new Error(
+            /declin|reject|cancel|denied/i.test(message)
+              ? "You declined the payment in Freighter."
+              : "Freighter could not sign the payment."
+          )
+        }
+        signedXdr = signed.signedTxXdr
+        const hash = await submitStellarTransaction(signedXdr)
+        refetchStellarBalances()
+        return {
+          hash,
+          sent: { asset: input.sendAsset, amount: input.sendAmount },
+          received: { asset: input.destAsset, amount: built.destAmount },
+        }
+      }
+
+      if (connection.session.chain !== STELLAR_WC_CHAIN) {
+        throw new Error(`Switch your wallet to ${stellarNetwork.label}, then connect again.`)
+      }
+      const built = await buildStellarPathPayment({ source: stellarAddress, ...input })
+      const { signWithWalletConnect } = await walletConnect()
+      try {
+        signedXdr = await signWithWalletConnect(connection.session, built.xdr)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(
+          /declin|reject|cancel|denied/i.test(message)
+            ? `You declined the payment in ${connection.session.walletName}.`
+            : `${connection.session.walletName} could not sign the payment. Open the app and try again.`
+        )
+      }
+      const hash = await submitStellarTransaction(signedXdr)
+      refetchStellarBalances()
+      return {
+        hash,
+        sent: { asset: input.sendAsset, amount: input.sendAmount },
+        received: { asset: input.destAsset, amount: built.destAmount },
+      }
+    },
+    [checkExtensionNetwork, connection, refetchStellarBalances, stellarAddress]
+  )
+
   const value = useMemo<StellarWalletContextType>(
     () => ({
       stellarAddress,
@@ -399,6 +496,7 @@ export function StellarWalletProvider({ children }: { children: ReactNode }) {
       disconnectStellar,
       refetchStellarBalances,
       sendStellarPayment,
+      sendStellarPathPayment,
     }),
     [
       stellarAddress,
@@ -414,6 +512,7 @@ export function StellarWalletProvider({ children }: { children: ReactNode }) {
       disconnectStellar,
       refetchStellarBalances,
       sendStellarPayment,
+      sendStellarPathPayment,
     ]
   )
 

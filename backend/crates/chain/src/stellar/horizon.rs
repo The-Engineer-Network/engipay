@@ -44,6 +44,368 @@ pub struct FeeDistribution {
     pub p90: String,
 }
 
+/// One entry from `GET /paths/strict-send` or `GET /paths/strict-receive`.
+///
+/// Horizon returns the intermediate hops in `path` (as `{asset_type, asset_code,
+/// asset_issuer}` objects) plus the amounts at each end of the conversion.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PathRecord {
+    /// The asset the sender gives up.
+    #[serde(default)]
+    pub source_asset_type: Option<String>,
+    #[serde(default)]
+    pub source_asset_code: Option<String>,
+    #[serde(default)]
+    pub source_asset_issuer: Option<String>,
+    /// How much of the source asset the sender gives up.
+    #[serde(default)]
+    pub source_amount: Option<String>,
+    /// The asset the recipient receives.
+    #[serde(default)]
+    pub destination_asset_type: Option<String>,
+    #[serde(default)]
+    pub destination_asset_code: Option<String>,
+    #[serde(default)]
+    pub destination_asset_issuer: Option<String>,
+    /// How much of the destination asset the recipient receives.
+    #[serde(default)]
+    pub destination_amount: Option<String>,
+    /// Intermediate hops between source and destination assets.
+    #[serde(default)]
+    pub path: Vec<PathHop>,
+}
+
+/// One intermediate asset in a [`PathRecord`]'s `path` array.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PathHop {
+    pub asset_type: String,
+    #[serde(default)]
+    pub asset_code: Option<String>,
+    #[serde(default)]
+    pub asset_issuer: Option<String>,
+}
+
+/// A quoted cross-asset payment, as returned by Horizon's path-finding
+/// endpoints, together with the slippage the user agreed to.
+///
+/// `slippage_bps` is a bound in basis points (1 bps = 0.01%). For a strict-send
+/// quote the sender fixes `source_amount` and the recipient must receive at
+/// least `destination_amount` minus the slippage allowance; for a strict-receive
+/// quote the recipient fixes `destination_amount` and the sender must not pay
+/// more than `source_amount` plus the allowance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathQuote {
+    /// The asset the sender gives up.
+    pub source_asset: Asset,
+    /// The asset the recipient receives.
+    pub destination_asset: Asset,
+    /// Amount of `source_asset` the sender gives up.
+    pub source_amount: i64,
+    /// Amount of `destination_asset` the recipient receives.
+    pub destination_amount: i64,
+    /// Intermediate hops between the source and destination assets.
+    pub path: Vec<PathHop>,
+    /// The user-agreed slippage bound, in basis points.
+    pub slippage_bps: u32,
+    /// Whether the sender fixed the source amount (`true`) or the recipient
+    /// fixed the destination amount (`false`).
+    pub strict_send: bool,
+}
+
+impl PathQuote {
+    /// The smallest destination amount the recipient will accept, given the
+    /// quoted amount and the agreed slippage. Only meaningful for strict-send
+    /// quotes, where the sender fixes the source amount.
+    pub fn minimum_destination(&self) -> i64 {
+        apply_slippage_down(self.destination_amount, self.slippage_bps)
+    }
+
+    /// The largest source amount the sender will pay, given the quoted amount
+    /// and the agreed slippage. Only meaningful for strict-receive quotes,
+    /// where the recipient fixes the destination amount.
+    pub fn maximum_source(&self) -> i64 {
+        apply_slippage_up(self.source_amount, self.slippage_bps)
+    }
+
+    /// Whether an actually-executed payment stays within the agreed slippage.
+    ///
+    /// For a strict-send quote the recipient must receive at least
+    /// [`PathQuote::minimum_destination`]; for a strict-receive quote the sender
+    /// must pay no more than [`PathQuote::maximum_source`].
+    pub fn within_slippage(&self, actual_source: i64, actual_destination: i64) -> bool {
+        if self.strict_send {
+            actual_destination >= self.minimum_destination()
+        } else {
+            actual_source <= self.maximum_source()
+        }
+    }
+}
+
+/// Reduces `amount` by `bps` basis points, rounding down. Saturates at zero.
+fn apply_slippage_down(amount: i64, bps: u32) -> i64 {
+    let bps = i128::from(bps);
+    let amount = i128::from(amount);
+    let reduced = amount - amount.saturating_mul(bps) / 10_000;
+    i64::try_from(reduced.max(0)).unwrap_or(i64::MAX)
+}
+
+/// Increases `amount` by `bps` basis points, rounding up. Saturates at
+/// `i64::MAX`.
+fn apply_slippage_up(amount: i64, bps: u32) -> i64 {
+    let bps = i128::from(bps);
+    let amount = i128::from(amount);
+    let increased = amount + (amount.saturating_mul(bps) + 9_999) / 10_000;
+    i64::try_from(increased).unwrap_or(i64::MAX)
+}
+
+/// Builds the query string for `GET /paths/strict-send`.
+///
+/// `source_asset` is the asset the sender gives up; `destination_asset` is the
+/// asset the recipient receives. `source_amount` is in stroops.
+pub fn strict_send_query(
+    source_asset: Asset,
+    destination_asset: Asset,
+    source_amount: i64,
+    network: StellarNetwork,
+) -> String {
+    let mut query = format!(
+        "source_asset_type={}&source_amount={}",
+        asset_type_param(source_asset),
+        format_stroops(source_amount)
+    );
+    append_asset_params(&mut query, "source", source_asset, network);
+    append_asset_params(&mut query, "destination", destination_asset, network);
+    query
+}
+
+/// Builds the query string for `GET /paths/strict-receive`.
+///
+/// `source_asset` is the asset the sender gives up; `destination_asset` is the
+/// asset the recipient receives. `destination_amount` is in stroops.
+pub fn strict_receive_query(
+    source_asset: Asset,
+    destination_asset: Asset,
+    destination_amount: i64,
+    network: StellarNetwork,
+) -> String {
+    let mut query = format!(
+        "destination_asset_type={}&destination_amount={}",
+        asset_type_param(destination_asset),
+        format_stroops(destination_amount)
+    );
+    append_asset_params(&mut query, "source", source_asset, network);
+    append_asset_params(&mut query, "destination", destination_asset, network);
+    query
+}
+
+fn asset_type_param(asset: Asset) -> &'static str {
+    match asset {
+        Asset::Xlm => "native",
+        Asset::Usdc => "credit_alphanum4",
+    }
+}
+
+fn append_asset_params(
+    query: &mut String,
+    prefix: &str,
+    asset: Asset,
+    network: StellarNetwork,
+) {
+    match asset {
+        Asset::Xlm => {}
+        Asset::Usdc => {
+            query.push_str(&format!(
+                "&{prefix}_asset_code=USDC&{prefix}_asset_issuer={}",
+                network.usdc_issuer()
+            ));
+        }
+    }
+}
+
+/// Formats a stroop amount as Horizon's 7-decimal string.
+fn format_stroops(stroops: i64) -> String {
+    let sign = if stroops < 0 { "-" } else { "" };
+    let magnitude = stroops.unsigned_abs();
+    format!(
+        "{sign}{}.{:07}",
+        magnitude / 10_000_000,
+        magnitude % 10_000_000
+    )
+}
+
+/// Parses a Horizon asset description (`asset_type`, `asset_code`,
+/// `asset_issuer`) into an [`Asset`], refusing anything EngiPay does not hold.
+fn asset_from_parts(
+    asset_type: Option<&str>,
+    code: Option<&str>,
+    issuer: Option<&str>,
+    network: StellarNetwork,
+) -> Option<Asset> {
+    match asset_type {
+        Some("native") => Some(Asset::Xlm),
+        Some("credit_alphanum4") => {
+            if code == Some("USDC") && issuer == Some(network.usdc_issuer()) {
+                Some(Asset::Usdc)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Turns one `GET /paths/strict-send` or `GET /paths/strict-receive` record
+/// into a [`PathQuote`] with the given slippage bound.
+///
+/// Returns `None` when the record names an asset EngiPay does not hold or an
+/// amount that is not a 7-decimal Stellar amount.
+pub fn quote_from_path_record(
+    record: &PathRecord,
+    network: StellarNetwork,
+    slippage_bps: u32,
+    strict_send: bool,
+) -> Option<PathQuote> {
+    let source_asset = asset_from_parts(
+        record.source_asset_type.as_deref(),
+        record.source_asset_code.as_deref(),
+        record.source_asset_issuer.as_deref(),
+        network,
+    )?;
+    let destination_asset = asset_from_parts(
+        record.destination_asset_type.as_deref(),
+        record.destination_asset_code.as_deref(),
+        record.destination_asset_issuer.as_deref(),
+        network,
+    )?;
+    let source_amount = record.source_amount.as_deref().and_then(parse_stroops)?;
+    let destination_amount = record
+        .destination_amount
+        .as_deref()
+        .and_then(parse_stroops)?;
+    Some(PathQuote {
+        source_asset,
+        destination_asset,
+        source_amount,
+        destination_amount,
+        path: record.path.clone(),
+        slippage_bps,
+        strict_send,
+    })
+}
+
+/// Finds paths for a strict-send payment: the sender fixes `source_amount` of
+/// `source_asset` and the recipient receives `destination_asset`.
+///
+/// `get` performs the HTTP GET and returns the raw body. The first usable
+/// quote is returned, or `None` when Horizon found no path.
+pub fn find_path_strict_send(
+    get: impl FnOnce(&str) -> Result<Vec<u8>, crate::ChainError>,
+    source_asset: Asset,
+    destination_asset: Asset,
+    source_amount: i64,
+    network: StellarNetwork,
+    slippage_bps: u32,
+) -> Result<Option<PathQuote>, crate::ChainError> {
+    let query = strict_send_query(source_asset, destination_asset, source_amount, network);
+    find_path(get, &query, network, slippage_bps, true)
+}
+
+/// Finds paths for a strict-receive payment: the recipient fixes
+/// `destination_amount` of `destination_asset` and the sender pays
+/// `source_asset`.
+///
+/// `get` performs the HTTP GET and returns the raw body. The first usable
+/// quote is returned, or `None` when Horizon found no path.
+pub fn find_path_strict_receive(
+    get: impl FnOnce(&str) -> Result<Vec<u8>, crate::ChainError>,
+    source_asset: Asset,
+    destination_asset: Asset,
+    destination_amount: i64,
+    network: StellarNetwork,
+    slippage_bps: u32,
+) -> Result<Option<PathQuote>, crate::ChainError> {
+    let query = strict_receive_query(
+        source_asset,
+        destination_asset,
+        destination_amount,
+        network,
+    );
+    find_path(get, &query, network, slippage_bps, false)
+}
+
+fn find_path(
+    get: impl FnOnce(&str) -> Result<Vec<u8>, crate::ChainError>,
+    query: &str,
+    network: StellarNetwork,
+    slippage_bps: u32,
+    strict_send: bool,
+) -> Result<Option<PathQuote>, crate::ChainError> {
+    let body = get(query)?;
+    let records: Vec<PathRecord> = serde_json::from_slice(&body).map_err(|error| {
+        crate::ChainError::Unavailable(format!("unreadable Horizon path response: {error}"))
+    })?;
+    Ok(records
+        .iter()
+        .find_map(|record| quote_from_path_record(record, network, slippage_bps, strict_send)))
+}
+
+/// The amounts actually moved by a path payment, as recorded in the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathPaymentAmounts {
+    /// What the sender gave up.
+    pub source: Money,
+    /// What the recipient received.
+    pub destination: Money,
+}
+
+/// Extracts both the sent and received amounts from a
+/// `path_payment_strict_send` or `path_payment_strict_receive` record.
+///
+/// Returns `None` for any other operation type, for failed transactions, or
+/// when either amount or asset cannot be read. `source_amount` is what the
+/// sender gave up; `amount` is what the recipient received.
+pub fn path_payment_from_record(
+    record: &PaymentRecord,
+    network: StellarNetwork,
+) -> Option<PathPaymentAmounts> {
+    if !matches!(
+        record.kind.as_str(),
+        "path_payment_strict_send" | "path_payment_strict_receive"
+    ) {
+        return None;
+    }
+    let transaction = record.transaction.as_ref()?;
+    if !record.transaction_successful || !transaction.successful {
+        return None;
+    }
+
+    let destination_asset = asset_from_parts(
+        record.asset_type.as_deref(),
+        record.asset_code.as_deref(),
+        record.asset_issuer.as_deref(),
+        network,
+    )?;
+    let source_asset = asset_from_parts(
+        record.source_asset_type.as_deref(),
+        record.source_asset_code.as_deref(),
+        record.source_asset_issuer.as_deref(),
+        network,
+    )?;
+
+    let destination_stroops = record.amount.as_deref().and_then(parse_stroops)?;
+    let source_stroops = record.source_amount.as_deref().and_then(parse_stroops)?;
+
+    let source = Money::from_network_units(source_asset, Chain::Stellar, i128::from(source_stroops))
+        .ok()?;
+    let destination =
+        Money::from_network_units(destination_asset, Chain::Stellar, i128::from(destination_stroops))
+            .ok()?;
+    Some(PathPaymentAmounts {
+        source,
+        destination,
+    })
+}
+
 /// `GET /accounts/{id}`.
 #[derive(Debug, Deserialize)]
 pub struct Account {
@@ -111,6 +473,17 @@ pub struct PaymentRecord {
     pub asset_issuer: Option<String>,
     #[serde(default)]
     pub amount: Option<String>,
+    /// The asset the sender gave up. Present on path payments only.
+    #[serde(default)]
+    pub source_asset_type: Option<String>,
+    #[serde(default)]
+    pub source_asset_code: Option<String>,
+    #[serde(default)]
+    pub source_asset_issuer: Option<String>,
+    /// How much of the source asset the sender gave up. Present on path
+    /// payments only; `amount` is what the recipient received.
+    #[serde(default)]
+    pub source_amount: Option<String>,
     #[serde(default)]
     pub transaction: Option<JoinedTransaction>,
 }
@@ -923,6 +1296,255 @@ mod tests {
         assert!(cache.get("fresh").is_some());
         // The stale key is gone from the map entirely.
         assert!(!cache.entries.contains_key("stale"));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Path payments
+    // ──────────────────────────────────────────────────────────────────────────
+
+    fn usdc_path_record(destination_amount: &str, source_amount: &str) -> serde_json::Value {
+        serde_json::json!({
+            "source_asset_type": "native",
+            "source_amount": source_amount,
+            "destination_asset_type": "credit_alphanum4",
+            "destination_asset_code": "USDC",
+            "destination_asset_issuer": StellarNetwork::Testnet.usdc_issuer(),
+            "destination_amount": destination_amount,
+            "path": []
+        })
+    }
+
+    fn quote(json: serde_json::Value, slippage_bps: u32, strict_send: bool) -> PathQuote {
+        let record: PathRecord = serde_json::from_value(json).unwrap();
+        quote_from_path_record(&record, StellarNetwork::Testnet, slippage_bps, strict_send).unwrap()
+    }
+
+    #[test]
+    fn a_strict_send_path_quote_parses_assets_and_amounts() {
+        let quote = quote(
+            usdc_path_record("10.0000000", "12.5000000"),
+            50,
+            true,
+        );
+        assert_eq!(quote.source_asset, Asset::Xlm);
+        assert_eq!(quote.destination_asset, Asset::Usdc);
+        assert_eq!(quote.source_amount, 125_000_000);
+        assert_eq!(quote.destination_amount, 100_000_000);
+        assert_eq!(quote.slippage_bps, 50);
+        assert!(quote.strict_send);
+        assert!(quote.path.is_empty());
+    }
+
+    #[test]
+    fn a_strict_send_quote_within_slippage_succeeds() {
+        let quote = quote(usdc_path_record("10.0000000", "12.5000000"), 50, true);
+        // 0.5% of 10 USDC is 0.05 USDC; the floor is 9.95 USDC.
+        assert_eq!(quote.minimum_destination(), 99_500_000);
+        assert!(quote.within_slippage(125_000_000, 100_000_000));
+        assert!(quote.within_slippage(125_000_000, 99_500_000));
+    }
+
+    #[test]
+    fn a_strict_send_quote_outside_slippage_fails() {
+        let quote = quote(usdc_path_record("10.0000000", "12.5000000"), 50, true);
+        assert!(!quote.within_slippage(125_000_000, 99_499_999));
+        assert!(!quote.within_slippage(125_000_000, 90_000_000));
+    }
+
+    #[test]
+    fn a_strict_receive_quote_within_slippage_succeeds() {
+        let quote = quote(usdc_path_record("10.0000000", "12.5000000"), 50, false);
+        // 0.5% of 12.5 XLM is 0.0625 XLM; the ceiling is 12.5625 XLM.
+        assert_eq!(quote.maximum_source(), 125_625_000);
+        assert!(quote.within_slippage(125_000_000, 100_000_000));
+        assert!(quote.within_slippage(125_625_000, 100_000_000));
+    }
+
+    #[test]
+    fn a_strict_receive_quote_outside_slippage_fails() {
+        let quote = quote(usdc_path_record("10.0000000", "12.5000000"), 50, false);
+        assert!(!quote.within_slippage(125_625_001, 100_000_000));
+        assert!(!quote.within_slippage(200_000_000, 100_000_000));
+    }
+
+    #[test]
+    fn zero_slippage_requires_the_exact_quote() {
+        let quote = quote(usdc_path_record("10.0000000", "12.5000000"), 0, true);
+        assert_eq!(quote.minimum_destination(), 100_000_000);
+        assert!(quote.within_slippage(125_000_000, 100_000_000));
+        assert!(!quote.within_slippage(125_000_000, 99_999_999));
+    }
+
+    #[test]
+    fn a_path_quote_refuses_assets_engipay_does_not_hold() {
+        let record: PathRecord = serde_json::from_value(serde_json::json!({
+            "source_asset_type": "native",
+            "source_amount": "12.5000000",
+            "destination_asset_type": "credit_alphanum4",
+            "destination_asset_code": "USDC",
+            "destination_asset_issuer": sender(),
+            "destination_amount": "10.0000000",
+            "path": []
+        }))
+        .unwrap();
+        assert!(quote_from_path_record(&record, StellarNetwork::Testnet, 50, true).is_none());
+    }
+
+    #[test]
+    fn strict_send_query_names_both_assets() {
+        let query = strict_send_query(
+            Asset::Xlm,
+            Asset::Usdc,
+            125_000_000,
+            StellarNetwork::Testnet,
+        );
+        assert!(query.contains("source_asset_type=native"), "{query}");
+        assert!(query.contains("source_amount=12.5000000"), "{query}");
+        assert!(query.contains("destination_asset_type=credit_alphanum4"), "{query}");
+        assert!(query.contains("destination_asset_code=USDC"), "{query}");
+        assert!(
+            query.contains(StellarNetwork::Testnet.usdc_issuer()),
+            "{query}"
+        );
+    }
+
+    #[test]
+    fn strict_receive_query_names_both_assets() {
+        let query = strict_receive_query(
+            Asset::Xlm,
+            Asset::Usdc,
+            100_000_000,
+            StellarNetwork::Testnet,
+        );
+        assert!(query.contains("destination_asset_type=credit_alphanum4"), "{query}");
+        assert!(query.contains("destination_amount=10.0000000"), "{query}");
+        assert!(query.contains("source_asset_type=native"), "{query}");
+        assert!(
+            query.contains(StellarNetwork::Testnet.usdc_issuer()),
+            "{query}"
+        );
+    }
+
+    #[test]
+    fn find_path_strict_send_returns_the_first_usable_quote() {
+        let body = serde_json::json!([usdc_path_record("10.0000000", "12.5000000")]);
+        let found = find_path_strict_send(
+            |query| {
+                assert!(query.contains("source_amount=12.5000000"), "{query}");
+                Ok(body.to_string().into_bytes())
+            },
+            Asset::Xlm,
+            Asset::Usdc,
+            125_000_000,
+            StellarNetwork::Testnet,
+            50,
+        )
+        .unwrap()
+        .expect("a path should be found");
+        assert_eq!(found.destination_amount, 100_000_000);
+        assert!(found.strict_send);
+    }
+
+    #[test]
+    fn find_path_strict_receive_returns_the_first_usable_quote() {
+        let body = serde_json::json!([usdc_path_record("10.0000000", "12.5000000")]);
+        let found = find_path_strict_receive(
+            |query| {
+                assert!(query.contains("destination_amount=10.0000000"), "{query}");
+                Ok(body.to_string().into_bytes())
+            },
+            Asset::Xlm,
+            Asset::Usdc,
+            100_000_000,
+            StellarNetwork::Testnet,
+            50,
+        )
+        .unwrap()
+        .expect("a path should be found");
+        assert_eq!(found.source_amount, 125_000_000);
+        assert!(!found.strict_send);
+    }
+
+    #[test]
+    fn find_path_returns_none_when_horizon_finds_no_path() {
+        let found = find_path_strict_send(
+            |_| Ok(b"[]".to_vec()),
+            Asset::Xlm,
+            Asset::Usdc,
+            125_000_000,
+            StellarNetwork::Testnet,
+            50,
+        )
+        .unwrap();
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn find_path_reports_unreadable_responses_as_unavailable() {
+        let result = find_path_strict_send(
+            |_| Ok(b"not json".to_vec()),
+            Asset::Xlm,
+            Asset::Usdc,
+            125_000_000,
+            StellarNetwork::Testnet,
+            50,
+        );
+        assert!(matches!(result, Err(crate::ChainError::Unavailable(_))));
+    }
+
+    #[test]
+    fn a_path_payment_record_yields_both_amounts() {
+        let record = record(serde_json::json!({
+            "type": "path_payment_strict_send",
+            "source_asset_type": "native",
+            "source_amount": "12.5000000",
+            "asset_type": "credit_alphanum4",
+            "asset_code": "USDC",
+            "asset_issuer": StellarNetwork::Testnet.usdc_issuer(),
+            "amount": "10.0000000",
+        }));
+        let amounts = path_payment_from_record(&record, StellarNetwork::Testnet).unwrap();
+        assert_eq!(amounts.source, Money::from_minor(Asset::Xlm, 125_000_000));
+        assert_eq!(
+            amounts.destination,
+            Money::from_minor(Asset::Usdc, 100_000_000)
+        );
+    }
+
+    #[test]
+    fn a_strict_receive_path_payment_record_yields_both_amounts() {
+        let record = record(serde_json::json!({
+            "type": "path_payment_strict_receive",
+            "source_asset_type": "native",
+            "source_amount": "12.5000000",
+            "asset_type": "credit_alphanum4",
+            "asset_code": "USDC",
+            "asset_issuer": StellarNetwork::Testnet.usdc_issuer(),
+            "amount": "10.0000000",
+        }));
+        let amounts = path_payment_from_record(&record, StellarNetwork::Testnet).unwrap();
+        assert_eq!(amounts.source, Money::from_minor(Asset::Xlm, 125_000_000));
+        assert_eq!(
+            amounts.destination,
+            Money::from_minor(Asset::Usdc, 100_000_000)
+        );
+    }
+
+    #[test]
+    fn a_plain_payment_is_not_a_path_payment() {
+        let record = record(serde_json::json!({}));
+        assert!(path_payment_from_record(&record, StellarNetwork::Testnet).is_none());
+    }
+
+    #[test]
+    fn a_failed_path_payment_yields_no_amounts() {
+        let record = record(serde_json::json!({
+            "type": "path_payment_strict_send",
+            "source_asset_type": "native",
+            "source_amount": "12.5000000",
+            "transaction_successful": false,
+        }));
+        assert!(path_payment_from_record(&record, StellarNetwork::Testnet).is_none());
     }
 
     #[test]

@@ -39,6 +39,81 @@ pub enum PriceError {
     SameAsset,
 }
 
+/// A quoted cross-asset path payment.
+///
+/// `source_amount` is what the sender gives up (in `source`-minor units) and
+/// `dest_amount` is what the recipient receives (in `dest`-minor units). The
+/// `slippage_bps` is the maximum shortfall the user agreed to tolerate on the
+/// destination amount.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathQuote {
+    pub source: Asset,
+    pub dest: Asset,
+    pub source_amount: i128,
+    pub dest_amount: i128,
+    pub slippage_bps: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SlippageError {
+    #[error("quoted destination amount must be positive")]
+    NonPositiveQuote,
+    #[error("slippage tolerance {0} bps exceeds 10000 bps")]
+    InvalidTolerance(u32),
+    #[error("received {actual} minor units, below minimum {minimum} (quoted {quoted}, slippage {slippage_bps} bps)")]
+    Exceeded {
+        quoted: i128,
+        actual: i128,
+        minimum: i128,
+        slippage_bps: u32,
+    },
+}
+
+/// Compute the minimum acceptable destination amount for a quote.
+///
+/// `minimum = floor(quoted_dest_minor * (10_000 - slippage_bps) / 10_000)`,
+/// i.e. the user accepts receiving at most `slippage_bps` less than quoted.
+/// Floor-division is used so the minimum is never rounded up past what the
+/// user actually agreed to.
+pub fn minimum_dest_amount(quoted_dest_minor: i128, slippage_bps: u32) -> Option<i128> {
+    if quoted_dest_minor <= 0 || slippage_bps > 10_000 {
+        return None;
+    }
+    let keep_bps = 10_000_i128.checked_sub(i128::from(slippage_bps))?;
+    let scaled = quoted_dest_minor.checked_mul(keep_bps)?;
+    Some(scaled / 10_000)
+}
+
+/// Verify that `actual_dest_minor` is within the agreed slippage of
+/// `quoted_dest_minor`.
+///
+/// Returns `Ok(())` when the actual amount is at least the quoted amount minus
+/// `slippage_bps`. Used both before submitting a path payment (to sanity-check
+/// the quote) and after confirmation (to record what was actually received).
+pub fn check_slippage(
+    quoted_dest_minor: i128,
+    actual_dest_minor: i128,
+    slippage_bps: u32,
+) -> Result<(), SlippageError> {
+    if quoted_dest_minor <= 0 {
+        return Err(SlippageError::NonPositiveQuote);
+    }
+    if slippage_bps > 10_000 {
+        return Err(SlippageError::InvalidTolerance(slippage_bps));
+    }
+    let minimum = minimum_dest_amount(quoted_dest_minor, slippage_bps)
+        .ok_or(SlippageError::NonPositiveQuote)?;
+    if actual_dest_minor < minimum {
+        return Err(SlippageError::Exceeded {
+            quoted: quoted_dest_minor,
+            actual: actual_dest_minor,
+            minimum,
+            slippage_bps,
+        });
+    }
+    Ok(())
+}
+
 /// Source of live (or simulated) conversion prices.
 ///
 /// Implementations may call an external oracle or return a fixed fake price.
@@ -253,6 +328,49 @@ mod tests {
         let src = FakePriceSource;
         let p = src.quote(Asset::Usdc, Asset::Xlm).unwrap();
         assert_eq!(p.ttl_seconds, 30);
+    }
+
+    #[test]
+    fn slippage_within_tolerance_passes() {
+        // Quoted 10_000, 1% slippage → minimum 9_900.
+        assert_eq!(minimum_dest_amount(10_000, 100), Some(9_900));
+        assert!(check_slippage(10_000, 9_900, 100).is_ok());
+        assert!(check_slippage(10_000, 10_000, 100).is_ok());
+        // Receiving more than quoted is always fine.
+        assert!(check_slippage(10_000, 12_000, 100).is_ok());
+    }
+
+    #[test]
+    fn slippage_beyond_tolerance_fails() {
+        let err = check_slippage(10_000, 9_899, 100).unwrap_err();
+        assert_eq!(
+            err,
+            SlippageError::Exceeded {
+                quoted: 10_000,
+                actual: 9_899,
+                minimum: 9_900,
+                slippage_bps: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn zero_slippage_requires_exact_amount() {
+        assert!(check_slippage(5_000, 5_000, 0).is_ok());
+        assert!(check_slippage(5_000, 4_999, 0).is_err());
+    }
+
+    #[test]
+    fn slippage_rejects_bad_inputs() {
+        assert_eq!(
+            check_slippage(0, 0, 100),
+            Err(SlippageError::NonPositiveQuote)
+        );
+        assert_eq!(
+            check_slippage(1_000, 1_000, 10_001),
+            Err(SlippageError::InvalidTolerance(10_001))
+        );
+        assert_eq!(minimum_dest_amount(1_000, 10_001), None);
     }
 
     #[test]

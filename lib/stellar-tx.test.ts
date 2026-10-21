@@ -20,9 +20,10 @@ const TESTNET = "Test SDF Network ; September 2015"
 interface Horizon {
   accounts: Record<string, unknown>
   requests: string[]
+  paths: unknown[]
 }
 
-const horizon: Horizon = { accounts: {}, requests: [] }
+const horizon: Horizon = { accounts: {}, requests: [], paths: [] }
 const realFetch = globalThis.fetch
 
 function account(xlm: string, usdc?: string, subentries = 0) {
@@ -46,6 +47,7 @@ function account(xlm: string, usdc?: string, subentries = 0) {
 }
 
 let build: typeof import("./stellar-tx.ts").buildStellarPayment
+let buildPath: typeof import("./stellar-tx.ts").buildStellarPathPayment
 
 before(async () => {
   globalThis.fetch = (async (input: string | URL | Request) => {
@@ -54,13 +56,16 @@ before(async () => {
     if (url.endsWith("/fee_stats")) {
       return new Response(JSON.stringify({ fee_charged: { p70: "100" } }), { status: 200 })
     }
+    if (url.includes("/paths/")) {
+      return new Response(JSON.stringify({ _embedded: { records: horizon.paths } }), { status: 200 })
+    }
     const id = decodeURIComponent(url.split("/accounts/")[1] ?? "")
     const record = horizon.accounts[id]
     return record
       ? new Response(JSON.stringify(record), { status: 200 })
       : new Response("{}", { status: 404 })
   }) as typeof fetch
-  ;({ buildStellarPayment: build } = await import("./stellar-tx.ts"))
+  ;({ buildStellarPayment: build, buildStellarPathPayment: buildPath } = await import("./stellar-tx.ts"))
 })
 
 after(() => {
@@ -71,6 +76,7 @@ function setup(source: unknown, destination?: unknown) {
   horizon.accounts = { [SOURCE]: source }
   if (destination) horizon.accounts[DESTINATION] = destination
   horizon.requests = []
+  horizon.paths = []
 }
 
 function decode(xdr: string) {
@@ -203,6 +209,66 @@ describe("buildStellarPayment", () => {
     await assert.rejects(
       build({ source: SOURCE, destination: DESTINATION, amount: "0.5", asset: "XLM" }),
       /at least 1 XLM/
+    )
+  })
+})
+
+describe("buildStellarPathPayment", () => {
+  it("builds a strict-send path payment from XLM to USDC", async () => {
+    setup(account("100.0000000"), account("5.0000000", "0.0000000", 1))
+    horizon.paths = [
+      {
+        source_amount: "10.0000000",
+        destination_amount: "2.0000000",
+        path: [],
+        source_asset_type: "native",
+        destination_asset_type: "credit_alphanum4",
+        destination_asset_code: "USDC",
+        destination_asset_issuer: SOURCE,
+      },
+    ]
+    const built = await buildPath({
+      source: SOURCE,
+      destination: DESTINATION,
+      sendAsset: "XLM",
+      sendAmount: "10",
+      destAsset: "USDC",
+      slippage: "0.01",
+    })
+    const tx = decode(built.xdr)
+    assert.equal(tx.operations.length, 1)
+    assert.equal(tx.operations[0].type, "pathPaymentStrictSend")
+    assert.equal(tx.operations[0].sendAsset.isNative(), true)
+    assert.equal(tx.operations[0].sendAmount, "10.0000000")
+    assert.equal(tx.operations[0].destAsset.code, "USDC")
+    assert.equal(tx.operations[0].destMin, "1.9800000")
+    assert.ok(horizon.requests.some((u) => u.includes("/paths/")))
+  })
+
+  it("rejects when the quoted path exceeds the slippage limit", async () => {
+    setup(account("100.0000000"), account("5.0000000", "0.0000000", 1))
+    horizon.paths = [
+      {
+        source_amount: "10.0000000",
+        destination_amount: "1.0000000",
+        path: [],
+        source_asset_type: "native",
+        destination_asset_type: "credit_alphanum4",
+        destination_asset_code: "USDC",
+        destination_asset_issuer: SOURCE,
+      },
+    ]
+    await assert.rejects(
+      buildPath({
+        source: SOURCE,
+        destination: DESTINATION,
+        sendAsset: "XLM",
+        sendAmount: "10",
+        destAsset: "USDC",
+        slippage: "0.01",
+        minDestAmount: "1.5",
+      }),
+      /slippage/
     )
   })
 })

@@ -89,7 +89,49 @@ impl Asset {
             _ => None,
         }
     }
+
+    /// The Stellar asset code, or `None` if the asset is not on Stellar.
+    ///
+    /// XLM is the native asset and has no issuer; issued assets use their
+    /// on-chain code, which may differ in case from the ledger symbol.
+    pub const fn stellar_asset_code(self) -> Option<&'static str> {
+        match self {
+            Asset::Usdc => Some("USDC"),
+            Asset::Xlm => Some("XLM"),
+            _ => None,
+        }
+    }
+
+    /// The Stellar issuer account for an issued asset, or `None` for the
+    /// native asset (XLM) and for assets that are not on Stellar.
+    pub const fn stellar_issuer(self) -> Option<&'static str> {
+        match self {
+            Asset::Usdc => Some(USDC_STELLAR_ISSUER),
+            _ => None,
+        }
+    }
+
+    /// The `CODE:ISSUER` identifier Horizon uses in path queries, or `None`
+    /// if the asset is not on Stellar.
+    ///
+    /// The native asset is identified as `native`, which is what Horizon
+    /// expects in `source_asset_*` / `destination_asset_*` parameters.
+    pub fn stellar_asset_id(self) -> Option<String> {
+        if !self.is_on(Chain::Stellar) {
+            return None;
+        }
+        match (self.stellar_asset_code(), self.stellar_issuer()) {
+            (Some(code), Some(issuer)) => Some(format!("{code}:{issuer}")),
+            (Some(_), None) => Some("native".to_owned()),
+            (None, _) => None,
+        }
+    }
 }
+
+/// Issuer of USDC on Stellar. Mainnet and testnet use different issuers, so
+/// callers that need testnet must override this via configuration.
+pub const USDC_STELLAR_ISSUER: &str =
+    "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
 impl fmt::Display for Asset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -186,5 +228,28 @@ mod tests {
         assert_eq!(Asset::Usdc.network_decimals(Chain::Base), Some(6));
         assert_eq!(Asset::Usdc.network_decimals(Chain::Stellar), Some(7));
         assert_eq!(Asset::Eth.network_decimals(Chain::Stellar), None);
+    }
+
+    #[test]
+    fn stellar_asset_ids_are_code_colon_issuer() {
+        assert_eq!(
+            Asset::Usdc.stellar_asset_id().as_deref(),
+            Some("USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN")
+        );
+        assert_eq!(Asset::Xlm.stellar_asset_id().as_deref(), Some("native"));
+    }
+
+    #[test]
+    fn stellar_asset_ids_are_none_off_stellar() {
+        assert_eq!(Asset::Eth.stellar_asset_id(), None);
+        assert_eq!(Asset::Btc.stellar_asset_id(), None);
+        assert_eq!(Asset::Eth.stellar_asset_code(), None);
+        assert_eq!(Asset::Btc.stellar_issuer(), None);
+    }
+
+    #[test]
+    fn native_asset_has_no_issuer() {
+        assert_eq!(Asset::Xlm.stellar_asset_code(), Some("XLM"));
+        assert_eq!(Asset::Xlm.stellar_issuer(), None);
     }
 }

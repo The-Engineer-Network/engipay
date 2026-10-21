@@ -94,6 +94,10 @@ pub enum TransactionKind {
     Hold,
     ReleaseHold,
     SettleHold,
+    /// A cross-asset Stellar path payment settled on-chain.
+    PathPayment,
+    /// An incoming SEP-31 cross-border payment credited to a recipient.
+    Sep31Receive,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +202,16 @@ enum Request {
     Release,
     Settle {
         fee: Option<Money>,
+    },
+    PathPayment {
+        user: UserId,
+        sent: Money,
+        received: Money,
+        slippage_bps: u32,
+    },
+    Sep31Receive {
+        recipient: UserId,
+        money: Money,
     },
 }
 
@@ -395,6 +409,75 @@ impl Ledger {
         let receipt = self.commit(TransactionKind::SettleHold, &reference, request, postings)?;
         self.close_hold(hold_reference, HoldState::Settled);
         Ok(receipt)
+    }
+
+    /// Records a settled cross-asset Stellar path payment.
+    ///
+    /// The user paid `sent` (the source asset, e.g. XLM) and received
+    /// `received` (the destination asset, e.g. USDC). `slippage_bps` is the
+    /// maximum slippage, in basis points, the user agreed to when quoting.
+    ///
+    /// The received amount is credited to the user's available balance and the
+    /// sent amount leaves via [`SystemAccount::ExternalOutflow`], so the
+    /// transaction balances. Idempotent on `tx_hash`: replaying the same hash
+    /// returns the original receipt and moves nothing.
+    pub fn record_path_payment(
+        &mut self,
+        user: UserId,
+        sent: Money,
+        received: Money,
+        slippage_bps: u32,
+        tx_hash: &str,
+    ) -> Result<Receipt, LedgerError> {
+        require_positive(sent)?;
+        require_positive(received)?;
+        let request = Request::PathPayment {
+            user,
+            sent,
+            received,
+            slippage_bps,
+        };
+        if let Some(receipt) = self.replay(tx_hash, &request)? {
+            return Ok(receipt);
+        }
+        let mut postings = vec![posting(
+            AccountKey::user(user, received.asset, Bucket::Available),
+            received.minor,
+        )];
+        postings.push(posting(
+            AccountKey::system(SystemAccount::ExternalOutflow, sent.asset),
+            negate(sent.minor)?,
+        ));
+        self.commit(TransactionKind::PathPayment, tx_hash, request, postings)
+    }
+
+    /// Records an incoming SEP-31 cross-border payment and credits the
+    /// recipient's available balance.
+    ///
+    /// Idempotent on `tx_hash`: a retried delivery of the same Stellar
+    /// transaction replays the original receipt and credits nothing twice.
+    pub fn record_sep31_transaction(
+        &mut self,
+        recipient: UserId,
+        money: Money,
+        tx_hash: &str,
+    ) -> Result<Receipt, LedgerError> {
+        require_positive(money)?;
+        let request = Request::Sep31Receive { recipient, money };
+        if let Some(receipt) = self.replay(tx_hash, &request)? {
+            return Ok(receipt);
+        }
+        let postings = vec![
+            posting(
+                AccountKey::system(SystemAccount::ExternalInflow, money.asset),
+                negate(money.minor)?,
+            ),
+            posting(
+                AccountKey::user(recipient, money.asset, Bucket::Available),
+                money.minor,
+            ),
+        ];
+        self.commit(TransactionKind::Sep31Receive, tx_hash, request, postings)
     }
 
     /// The user's current balance in both buckets.
@@ -704,5 +787,79 @@ mod tests {
         let err = ledger.settle("wd-1", Some(usdc(101))).unwrap_err();
         assert_eq!(err, LedgerError::InvalidFee);
         assert_eq!(ledger.balance(alice, Asset::Usdc).held, 100);
+    }
+
+    fn xlm(minor: i128) -> Money {
+        Money {
+            asset: Asset::Xlm,
+            minor,
+        }
+    }
+
+    #[test]
+    fn record_path_payment_credits_received_and_is_idempotent() {
+        let mut ledger = Ledger::new();
+        let alice = user();
+
+        let receipt = ledger
+            .record_path_payment(alice, xlm(10_000_000), usdc(2_000_000), 50, "path-tx-1")
+            .unwrap();
+        assert!(!receipt.replayed);
+
+        let balance = ledger.balance(alice, Asset::Usdc);
+        assert_eq!(balance.available, 2_000_000);
+        assert_eq!(ledger.balance(alice, Asset::Xlm).available, 0);
+        assert_eq!(
+            ledger.system_balance(SystemAccount::ExternalOutflow, Asset::Xlm),
+            -10_000_000
+        );
+
+        let tx = ledger.transactions.last().unwrap();
+        assert_eq!(tx.kind, TransactionKind::PathPayment);
+        let sum: i128 = tx.postings.iter().map(|p| p.amount).sum();
+        assert_eq!(sum, 0, "path payment must balance");
+
+        // Replaying the same hash moves nothing.
+        let replay = ledger
+            .record_path_payment(alice, xlm(10_000_000), usdc(2_000_000), 50, "path-tx-1")
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.transaction_id, receipt.transaction_id);
+        assert_eq!(ledger.balance(alice, Asset::Usdc).available, 2_000_000);
+
+        // Reusing the hash for a different quote is a conflict.
+        let err = ledger
+            .record_path_payment(alice, xlm(10_000_000), usdc(1_000_000), 50, "path-tx-1")
+            .unwrap_err();
+        assert!(matches!(err, LedgerError::IdempotencyConflict { .. }));
+    }
+
+    #[test]
+    fn record_sep31_transaction_credits_recipient_and_is_idempotent() {
+        let mut ledger = Ledger::new();
+        let bob = user();
+
+        let receipt = ledger
+            .record_sep31_transaction(bob, usdc(5_000), "sep31-tx-1")
+            .unwrap();
+        assert!(!receipt.replayed);
+        assert_eq!(ledger.balance(bob, Asset::Usdc).available, 5_000);
+        assert_eq!(
+            ledger.system_balance(SystemAccount::ExternalInflow, Asset::Usdc),
+            -5_000
+        );
+
+        let tx = ledger.transactions.last().unwrap();
+        assert_eq!(tx.kind, TransactionKind::Sep31Receive);
+        let sum: i128 = tx.postings.iter().map(|p| p.amount).sum();
+        assert_eq!(sum, 0, "SEP-31 credit must balance");
+
+        // A retried delivery of the same transaction credits nothing twice.
+        let replay = ledger
+            .record_sep31_transaction(bob, usdc(5_000), "sep31-tx-1")
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.transaction_id, receipt.transaction_id);
+        assert_eq!(ledger.balance(bob, Asset::Usdc).available, 5_000);
     }
 }

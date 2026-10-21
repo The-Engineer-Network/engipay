@@ -44,6 +44,14 @@ pub enum PaymentError {
     Key(&'static str),
     #[error("memo text exceeds {MEMO_TEXT_MAX_BYTES}-byte protocol limit")]
     MemoTooLong,
+    #[error("slippage limit exceeded: quoted {quoted} {asset}, limit {limit}")]
+    SlippageExceeded {
+        quoted: String,
+        limit: String,
+        asset: Asset,
+    },
+    #[error("path payment: {0}")]
+    PathPayment(String),
 }
 
 /// An optional memo attached to an outgoing Stellar transaction.
@@ -317,6 +325,235 @@ pub fn build_payment(
             max_time: TimePoint(valid_until),
         }),
         memo,
+        operations: vec![operation]
+            .try_into()
+            .map_err(|_| PaymentError::Encoding("too many operations".to_owned()))?,
+        ext: TransactionExt::V0,
+    })
+}
+
+/// A path payment quote returned by Horizon's `/paths` endpoint.
+///
+/// `path` is the intermediate assets the payment hops through (excluding the
+/// source and destination assets). `destination_amount` is what the
+/// destination would receive for the quoted send amount (strict-send), or what
+/// the source must send for the quoted destination amount (strict-receive).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathQuote {
+    /// Intermediate assets, in hop order, as `(asset, issuer)` pairs.
+    pub path: Vec<PathAsset>,
+    /// The amount the destination receives (strict-send) or the source sends
+    /// (strict-receive), in network units (stroops).
+    pub destination_amount: i64,
+}
+
+/// An asset on a path, as returned by Horizon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathAsset {
+    Native,
+    Credit { code: String, issuer: String },
+}
+
+/// A slippage limit the user agreed to, expressed in basis points (1 bps =
+/// 0.01%). The quoted amount must be within this tolerance of the amount the
+/// user expects, otherwise the payment is refused before it is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlippageLimit {
+    /// Maximum acceptable slippage, in basis points. 50 = 0.5%.
+    pub bps: u32,
+}
+
+impl SlippageLimit {
+    /// The minimum acceptable destination amount for a strict-send payment
+    /// that expects `expected` units, after applying the slippage tolerance.
+    pub fn min_destination(&self, expected: i64) -> i64 {
+        let tolerance = (i128::from(expected) * i128::from(self.bps)) / 10_000;
+        let min = i128::from(expected) - tolerance;
+        i64::try_from(min.max(0)).unwrap_or(i64::MAX)
+    }
+
+    /// The maximum acceptable source amount for a strict-receive payment that
+    /// expects to spend `expected` units, after applying the tolerance.
+    pub fn max_source(&self, expected: i64) -> i64 {
+        let tolerance = (i128::from(expected) * i128::from(self.bps)) / 10_000;
+        let max = i128::from(expected) + tolerance;
+        i64::try_from(max).unwrap_or(i64::MAX)
+    }
+}
+
+/// Builds a strict-send path payment: the source sends exactly `send_amount`
+/// of `send_asset`, and the destination receives at least `dest_min` of
+/// `dest_asset` along `path`.
+///
+/// `quote` is the Horizon path quote for `send_amount`. The quoted destination
+/// amount must satisfy the user's `slippage` limit relative to
+/// `expected_destination`; otherwise [`PaymentError::SlippageExceeded`] is
+/// returned and no transaction is built.
+#[allow(clippy::too_many_arguments)]
+pub fn build_path_payment_strict_send(
+    source: &[u8; 32],
+    sequence: i64,
+    destination: &str,
+    send_asset: Asset,
+    send_amount: Money,
+    dest_asset: Asset,
+    expected_destination: Money,
+    quote: &PathQuote,
+    slippage: SlippageLimit,
+    network: StellarNetwork,
+    valid_until: u64,
+    fee_per_op: u32,
+) -> Result<Transaction, PaymentError> {
+    let send_units = network_units(send_amount)?;
+    let expected_units = network_units(expected_destination)?;
+
+    // The quote must meet the user's slippage limit before we build anything.
+    let min_dest = slippage.min_destination(expected_units);
+    if quote.destination_amount < min_dest {
+        return Err(PaymentError::SlippageExceeded {
+            quoted: quote.destination_amount.to_string(),
+            limit: min_dest.to_string(),
+            asset: dest_asset,
+        });
+    }
+
+    let dest_min = i64::try_from(min_dest)
+        .map_err(|_| PaymentError::Amount("too large for Stellar".to_owned()))?;
+
+    let operation = Operation {
+        source_account: None,
+        body: OperationBody::PathPaymentStrictSend(
+            stellar_xdr::PathPaymentStrictSendOp {
+                send_asset: xdr_asset(send_asset, network)?,
+                send_amount: send_units,
+                destination: muxed_account(destination)?,
+                dest_asset: xdr_asset(dest_asset, network)?,
+                dest_min,
+                path: path_xdr(&quote.path, network)?,
+            },
+        ),
+    };
+
+    build_single_operation(source, sequence, operation, network, valid_until, fee_per_op)
+}
+
+/// Builds a strict-receive path payment: the destination receives exactly
+/// `dest_amount` of `dest_asset`, and the source sends at most `send_max` of
+/// `send_asset` along `path`.
+///
+/// `quote` is the Horizon path quote for `dest_amount`. The quoted source
+/// amount must satisfy the user's `slippage` limit relative to
+/// `expected_source`; otherwise [`PaymentError::SlippageExceeded`] is
+/// returned and no transaction is built.
+#[allow(clippy::too_many_arguments)]
+pub fn build_path_payment_strict_receive(
+    source: &[u8; 32],
+    sequence: i64,
+    destination: &str,
+    send_asset: Asset,
+    expected_source: Money,
+    dest_asset: Asset,
+    dest_amount: Money,
+    quote: &PathQuote,
+    slippage: SlippageLimit,
+    network: StellarNetwork,
+    valid_until: u64,
+    fee_per_op: u32,
+) -> Result<Transaction, PaymentError> {
+    let dest_units = network_units(dest_amount)?;
+    let expected_units = network_units(expected_source)?;
+
+    // The quote must meet the user's slippage limit before we build anything.
+    let max_send = slippage.max_source(expected_units);
+    if quote.destination_amount > max_send {
+        return Err(PaymentError::SlippageExceeded {
+            quoted: quote.destination_amount.to_string(),
+            limit: max_send.to_string(),
+            asset: send_asset,
+        });
+    }
+
+    let send_max = i64::try_from(max_send)
+        .map_err(|_| PaymentError::Amount("too large for Stellar".to_owned()))?;
+
+    let operation = Operation {
+        source_account: None,
+        body: OperationBody::PathPaymentStrictReceive(
+            stellar_xdr::PathPaymentStrictReceiveOp {
+                send_asset: xdr_asset(send_asset, network)?,
+                send_max,
+                destination: muxed_account(destination)?,
+                dest_asset: xdr_asset(dest_asset, network)?,
+                dest_amount: dest_units,
+                path: path_xdr(&quote.path, network)?,
+            },
+        ),
+    };
+
+    build_single_operation(source, sequence, operation, network, valid_until, fee_per_op)
+}
+
+/// Converts a [`Money`] into Stellar network units, refusing non-positive
+/// amounts.
+fn network_units(money: Money) -> Result<i64, PaymentError> {
+    let units = money
+        .to_network_units(Chain::Stellar)
+        .map_err(|error| PaymentError::Amount(error.to_string()))?;
+    if units <= 0 {
+        return Err(PaymentError::Amount("must be greater than zero".to_owned()));
+    }
+    i64::try_from(units).map_err(|_| PaymentError::Amount("too large for Stellar".to_owned()))
+}
+
+/// Converts the Horizon path into the XDR path vector.
+fn path_xdr(
+    path: &[PathAsset],
+    network: StellarNetwork,
+) -> Result<Vec<stellar_xdr::Asset>, PaymentError> {
+    path.iter()
+        .map(|asset| match asset {
+            PathAsset::Native => Ok(stellar_xdr::Asset::Native),
+            PathAsset::Credit { code, issuer } => {
+                let bytes = code.as_bytes();
+                if bytes.len() != 4 {
+                    return Err(PaymentError::PathPayment(format!(
+                        "asset code {code:?} is not 4 bytes"
+                    )));
+                }
+                let mut asset_code = [0u8; 4];
+                asset_code.copy_from_slice(bytes);
+                Ok(stellar_xdr::Asset::CreditAlphanum4(AlphaNum4 {
+                    asset_code: AssetCode4(asset_code),
+                    issuer: AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(raw_key(
+                        issuer,
+                    )?))),
+                }))
+            }
+        })
+        .collect()
+}
+
+/// Wraps a single operation in a time-bounded transaction.
+fn build_single_operation(
+    source: &[u8; 32],
+    sequence: i64,
+    operation: Operation,
+    _network: StellarNetwork,
+    valid_until: u64,
+    fee_per_op: u32,
+) -> Result<Transaction, PaymentError> {
+    let next_sequence = sequence
+        .checked_add(1)
+        .ok_or(PaymentError::Amount("sequence number overflow".to_owned()))?;
+    Ok(Transaction {
+        source_account: MuxedAccount::Ed25519(Uint256(*source)),
+        fee: fee_per_op,
+        seq_num: SequenceNumber(next_sequence),
+        cond: Preconditions::Time(TimeBounds {
+            min_time: TimePoint(0),
+            max_time: TimePoint(valid_until),
+        }),
+        memo: Memo::None,
         operations: vec![operation]
             .try_into()
             .map_err(|_| PaymentError::Encoding("too many operations".to_owned()))?,
@@ -1063,6 +1300,115 @@ mod tests {
             panic!("expected text memo");
         };
         assert_eq!(text.as_slice(), b"no trustline");
+    }
+
+    // ΓöÇΓöÇ Path payment tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    fn quote(destination_amount: i64) -> PathQuote {
+        PathQuote {
+            path: vec![PathAsset::Credit {
+                code: "USDC".to_owned(),
+                issuer: StellarNetwork::Testnet.usdc_issuer().to_owned(),
+            }],
+            destination_amount,
+        }
+    }
+
+    #[test]
+    fn strict_send_path_payment_builds_within_slippage() {
+        // Expect 10 USDC; quote gives 10.05 USDC; 1% slippage allows >= 9.9.
+        let tx = build_path_payment_strict_send(
+            &signer().public_key(),
+            1,
+            &account(2),
+            Asset::Xlm,
+            Money::parse(Asset::Xlm, "5").unwrap(),
+            Asset::Usdc,
+            Money::parse(Asset::Usdc, "10").unwrap(),
+            &quote(100_500_000),
+            SlippageLimit { bps: 100 },
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        let OperationBody::PathPaymentStrictSend(op) = &tx.operations[0].body else {
+            panic!("expected PathPaymentStrictSend");
+        };
+        assert_eq!(op.send_amount, 50_000_000);
+        assert_eq!(op.dest_min, 99_000_000);
+        assert_eq!(op.path.len(), 1);
+    }
+
+    #[test]
+    fn strict_send_path_payment_fails_on_slippage() {
+        // Expect 10 USDC; quote gives only 9.5 USDC; 1% slippage allows >= 9.9.
+        let refused = build_path_payment_strict_send(
+            &signer().public_key(),
+            1,
+            &account(2),
+            Asset::Xlm,
+            Money::parse(Asset::Xlm, "5").unwrap(),
+            Asset::Usdc,
+            Money::parse(Asset::Usdc, "10").unwrap(),
+            &quote(95_000_000),
+            SlippageLimit { bps: 100 },
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        );
+        assert!(matches!(
+            refused,
+            Err(PaymentError::SlippageExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn strict_receive_path_payment_builds_within_slippage() {
+        // Expect to spend 5 XLM; quote needs 5.02 XLM; 1% allows <= 5.05.
+        let tx = build_path_payment_strict_receive(
+            &signer().public_key(),
+            1,
+            &account(2),
+            Asset::Xlm,
+            Money::parse(Asset::Xlm, "5").unwrap(),
+            Asset::Usdc,
+            Money::parse(Asset::Usdc, "10").unwrap(),
+            &quote(50_200_000),
+            SlippageLimit { bps: 100 },
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        let OperationBody::PathPaymentStrictReceive(op) = &tx.operations[0].body else {
+            panic!("expected PathPaymentStrictReceive");
+        };
+        assert_eq!(op.dest_amount, 100_000_000);
+        assert_eq!(op.send_max, 50_500_000);
+    }
+
+    #[test]
+    fn strict_receive_path_payment_fails_on_slippage() {
+        // Expect to spend 5 XLM; quote needs 5.5 XLM; 1% allows <= 5.05.
+        let refused = build_path_payment_strict_receive(
+            &signer().public_key(),
+            1,
+            &account(2),
+            Asset::Xlm,
+            Money::parse(Asset::Xlm, "5").unwrap(),
+            Asset::Usdc,
+            Money::parse(Asset::Usdc, "10").unwrap(),
+            &quote(55_000_000),
+            SlippageLimit { bps: 100 },
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        );
+        assert!(matches!(
+            refused,
+            Err(PaymentError::SlippageExceeded { .. })
+        ));
     }
 
     #[test]

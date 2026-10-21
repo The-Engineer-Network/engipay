@@ -7,7 +7,7 @@ import { SendPayment } from "@/components/payments/SendPayment"
 import { StellarSendPayment } from "@/components/payments/StellarSendPayment"
 import { EngiPaySendPayment } from "@/components/payments/EngiPaySendPayment"
 import { Card, CardContent } from "@/components/ui/card"
-import { Bitcoin, ShieldCheck, Wallet } from "lucide-react"
+import { ArrowUpRight, Bitcoin, ShieldCheck, Wallet } from "lucide-react"
 import { activeChain } from "@/lib/wagmi"
 import { stellarNetwork } from "@/lib/stellar"
 import { NetworkTabs, networkPanelId, networkTabId } from "@/components/app/NetworkTabs"
@@ -34,6 +34,17 @@ function SendForm() {
   const recipient = params.get("to") ?? ""
   const amount = params.get("amount") ?? ""
   const memo = params.get("memo")
+
+  // Cross-asset intent: the sender holds one asset, the recipient expects another.
+  // The destination asset comes from the request; the source asset defaults to XLM.
+  const destinationAsset = params.get("dest_asset") ?? params.get("asset") ?? ""
+  const sourceAsset = params.get("source_asset") ?? "XLM"
+  const slippageParam = params.get("slippage")
+  const slippage = slippageParam !== null ? Number(slippageParam) : undefined
+  const isCrossAsset =
+    params.get("network") === "stellar" &&
+    Boolean(destinationAsset) &&
+    destinationAsset.toUpperCase() !== sourceAsset.toUpperCase()
 
   return (
     <div className="space-y-4">
@@ -107,6 +118,15 @@ function SendForm() {
                 initialAsset={params.get("asset") ?? "XLM"}
                 initialMemo={
                   memo ? { type: params.get("memo_type") === "id" ? "id" : "text", value: memo } : undefined
+                }
+                crossAsset={
+                  isCrossAsset
+                    ? {
+                        sourceAsset,
+                        destinationAsset,
+                        slippage: Number.isFinite(slippage) ? slippage : undefined,
+                      }
+                    : undefined
                 }
               />
             )}

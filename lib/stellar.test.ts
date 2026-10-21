@@ -6,7 +6,14 @@
  */
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { balancesFromAccount, describeResultCodes, fromStroops, toStroops } from "./stellar.ts"
+import {
+  balancesFromAccount,
+  checkSlippage,
+  describeResultCodes,
+  findStellarPath,
+  fromStroops,
+  toStroops,
+} from "./stellar.ts"
 
 const ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
 const OTHER_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
@@ -91,6 +98,63 @@ describe("balancesFromAccount", () => {
     })
     assert.equal(balancesFromAccount(account(ISSUER), ISSUER).usdc, "25.5")
     assert.equal(balancesFromAccount(account(OTHER_ISSUER), ISSUER).usdc, null)
+  })
+})
+
+describe("findStellarPath", () => {
+  const fetchJson = (body: unknown) => async () => body
+
+  it("returns the best path with its destination amount", async () => {
+    const path = await findStellarPath(
+      {
+        sourceAsset: "native",
+        destAsset: { code: "USDC", issuer: ISSUER },
+        destAmount: "10",
+        fetchJson: fetchJson({
+          _embedded: {
+            records: [
+              {
+                source_amount: "12.5000000",
+                destination_amount: "10.0000000",
+                path: [{ asset_type: "credit_alphanum4", asset_code: "USDC", asset_issuer: ISSUER }],
+              },
+            ],
+          },
+        }),
+      }
+    )
+    assert.ok(path)
+    assert.equal(path.sourceAmount, "12.5")
+    assert.equal(path.destAmount, "10")
+    assert.equal(path.path.length, 1)
+  })
+
+  it("returns null when no path exists", async () => {
+    const path = await findStellarPath(
+      {
+        sourceAsset: "native",
+        destAsset: { code: "USDC", issuer: ISSUER },
+        destAmount: "10",
+        fetchJson: fetchJson({ _embedded: { records: [] } }),
+      }
+    )
+    assert.equal(path, null)
+  })
+})
+
+describe("checkSlippage", () => {
+  it("accepts a destination amount within the slippage bound", () => {
+    assert.equal(
+      checkSlippage({ quotedDestAmount: "10", actualDestAmount: "9.95", slippageBps: 100 }),
+      true
+    )
+  })
+
+  it("rejects a destination amount outside the slippage bound", () => {
+    assert.equal(
+      checkSlippage({ quotedDestAmount: "10", actualDestAmount: "9.5", slippageBps: 100 }),
+      false
+    )
   })
 })
 

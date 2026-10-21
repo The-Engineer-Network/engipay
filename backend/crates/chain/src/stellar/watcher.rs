@@ -24,7 +24,7 @@
 //! `main.rs` should be updated to construct a [`StellarWatcher`] and call
 //! [`StellarWatcher::run`].
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -32,6 +32,80 @@ use tracing::{info, warn};
 
 use crate::stellar::StellarClient;
 use crate::{ChainClient, ObservedDeposit, is_creditable};
+
+/// A pending SEP-31 (cross-border) payment awaiting arrival on-chain.
+///
+/// Senders abroad initiate a SEP-31 payment through the anchor; the anchor
+/// assigns a unique `reference` (carried as the Stellar transaction memo) and
+/// records it here.  When the watcher observes a payment whose memo matches a
+/// pending entry, the payment is routed to the deposit creditor so the
+/// recipient is credited.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingSep31Payment {
+    /// The SEP-31 transaction id assigned by the anchor.
+    pub transaction_id: String,
+    /// The memo / reference expected on the incoming Stellar payment.
+    pub reference: String,
+    /// The recipient's Stellar account (or muxed address) to credit.
+    pub recipient: String,
+}
+
+/// Thread-safe registry of pending SEP-31 payments keyed by reference.
+///
+/// The watcher consults this registry for every observed deposit: if the
+/// deposit's reference matches a pending SEP-31 payment, the payment is
+/// credited to the registered recipient and the entry is removed so it is
+/// only ever credited once.
+#[derive(Clone, Default)]
+pub struct Sep31Registry {
+    inner: std::sync::Arc<std::sync::Mutex<HashMap<String, PendingSep31Payment>>>,
+}
+
+impl Sep31Registry {
+    /// Creates an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a pending SEP-31 payment.  Returns the previous entry if the
+    /// same reference was already registered.
+    pub fn register(&self, payment: PendingSep31Payment) -> Option<PendingSep31Payment> {
+        self.inner
+            .lock()
+            .expect("SEP-31 registry mutex poisoned")
+            .insert(payment.reference.clone(), payment)
+    }
+
+    /// Looks up a pending payment by reference without removing it.
+    pub fn get(&self, reference: &str) -> Option<PendingSep31Payment> {
+        self.inner
+            .lock()
+            .expect("SEP-31 registry mutex poisoned")
+            .get(reference)
+            .cloned()
+    }
+
+    /// Removes and returns a pending payment by reference.
+    pub fn take(&self, reference: &str) -> Option<PendingSep31Payment> {
+        self.inner
+            .lock()
+            .expect("SEP-31 registry mutex poisoned")
+            .remove(reference)
+    }
+
+    /// Returns the number of pending payments.
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("SEP-31 registry mutex poisoned")
+            .len()
+    }
+
+    /// Returns `true` when no payments are pending.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
 
 /// Maximum references held in the deduplication ring-buffer.
 const SEEN_CAPACITY: usize = 10_000;
@@ -48,6 +122,7 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(3);
 pub struct StellarWatcher {
     client: StellarClient,
     poll_interval: Duration,
+    sep31: Sep31Registry,
 }
 
 impl StellarWatcher {
@@ -59,7 +134,23 @@ impl StellarWatcher {
         Self {
             client,
             poll_interval,
+            sep31: Sep31Registry::new(),
         }
+    }
+
+    /// Attaches a SEP-31 registry so incoming cross-border payments are
+    /// matched against pending transactions and credited to their recipients.
+    pub fn with_sep31_registry(mut self, registry: Sep31Registry) -> Self {
+        self.sep31 = registry;
+        self
+    }
+
+    /// Returns a clone of the SEP-31 registry used by this watcher.
+    ///
+    /// Callers register pending payments here; the watcher consumes them as
+    /// matching payments arrive on-chain.
+    pub fn sep31_registry(&self) -> Sep31Registry {
+        self.sep31.clone()
     }
 
     /// Runs the polling loop until `cancel` is cancelled.
@@ -130,6 +221,36 @@ impl StellarWatcher {
             };
 
             for deposit in deposits {
+                // SEP-31 payments are matched by their memo/reference against
+                // the pending registry before the generic creditable check, so
+                // cross-border payments are credited to their registered
+                // recipient even when the deposit address differs.
+                if let Some(pending) = self.sep31.take(&deposit.reference) {
+                    if seen.contains(&deposit.reference) {
+                        // Already credited; restore the pending entry so a
+                        // later retry can still observe it.
+                        self.sep31.register(pending);
+                        continue;
+                    }
+
+                    seen.insert(deposit.reference.clone());
+                    seen_order.push_back(deposit.reference.clone());
+                    while seen_order.len() > SEEN_CAPACITY {
+                        if let Some(oldest) = seen_order.pop_front() {
+                            seen.remove(&oldest);
+                        }
+                    }
+
+                    info!(
+                        transaction_id = %pending.transaction_id,
+                        recipient = %pending.recipient,
+                        reference = %deposit.reference,
+                        "SEP-31 payment arrived; crediting recipient"
+                    );
+                    on_deposit(deposit).await;
+                    continue;
+                }
+
                 if !is_creditable(&self.client, &deposit) {
                     continue;
                 }
@@ -174,6 +295,92 @@ mod tests {
     use engipay_core::stellar::muxed_deposit_address;
 
     use super::*;
+
+    // ── SEP-31 registry tests ────────────────────────────────────────────────
+
+    #[test]
+    fn sep31_registry_register_get_take() {
+        let registry = Sep31Registry::new();
+        assert!(registry.is_empty());
+
+        let payment = PendingSep31Payment {
+            transaction_id: "tx-1".to_owned(),
+            reference: "stellar:abc:123".to_owned(),
+            recipient: g_account(2),
+        };
+        assert!(registry.register(payment.clone()).is_none());
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.get("stellar:abc:123"), Some(payment.clone()));
+
+        let taken = registry.take("stellar:abc:123");
+        assert_eq!(taken, Some(payment));
+        assert!(registry.is_empty());
+        assert!(registry.take("stellar:abc:123").is_none());
+    }
+
+    #[tokio::test]
+    async fn watcher_credits_pending_sep31_payment() {
+        let server = MockServer::start().await;
+        let custody = g_account(1);
+        let muxed = muxed_deposit_address(&custody, 9).unwrap();
+
+        mount_root(&server, 100).await;
+
+        Mock::given(method("GET"))
+            .and(path(format!("/accounts/{custody}/payments")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_embedded": { "records": [
+                    {
+                        "paging_token": "999",
+                        "type": "payment",
+                        "transaction_hash": "sep31hash",
+                        "transaction_successful": true,
+                        "to": custody,
+                        "to_muxed": muxed,
+                        "asset_type": "native",
+                        "amount": "12.0000000",
+                        "transaction": { "ledger": 99, "successful": true }
+                    }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let w = watcher(&server).await;
+        let registry = w.sep31_registry();
+        registry.register(PendingSep31Payment {
+            transaction_id: "sep31-tx-1".to_owned(),
+            reference: "stellar:sep31hash:999".to_owned(),
+            recipient: g_account(2),
+        });
+
+        let cancel = CancellationToken::new();
+        let collected: Arc<Mutex<Vec<ObservedDeposit>>> = Arc::new(Mutex::new(Vec::new()));
+        let collected_clone = collected.clone();
+        let cancel_clone = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            w.run(99, cancel_clone, |deposit| {
+                let collected = collected.clone();
+                async move {
+                    collected.lock().unwrap().push(deposit);
+                }
+            })
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancel.cancel();
+        handle.await.unwrap();
+
+        let deposits = collected_clone.lock().unwrap();
+        assert_eq!(deposits.len(), 1, "SEP-31 payment must be credited once");
+        assert_eq!(deposits[0].reference, "stellar:sep31hash:999");
+        assert!(
+            registry.is_empty(),
+            "pending SEP-31 entry must be consumed after crediting"
+        );
+    }
 
     fn g_account(seed: u8) -> String {
         stellar_strkey::ed25519::PublicKey([seed; 32])

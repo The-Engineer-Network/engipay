@@ -12,6 +12,15 @@
 //!   and flag the withdrawal for manual review. The money stays held: it may
 //!   still have left.
 //!
+//! # Cross-asset (path) payments
+//!
+//! A withdrawal may be a Stellar path payment: the user sends one asset (say
+//! XLM) and the recipient receives another (say USDC). Once such a payment is
+//! confirmed, [`record_cross_asset_settlement`] records both legs — what was
+//! sent and what was received — together with the slippage limit the user
+//! agreed to. The transaction hash is the idempotency reference, so replaying
+//! the same confirmation records the settlement exactly once.
+//!
 //! # Crash safety
 //!
 //! Each step moves the withdrawal's status *before* touching the ledger, so the
@@ -56,6 +65,42 @@ impl HoldLedger for PostgresLedgerStore {
 
     async fn release_hold(&self, hold_reference: &str) -> Result<Receipt, LedgerError> {
         PostgresLedgerStore::release_hold(self, hold_reference).await
+    }
+}
+
+/// The two legs of a confirmed cross-asset (path) payment, plus the slippage
+/// limit the user agreed to when the payment was quoted.
+///
+/// `sent` is what left the user's account on Stellar; `received` is what the
+/// recipient got. `slippage_bps` is the maximum adverse move (in basis points)
+/// the user accepted between quote and execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CrossAssetSettlement {
+    pub sent: Money,
+    pub received: Money,
+    pub slippage_bps: u32,
+}
+
+/// Records a confirmed cross-asset settlement in the ledger.
+///
+/// The transaction `hash` is used as the idempotency reference: recording the
+/// same confirmed path payment twice records it exactly once, and the second
+/// call returns the replayed receipt.
+pub trait CrossAssetLedger: Send + Sync {
+    fn record_cross_asset_settlement(
+        &self,
+        tx_hash: &str,
+        settlement: CrossAssetSettlement,
+    ) -> impl Future<Output = Result<Receipt, LedgerError>> + Send;
+}
+
+impl CrossAssetLedger for PostgresLedgerStore {
+    async fn record_cross_asset_settlement(
+        &self,
+        tx_hash: &str,
+        settlement: CrossAssetSettlement,
+    ) -> Result<Receipt, LedgerError> {
+        PostgresLedgerStore::record_cross_asset_settlement(self, tx_hash, settlement).await
     }
 }
 
@@ -166,6 +211,29 @@ pub async fn settle_confirmed<W: WithdrawalStore, L: HoldLedger>(
         receipt,
         ledger: ledger_seq,
     })
+}
+
+/// Records a confirmed cross-asset (path) payment in the ledger.
+///
+/// `tx_hash` is the idempotency reference: replaying the same confirmation
+/// records the settlement exactly once and returns the replayed receipt.
+pub async fn record_cross_asset_settlement<L: CrossAssetLedger>(
+    ledger: &L,
+    tx_hash: &str,
+    settlement: CrossAssetSettlement,
+) -> Result<Receipt, SettlementError> {
+    let receipt = ledger
+        .record_cross_asset_settlement(tx_hash, settlement)
+        .await?;
+    info!(
+        %tx_hash,
+        sent = %settlement.sent,
+        received = %settlement.received,
+        slippage_bps = settlement.slippage_bps,
+        replayed = receipt.replayed,
+        "cross-asset settlement recorded"
+    );
+    Ok(receipt)
 }
 
 /// Marks a withdrawal `failed` and returns its held money to the user.
@@ -280,6 +348,19 @@ pub(crate) mod fake {
 
         async fn release_hold(&self, hold_reference: &str) -> Result<Receipt, LedgerError> {
             self.0.lock().expect("ledger lock").release(hold_reference)
+        }
+    }
+
+    impl CrossAssetLedger for MemoryLedger {
+        async fn record_cross_asset_settlement(
+            &self,
+            tx_hash: &str,
+            settlement: CrossAssetSettlement,
+        ) -> Result<Receipt, LedgerError> {
+            self.0
+                .lock()
+                .expect("ledger lock")
+                .record_cross_asset_settlement(tx_hash, settlement)
         }
     }
 }
@@ -521,5 +602,50 @@ mod tests {
         ));
         assert_eq!(ledger.balance(withdrawal.user, Asset::Usdc).available, 1);
         assert_eq!(store.snapshot(withdrawal.id).status, Completed);
+    }
+
+    #[tokio::test]
+    async fn a_cross_asset_settlement_records_both_legs() {
+        let ledger = MemoryLedger::default();
+        let settlement = CrossAssetSettlement {
+            sent: Money::from_minor(Asset::Xlm, 30_000_000),
+            received: Money::from_minor(Asset::Usdc, 9_000_000),
+            slippage_bps: 50,
+        };
+
+        let receipt = record_cross_asset_settlement(&ledger, HASH, settlement)
+            .await
+            .unwrap();
+        assert!(!receipt.replayed);
+
+        let recorded = ledger
+            .0
+            .lock()
+            .expect("ledger lock")
+            .cross_asset_settlement(HASH)
+            .expect("settlement recorded");
+        assert_eq!(recorded.sent, settlement.sent);
+        assert_eq!(recorded.received, settlement.received);
+        assert_eq!(recorded.slippage_bps, settlement.slippage_bps);
+    }
+
+    #[tokio::test]
+    async fn recording_the_same_cross_asset_settlement_twice_is_a_replay() {
+        let ledger = MemoryLedger::default();
+        let settlement = CrossAssetSettlement {
+            sent: Money::from_minor(Asset::Xlm, 30_000_000),
+            received: Money::from_minor(Asset::Usdc, 9_000_000),
+            slippage_bps: 50,
+        };
+
+        let first = record_cross_asset_settlement(&ledger, HASH, settlement)
+            .await
+            .unwrap();
+        let second = record_cross_asset_settlement(&ledger, HASH, settlement)
+            .await
+            .unwrap();
+
+        assert_eq!(first.transaction_id, second.transaction_id);
+        assert!(second.replayed);
     }
 }

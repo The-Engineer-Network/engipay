@@ -12,6 +12,9 @@ use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 use crate::services::limits::check_velocity_limits;
 use crate::services::recipient::resolve_recipient;
+use crate::services::stellar_path::{
+    SlippageError, StellarPathError, StellarPathService, check_slippage,
+};
 
 /// A validated request to transfer funds between two EngiPay users.
 ///
@@ -163,8 +166,72 @@ impl TransferReceipt {
     }
 }
 
+/// A request to submit a signed Stellar path payment that was quoted earlier.
+///
+/// The client must echo back the `quote_id` it received from the quote
+/// endpoint together with the slippage it agreed to, so the server can verify
+/// the executed amounts against the user's tolerance.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StellarPathTransferRequest {
+    /// Identifier of the previously created quote.
+    pub quote_id: String,
+    /// User-agreed slippage in basis points (1 bps = 0.01%).
+    pub slippage_bps: u32,
+    /// Base64-encoded, signed Stellar transaction envelope (XDR).
+    pub envelope_xdr: String,
+}
+
+impl StellarPathTransferRequest {
+    /// Validate the request shape before touching the chain.
+    pub fn validate(&self) -> Result<(), StellarPathRequestError> {
+        if self.quote_id.trim().is_empty() {
+            return Err(StellarPathRequestError::InvalidQuoteId);
+        }
+        if self.slippage_bps > MAX_SLIPPAGE_BPS {
+            return Err(StellarPathRequestError::SlippageTooHigh);
+        }
+        if self.envelope_xdr.trim().is_empty() {
+            return Err(StellarPathRequestError::InvalidEnvelope);
+        }
+        Ok(())
+    }
+}
+
+/// Upper bound on user-agreed slippage: 50% (5000 bps).
+pub const MAX_SLIPPAGE_BPS: u32 = 5_000;
+
+/// Validation failures for a [`StellarPathTransferRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StellarPathRequestError {
+    InvalidQuoteId,
+    SlippageTooHigh,
+    InvalidEnvelope,
+}
+
+/// Receipt for a confirmed cross-asset path payment.
+///
+/// Both the sent and the received amounts are recorded as exact minor-unit
+/// strings so no floating point value ever represents money.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StellarPathReceipt {
+    pub transaction_id: String,
+    pub quote_id: String,
+    pub reference: String,
+    pub sender_tag: String,
+    pub recipient_tag: String,
+    pub source_asset: Asset,
+    pub source_amount: String,
+    pub destination_asset: Asset,
+    pub destination_amount: String,
+    pub slippage_bps: u32,
+    pub created_at: String,
+    pub status: TransferStatus,
+}
+
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/transfers", post(create_transfer))
+    Router::new()
+        .route("/transfers", post(create_transfer))
+        .route("/transfers/stellar-path", post(create_stellar_path_transfer))
 }
 
 async fn create_transfer(
@@ -257,6 +324,110 @@ async fn create_transfer(
             now_iso8601(),
         )),
     ))
+}
+
+async fn create_stellar_path_transfer(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(request): Json<StellarPathTransferRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    request
+        .validate()
+        .map_err(|_| ApiError::BadRequest("invalid stellar path transfer request".to_string()))?;
+
+    let sender = auth.user_id(state.config.jwt_secret.as_bytes())?;
+
+    let pool = state
+        .database
+        .clone()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    let service = StellarPathService::from_config(&state.config)
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("stellar path service unavailable")))?;
+
+    // Load the quote the user agreed to. It pins the source/destination
+    // assets and the expected destination amount used for slippage checks.
+    let quote = service
+        .load_quote(&pool, sender, request.quote_id.trim())
+        .await
+        .map_err(map_stellar_path_error)?;
+
+    // Submit the signed envelope through the chain service.
+    let submitted = service
+        .submit_path_payment(&request.envelope_xdr)
+        .await
+        .map_err(map_stellar_path_error)?;
+
+    // Enforce the user-agreed slippage against the actual destination amount.
+    check_slippage(&quote, submitted.destination_amount, request.slippage_bps)
+        .map_err(|err| match err {
+            SlippageError::Exceeded { .. } => ApiError::BadRequest(
+                "executed amount falls outside the agreed slippage".to_string(),
+            ),
+        })?;
+
+    let ledger = PostgresLedgerStore::new(pool.clone());
+
+    // Record what was sent and what was received.
+    let settlement = ledger
+        .settle_cross_asset(
+            sender,
+            UserId::from_uuid(quote.recipient),
+            quote.source_asset,
+            submitted.source_amount,
+            quote.destination_asset,
+            submitted.destination_amount,
+            quote.reference.trim(),
+        )
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+
+    let recipient_tag: Option<String> =
+        sqlx::query_scalar("SELECT tag FROM user_profiles WHERE id = $1 LIMIT 1")
+            .bind(quote.recipient)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| {
+                ApiError::Internal(anyhow::anyhow!("failed to fetch recipient tag: {}", e))
+            })?
+            .flatten();
+
+    let recipient_tag = recipient_tag.unwrap_or_else(|| quote.recipient.to_string());
+
+    Ok((
+        StatusCode::CREATED,
+        Json(StellarPathReceipt {
+            transaction_id: settlement.transaction_id.to_string(),
+            quote_id: quote.quote_id,
+            reference: quote.reference.trim().to_string(),
+            sender_tag: sender.as_uuid().to_string(),
+            recipient_tag,
+            source_asset: quote.source_asset,
+            source_amount: submitted.source_amount.minor.to_string(),
+            destination_asset: quote.destination_asset,
+            destination_amount: submitted.destination_amount.minor.to_string(),
+            slippage_bps: request.slippage_bps,
+            created_at: now_iso8601(),
+            status: TransferStatus::Completed,
+        }),
+    ))
+}
+
+/// Map a [`StellarPathError`] onto the API error surface.
+fn map_stellar_path_error(err: StellarPathError) -> ApiError {
+    match err {
+        StellarPathError::QuoteNotFound => ApiError::BadRequest("quote not found".to_string()),
+        StellarPathError::QuoteExpired => ApiError::BadRequest("quote expired".to_string()),
+        StellarPathError::InvalidEnvelope => {
+            ApiError::BadRequest("invalid transaction envelope".to_string())
+        }
+        StellarPathError::Submission(msg) => {
+            ApiError::BadRequest(format!("path payment submission failed: {}", msg))
+        }
+        StellarPathError::Database(msg) => {
+            ApiError::Internal(anyhow::anyhow!("stellar path store failed: {}", msg))
+        }
+    }
 }
 
 /// Current time as an ISO 8601 (UTC) timestamp.
@@ -475,6 +646,67 @@ mod tests {
         let json = serde_json::to_string(&receipt).expect("receipt serializes");
         let decoded: TransferReceipt = serde_json::from_str(&json).expect("receipt deserializes");
         assert_eq!(decoded, receipt);
+    }
+
+    fn path_request(quote_id: &str, slippage_bps: u32, envelope: &str) -> StellarPathTransferRequest {
+        StellarPathTransferRequest {
+            quote_id: quote_id.to_string(),
+            slippage_bps,
+            envelope_xdr: envelope.to_string(),
+        }
+    }
+
+    #[test]
+    fn accepts_valid_stellar_path_request() {
+        let req = path_request("quote-1", 50, "AAAA...");
+        assert_eq!(req.validate(), Ok(()));
+    }
+
+    #[test]
+    fn rejects_empty_quote_id() {
+        let req = path_request("   ", 50, "AAAA...");
+        assert_eq!(req.validate(), Err(StellarPathRequestError::InvalidQuoteId));
+    }
+
+    #[test]
+    fn rejects_slippage_above_maximum() {
+        let req = path_request("quote-1", MAX_SLIPPAGE_BPS + 1, "AAAA...");
+        assert_eq!(
+            req.validate(),
+            Err(StellarPathRequestError::SlippageTooHigh)
+        );
+    }
+
+    #[test]
+    fn rejects_empty_envelope() {
+        let req = path_request("quote-1", 50, "   ");
+        assert_eq!(req.validate(), Err(StellarPathRequestError::InvalidEnvelope));
+    }
+
+    #[test]
+    fn stellar_path_receipt_records_both_amounts() {
+        let receipt = StellarPathReceipt {
+            transaction_id: "txn-789".to_string(),
+            quote_id: "quote-1".to_string(),
+            reference: "ref-9".to_string(),
+            sender_tag: BOB.to_string(),
+            recipient_tag: ALICE.to_string(),
+            source_asset: Asset::Xlm,
+            source_amount: "10000000".to_string(),
+            destination_asset: Asset::Usdc,
+            destination_amount: "2500000".to_string(),
+            slippage_bps: 50,
+            created_at: "2024-01-02T03:04:05Z".to_string(),
+            status: TransferStatus::Completed,
+        };
+
+        let json = serde_json::to_value(&receipt).expect("receipt serializes");
+        assert_eq!(json["source_asset"], "XLM");
+        assert_eq!(json["source_amount"], "10000000");
+        assert_eq!(json["destination_asset"], "USDC");
+        assert_eq!(json["destination_amount"], "2500000");
+        assert_eq!(json["slippage_bps"], 50);
+        assert_eq!(json["status"], "completed");
     }
 
     #[test]

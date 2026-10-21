@@ -85,6 +85,50 @@ bash ./scripts/test-db-guarantees.sh
 
 ---
 
+## 🌍 SEP-31 Cross-Border Receiving Anchor
+
+EngiPay acts as the **receiving anchor** for SEP-31 cross-border payments: senders abroad (via their sending anchor) can pay EngiPay users. Scope of this role:
+
+- Serve the SEP-31 endpoints (`/sep31/info`, `/sep31/transactions`, `/sep31/transactions/:id`) from the transfer server.
+- Publish the required `stellar.toml` entries so sending anchors can discover us.
+- Credit the recipient's ledger account when the incoming payment is settled.
+
+### Required `stellar.toml` Entries
+
+The anchor's `stellar.toml` (served at `/.well-known/stellar.toml`) must include:
+
+```toml
+# SEP-31 transfer server base URL
+TRANSFER_SERVER_SEP0031 = "https://api.engipay.example/sep31"
+
+# Key used to sign SEP-31 requests/responses (must match the server's signing key)
+SIGNING_KEY = "G..."
+
+# Stellar network the anchor operates on (testnet or public)
+NETWORK_PASSPHRASE = "Test SDF Network ; September 2015"
+```
+
+Keep `SIGNING_KEY` and `NETWORK_PASSPHRASE` in sync with the backend configuration; mismatches cause sending anchors to reject our responses.
+
+### Conformance Tests
+
+Run the SEP-31 conformance suite against a locally running transfer server before opening a PR:
+
+```bash
+cd backend
+
+# Start the transfer server (and Postgres) locally
+docker compose up -d --wait postgres
+cargo run -p engipay-anchor -- --network testnet &
+
+# Execute the SEP-31 conformance tests
+cargo test -p engipay-anchor --features sep31-conformance --locked
+```
+
+All SEP-31 conformance tests must pass for changes touching the anchor, `stellar.toml`, or payment crediting logic.
+
+---
+
 ## 🧪 Testing Rules for Contributors
 
 1. **Every Issue Requires a Test**: No code is merged without unit or integration tests verifying expected behavior and edge cases.

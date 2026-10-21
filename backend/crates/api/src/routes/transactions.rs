@@ -18,6 +18,18 @@ pub struct Transaction {
     pub direction: String,
     pub timestamp: String,
     pub counterparty: Option<Counterparty>,
+    /// Asset the user sent, for cross-asset Stellar path payments (#513).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent_asset: Option<String>,
+    /// Amount the user sent, for cross-asset Stellar path payments (#513).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent_amount: Option<String>,
+    /// Asset the counterparty received, for cross-asset Stellar path payments (#513).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub received_asset: Option<String>,
+    /// Amount the counterparty received, for cross-asset Stellar path payments (#513).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub received_amount: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -177,6 +189,28 @@ async fn get_transactions(
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
 
+    // Load cross-asset Stellar path payment settlements (#513) for the user's
+    // ramp orders so the feed can report what was sent and received.
+    let settlement_rows = sqlx::query_as::<_, (Uuid, String, String, String, String)>(
+        "SELECT ramp_order_id, sent_asset, sent_amount, received_asset, received_amount \
+         FROM stellar_path_payment_settlements WHERE user_id = $1",
+    )
+    .bind(user_id.as_uuid())
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    let settlements: std::collections::HashMap<Uuid, (String, String, String, String)> =
+        settlement_rows
+            .into_iter()
+            .map(|(order_id, sent_asset, sent_amount, received_asset, received_amount)| {
+                (
+                    order_id,
+                    (sent_asset, sent_amount, received_asset, received_amount),
+                )
+            })
+            .collect();
+
     // Build transaction list with directional metadata (#133)
     let mut transactions: Vec<Transaction> = Vec::new();
 
@@ -187,6 +221,17 @@ async fn get_transactions(
             _ => direction.clone(),
         };
 
+        let settlement = settlements.get(&id);
+        let (sent_asset, sent_amount, received_asset, received_amount) = match settlement {
+            Some((s_asset, s_amount, r_asset, r_amount)) => (
+                Some(s_asset.clone()),
+                Some(s_amount.clone()),
+                Some(r_asset.clone()),
+                Some(r_amount.clone()),
+            ),
+            None => (None, None, None, None),
+        };
+
         transactions.push(Transaction {
             id,
             kind: direction,
@@ -195,6 +240,10 @@ async fn get_transactions(
             direction: final_direction,
             timestamp: created_at.to_rfc3339(),
             counterparty: None,
+            sent_asset,
+            sent_amount,
+            received_asset,
+            received_amount,
         });
     }
 

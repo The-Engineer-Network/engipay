@@ -53,6 +53,12 @@ pub enum EnvelopeError {
     /// The optional tag was present but malformed.
     #[error("invalid tag: {0}")]
     InvalidTag(String),
+    /// The slippage bound was outside the accepted range.
+    #[error("invalid slippage (bps): {0}")]
+    InvalidSlippage(u32),
+    /// The quote id was present but malformed.
+    #[error("invalid quote id: {0}")]
+    InvalidQuoteId(String),
 }
 
 /// A validated EngiPay standard payment request envelope.
@@ -81,6 +87,14 @@ pub struct PaymentEnvelope {
     /// Optional opaque reference for reconciliation.
     #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
     pub ref_: Option<String>,
+    /// Optional slippage bound (in basis points) the user agreed to for a
+    /// cross-asset path payment. Only meaningful on chains that support path
+    /// payments (e.g. `stellar`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slippage_bps: Option<u32>,
+    /// Optional identifier of the quote the slippage bound was derived from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote_id: Option<String>,
     /// Fallback standard URI for clients that do not understand the envelope.
     pub uri: String,
 }
@@ -130,8 +144,28 @@ impl PaymentEnvelope {
             amount,
             tag,
             ref_: reference,
+            slippage_bps: None,
+            quote_id: None,
             uri,
         })
+    }
+
+    /// Attach a slippage bound (in basis points) and the quote it came from.
+    ///
+    /// Used for cross-asset path payments where the sender's asset differs
+    /// from the recipient's asset. The bound is validated to be within
+    /// `0..=MAX_SLIPPAGE_BPS`; an empty `quote_id` is rejected.
+    pub fn with_slippage(
+        mut self,
+        slippage_bps: u32,
+        quote_id: impl Into<String>,
+    ) -> Result<Self, EnvelopeError> {
+        let quote_id = quote_id.into();
+        validate_slippage(slippage_bps)?;
+        validate_quote_id(&quote_id)?;
+        self.slippage_bps = Some(slippage_bps);
+        self.quote_id = Some(quote_id);
+        Ok(self)
     }
 
     /// Serialize the envelope to its canonical JSON representation.
@@ -224,6 +258,23 @@ fn validate_tag(tag: &str) -> Result<(), EnvelopeError> {
     Ok(())
 }
 
+/// Maximum accepted slippage bound, in basis points (50%).
+pub const MAX_SLIPPAGE_BPS: u32 = 5_000;
+
+fn validate_slippage(slippage_bps: u32) -> Result<(), EnvelopeError> {
+    if slippage_bps > MAX_SLIPPAGE_BPS {
+        return Err(EnvelopeError::InvalidSlippage(slippage_bps));
+    }
+    Ok(())
+}
+
+fn validate_quote_id(quote_id: &str) -> Result<(), EnvelopeError> {
+    if quote_id.is_empty() || quote_id.len() > 128 || quote_id.chars().any(|c| c.is_whitespace()) {
+        return Err(EnvelopeError::InvalidQuoteId(quote_id.to_string()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +360,38 @@ mod tests {
         let env = PaymentEnvelope::with_chain("stellar", TO, "USDC", "5", None, None).unwrap();
         assert_eq!(env.chain, "stellar");
         assert!(env.uri.contains("@stellar"));
+    }
+
+    #[test]
+    fn slippage_fields_are_omitted_by_default() {
+        let env = PaymentEnvelope::new(TO, "USDC", "1", None, None).unwrap();
+        let json: Value = serde_json::from_str(&env.to_json()).unwrap();
+        assert!(json.get("slippage_bps").is_none());
+        assert!(json.get("quote_id").is_none());
+    }
+
+    #[test]
+    fn carries_slippage_and_quote_id() {
+        let env = PaymentEnvelope::with_chain("stellar", TO, "USDC", "5", None, None)
+            .unwrap()
+            .with_slippage(50, "quote-abc")
+            .expect("valid slippage");
+        let json: Value = serde_json::from_str(&env.to_json()).unwrap();
+        assert_eq!(json["slippage_bps"], 50);
+        assert_eq!(json["quote_id"], "quote-abc");
+    }
+
+    #[test]
+    fn rejects_invalid_slippage_and_quote_id() {
+        let env = PaymentEnvelope::with_chain("stellar", TO, "USDC", "5", None, None).unwrap();
+        assert_eq!(
+            env.clone().with_slippage(MAX_SLIPPAGE_BPS + 1, "q"),
+            Err(EnvelopeError::InvalidSlippage(MAX_SLIPPAGE_BPS + 1))
+        );
+        assert_eq!(
+            env.clone().with_slippage(10, ""),
+            Err(EnvelopeError::InvalidQuoteId(String::new()))
+        );
+        assert!(env.with_slippage(10, "bad quote").is_err());
     }
 }
