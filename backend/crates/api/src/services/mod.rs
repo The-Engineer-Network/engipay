@@ -11,6 +11,7 @@ pub mod limits;
 pub mod payment_envelope;
 pub mod payment_requests;
 pub mod price_source;
+pub mod receipts;
 pub mod recipient;
 pub mod stellar_muxed;
 pub mod withdrawal_review;

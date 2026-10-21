@@ -18,6 +18,7 @@ use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 use crate::services::buy::{self, QUOTE_LIFETIME_SQL, Terms};
+use crate::services::receipt::{self, Receipt, ReceiptType, SignedReceipt};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -67,6 +68,8 @@ pub struct OrderResponse {
     pub quote_id: Uuid,
     pub status: &'static str,
     pub message: &'static str,
+    /// Signed receipt so the order can be verified outside the app.
+    pub receipt: SignedReceipt,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -155,7 +158,11 @@ async fn create_order(
     let mut tx = db.begin().await.map_err(db_error)?;
 
     let quote = sqlx::query(
-        "SELECT expires_at > now() AS live FROM buy_quotes WHERE id = $1 AND user_id = $2 FOR UPDATE",
+        r#"SELECT expires_at > now() AS live,
+                  naira_kobo::text AS naira_kobo,
+                  receive_minor::text AS receive_minor,
+                  asset
+           FROM buy_quotes WHERE id = $1 AND user_id = $2 FOR UPDATE"#,
     )
     .bind(req.quote_id)
     .bind(user_id)
@@ -170,6 +177,13 @@ async fn create_order(
             "This quote has expired. Get a new quote.".to_string(),
         ));
     }
+
+    let naira_kobo: String = quote.try_get("naira_kobo").map_err(db_error)?;
+    let receive_minor: String = quote.try_get("receive_minor").map_err(db_error)?;
+    let asset_symbol: String = quote.try_get("asset").map_err(db_error)?;
+    let asset = Asset::from_symbol(&asset_symbol).ok_or_else(|| {
+        ApiError::Internal(anyhow::anyhow!("unknown asset on buy quote: {asset_symbol}"))
+    })?;
 
     let inserted = sqlx::query(
         "INSERT INTO buy_orders (quote_id, user_id) VALUES ($1, $2) \
@@ -189,6 +203,17 @@ async fn create_order(
     let id: Uuid = row.try_get("id").map_err(db_error)?;
     tx.commit().await.map_err(db_error)?;
 
+    let receipt = Receipt {
+        receipt_type: ReceiptType::Order,
+        reference: id.to_string(),
+        quote_id: Some(req.quote_id.to_string()),
+        naira_kobo: Some(naira_kobo),
+        amount: Some(receive_minor),
+        asset: Some(asset.symbol().to_string()),
+        issued_at: receipt::now_rfc3339(),
+    };
+    let receipt = state.receipt_signer.sign(receipt);
+
     Ok((
         StatusCode::CREATED,
         Json(OrderResponse {
@@ -196,6 +221,7 @@ async fn create_order(
             quote_id: req.quote_id,
             status: "awaiting_partner",
             message: "Your order is saved. Payment instructions will appear here once a Naira partner is connected. No money has been taken.",
+            receipt,
         }),
     ))
 }

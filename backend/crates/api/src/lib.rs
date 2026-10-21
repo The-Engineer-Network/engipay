@@ -27,6 +27,7 @@ use crate::services::bank_name_check::{BankNameCheck, FakeBankNameCheck};
 use crate::services::destination_screen::{DestinationScreen, StaticBlockList};
 use crate::services::kyc_provider::{FakeKycProvider, KycProvider};
 use crate::services::price_source::{FakePriceSource, PriceSource};
+use crate::services::receipts::ReceiptSigner;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -44,6 +45,8 @@ pub struct AppState {
     /// Withdrawal destination screener (static list now; swap for a real AML
     /// API in production without touching the withdrawal handler).
     pub destination_screen: Arc<dyn DestinationScreen>,
+    /// Ed25519 signer used to issue verifiable transaction receipts.
+    pub receipt_signer: Arc<ReceiptSigner>,
 }
 
 impl AppState {
@@ -58,6 +61,7 @@ impl AppState {
             kyc_provider: Arc::new(FakeKycProvider),
             bank_name_check: Arc::new(FakeBankNameCheck),
             destination_screen: Arc::new(StaticBlockList::empty()),
+            receipt_signer: Arc::new(ReceiptSigner::from_config_or_test(&config)),
         }
     }
 }

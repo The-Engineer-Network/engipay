@@ -13,6 +13,7 @@ use crate::{
     error::{ApiError, LedgerError},
     services::cooling_off,
     services::destination_screen::ScreenResult,
+    services::receipts::{Receipt, ReceiptType, SignedReceipt},
     services::withdrawal_review,
 };
 
@@ -37,6 +38,9 @@ pub struct WithdrawalResponse {
     pub amount: i64,
     pub estimated_network_fee: i64,
     pub status: String,
+    /// Server-signed receipt for this withdrawal. Can be shared and verified
+    /// out-of-band via the public verification endpoint.
+    pub receipt: SignedReceipt,
 }
 
 /// Builds the unique ledger reference used to lock withdrawal funds in the
@@ -155,6 +159,22 @@ pub async fn create_withdrawal(
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to create withdrawal: {}", e)))?;
 
+    // Build a canonical receipt for the withdrawal and sign it with the
+    // server key so the user can share a verifiable proof of the operation.
+    let receipt = Receipt::new(
+        ReceiptType::Withdrawal,
+        hold_ref.clone(),
+        payload.amount,
+        Some(payload.estimated_network_fee),
+        "USDC",
+        chrono::Utc::now(),
+        state.receipt_signer.key_id().to_owned(),
+    );
+    let signed_receipt = state
+        .receipt_signer
+        .sign(&receipt)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to sign receipt: {}", e)))?;
+
     Ok((
         StatusCode::CREATED,
         Json(WithdrawalResponse {
@@ -163,6 +183,7 @@ pub async fn create_withdrawal(
             amount: payload.amount,
             estimated_network_fee: payload.estimated_network_fee,
             status,
+            receipt: signed_receipt,
         }),
     ))
 }
