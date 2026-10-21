@@ -14,7 +14,7 @@ pub mod services;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::http::{HeaderValue, Method, header};
+use axum::http::{HeaderName, HeaderValue, Method, header};
 use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -76,6 +76,10 @@ pub fn router(state: AppState, config: &Config) -> Router {
         .nest("/v1", routes::v1())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
+            middleware::idempotency::idempotency_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             middleware::rate_limit::rate_limit_middleware,
         ))
         .layer(cors(config))
@@ -127,5 +131,10 @@ fn cors(config: &Config) -> CorsLayer {
     CorsLayer::new()
         .allow_origin(origins)
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            // Allow browser clients to include the idempotency key header.
+            HeaderName::from_static(middleware::IDEMPOTENCY_KEY_HEADER),
+        ])
 }
