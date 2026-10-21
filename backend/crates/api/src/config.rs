@@ -28,6 +28,10 @@ pub struct Config {
     pub buy_kobo_per_usdc: Option<i128>,
     /// Fee on Naira buys in basis points (`BUY_FEE_BPS`). Unset means no quote.
     pub buy_fee_bps: Option<u32>,
+    /// Stellar Anchor URL for SEP-24 deposits and withdrawals (e.g. "https://testanchor.stellar.org").
+    pub stellar_anchor_url: String,
+    /// Stellar Anchor home domain for SEP-10 authentication (e.g. "testanchor.stellar.org").
+    pub stellar_anchor_home_domain: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +112,10 @@ impl Config {
             tier_0_daily_limit_minor,
             buy_kobo_per_usdc,
             buy_fee_bps,
+            stellar_anchor_url: env::var("STELLAR_ANCHOR_URL")
+                .unwrap_or_else(|_| "https://testanchor.stellar.org".to_owned()),
+            stellar_anchor_home_domain: env::var("STELLAR_ANCHOR_HOME_DOMAIN")
+                .unwrap_or_else(|_| "testanchor.stellar.org".to_owned()),
         })
     }
 
@@ -127,6 +135,8 @@ impl Config {
             tier_0_daily_limit_minor: 500 * 10_000_000,
             buy_kobo_per_usdc: None,
             buy_fee_bps: None,
+            stellar_anchor_url: "https://testanchor.stellar.org".to_owned(),
+            stellar_anchor_home_domain: "testanchor.stellar.org".to_owned(),
         }
     }
 }

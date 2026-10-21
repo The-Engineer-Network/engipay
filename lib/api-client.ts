@@ -143,6 +143,67 @@ export interface PaymentRequestSummary {
   created_at: string
 }
 
+// ── Batch Payments (#512) ─────────────────────────────────────────────────────
+
+export interface BatchPaymentStatus {
+  batch_id: string
+  status: "pending" | "awaiting_approval" | "processing" | "completed" | "cancelled"
+  total_rows: number
+  processed_rows: number
+  successful: number
+  failed: number
+  requires_approval: boolean
+  approved_by?: string | null
+}
+
+export interface RowResult {
+  row_number: number
+  destination: string
+  asset: string
+  amount: string
+  status: "pending" | "success" | "failed"
+  tx_hash?: string | null
+  error?: string | null
+}
+
+// ── Naira SEP-24 Anchor (#514) ────────────────────────────────────────────────
+
+export interface InteractiveFlowResponse {
+  transaction_id: string
+  sep24_id: string
+  interactive_url: string
+  status: string
+}
+
+export interface AnchorTransactionStatus {
+  transaction_id: string
+  sep24_id: string
+  direction: "deposit" | "withdrawal"
+  status: string
+  amount_requested: string
+  amount_in?: string | null
+  amount_out?: string | null
+  amount_fee?: string | null
+  stellar_tx_hash?: string | null
+  status_message?: string | null
+  started_at: string
+  completed_at?: string | null
+  deposit_transfer_id?: string | null
+  withdrawal_id?: string | null
+}
+
+export interface StartDepositRequest {
+  amount: string
+  memo?: string
+}
+
+export interface StartWithdrawalRequest {
+  amount: string
+  bank_account: string
+  bank_code: string
+  account_name: string
+}
+
 export interface RecordPaymentRequestInput {
   amount: string
   chain: string
@@ -304,3 +365,91 @@ export async function listPaymentRequests(): Promise<PaymentRequestSummary[]> {
   const result = await apiRequest<PaymentRequestSummary[]>("/v1/payment-requests")
   return result ?? []
 }
+
+// ── Batch Payments Functions (#512) ──────────────────────────────────────────
+
+/** POST /v1/batch-payments — upload and validate a CSV batch payment file. */
+export async function uploadBatchPayment(file: File | Blob): Promise<BatchPaymentStatus> {
+  const formData = new FormData()
+  formData.append("csv", file)
+
+  const result = await apiRequest<BatchPaymentStatus>("/v1/batch-payments", {
+    method: "POST",
+    body: formData,
+  })
+  if (!result) throw new Error("API did not return batch payment status.")
+  return result
+}
+
+/** GET /v1/batch-payments/:id — query overall status of a batch payment. */
+export async function getBatchPaymentStatus(batchId: string): Promise<BatchPaymentStatus> {
+  const result = await apiRequest<BatchPaymentStatus>(`/v1/batch-payments/${batchId}`)
+  if (!result) throw new Error("API did not return batch payment status.")
+  return result
+}
+
+/** GET /v1/batch-payments/:id/rows — query individual row results for a batch. */
+export async function getBatchPaymentRows(batchId: string): Promise<RowResult[]> {
+  const result = await apiRequest<RowResult[]>(`/v1/batch-payments/${batchId}/rows`)
+  return result ?? []
+}
+
+/** POST /v1/batch-payments/:id/approve — approve a batch requiring a second account. */
+export async function approveBatchPayment(batchId: string): Promise<void> {
+  await apiRequest<void>(`/v1/batch-payments/${batchId}/approve`, {
+    method: "POST",
+  })
+}
+
+/** POST /v1/batch-payments/:id/execute — execute rows idempotently so re-running never pays twice. */
+export async function executeBatchPayment(batchId: string): Promise<BatchPaymentStatus> {
+  const result = await apiRequest<BatchPaymentStatus>(`/v1/batch-payments/${batchId}/execute`, {
+    method: "POST",
+  })
+  if (!result) throw new Error("API did not return batch payment status.")
+  return result
+}
+
+/** POST /v1/batch-payments/:id/cancel — cancel a pending batch. */
+export async function cancelBatchPayment(batchId: string): Promise<void> {
+  await apiRequest<void>(`/v1/batch-payments/${batchId}/cancel`, {
+    method: "POST",
+  })
+}
+
+// ── Naira SEP-24 Anchor Functions (#514) ──────────────────────────────────────
+
+/** POST /v1/naira/deposits — initiate a SEP-24 deposit (NGN -> USDC). */
+export async function startNairaDeposit(req: StartDepositRequest): Promise<InteractiveFlowResponse> {
+  const result = await apiRequest<InteractiveFlowResponse>("/v1/naira/deposits", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return interactive flow response.")
+  return result
+}
+
+/** GET /v1/naira/deposits/:id — poll the status of a Naira deposit. */
+export async function getNairaDepositStatus(transactionId: string): Promise<AnchorTransactionStatus> {
+  const result = await apiRequest<AnchorTransactionStatus>(`/v1/naira/deposits/${transactionId}`)
+  if (!result) throw new Error("API did not return anchor deposit status.")
+  return result
+}
+
+/** POST /v1/naira/withdrawals — initiate a SEP-24 withdrawal (USDC -> NGN to bank). */
+export async function startNairaWithdrawal(req: StartWithdrawalRequest): Promise<InteractiveFlowResponse> {
+  const result = await apiRequest<InteractiveFlowResponse>("/v1/naira/withdrawals", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return interactive flow response.")
+  return result
+}
+
+/** GET /v1/naira/withdrawals/:id — poll the status of a Naira withdrawal. */
+export async function getNairaWithdrawalStatus(transactionId: string): Promise<AnchorTransactionStatus> {
+  const result = await apiRequest<AnchorTransactionStatus>(`/v1/naira/withdrawals/${transactionId}`)
+  if (!result) throw new Error("API did not return anchor withdrawal status.")
+  return result
+}
+
