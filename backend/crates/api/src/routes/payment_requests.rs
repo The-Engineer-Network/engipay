@@ -417,7 +417,11 @@ async fn record_payment(
 
     // tx_hash uniqueness is enforced by the DB unique index, but validate presence
     // for non-internal chains.
-    let tx_hash = payload.tx_hash.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let tx_hash = payload
+        .tx_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if chain != "internal" && tx_hash.is_none() {
         return Err(ApiError::BadRequest(
             "tx_hash is required for on-chain payments".to_string(),
@@ -451,12 +455,26 @@ async fn record_payment(
     .bind(&asset_str)
     .bind(chain)
     .bind(tx_hash)
-    .bind(payload.payer_address.as_deref().map(str::trim).filter(|s| !s.is_empty()))
-    .bind(payload.note.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+    .bind(
+        payload
+            .payer_address
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    )
+    .bind(
+        payload
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    )
     .execute(&mut *tx)
     .await
     .map_err(|e| {
-        if e.to_string().contains("idx_payment_request_payments_tx_hash") {
+        if e.to_string()
+            .contains("idx_payment_request_payments_tx_hash")
+        {
             ApiError::Conflict("a payment with this tx_hash has already been recorded".to_string())
         } else {
             ApiError::Internal(anyhow::anyhow!(e.to_string()))
@@ -481,9 +499,7 @@ async fn record_payment(
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("commit: {e}")))?;
 
-    let amount_remaining = requested_amount
-        .saturating_sub(new_amount_paid)
-        .max(0);
+    let amount_remaining = requested_amount.saturating_sub(new_amount_paid).max(0);
 
     Ok((
         StatusCode::CREATED,
@@ -561,10 +577,12 @@ async fn list_payment_requests(
             let requested_amount: String = row
                 .try_get::<Option<String>, _>("requested_amount")
                 .map_err(db_err)?
-                .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("payment request has no amount")))?;
-            let requested_minor: i128 = requested_amount
-                .parse()
-                .map_err(|e| ApiError::Internal(anyhow::anyhow!("invalid requested_amount: {e}")))?;
+                .ok_or_else(|| {
+                    ApiError::Internal(anyhow::anyhow!("payment request has no amount"))
+                })?;
+            let requested_minor: i128 = requested_amount.parse().map_err(|e| {
+                ApiError::Internal(anyhow::anyhow!("invalid requested_amount: {e}"))
+            })?;
             let asset: String = row.try_get("asset").map_err(db_err)?;
             let status: String = row.try_get("status").map_err(db_err)?;
             let expires_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =

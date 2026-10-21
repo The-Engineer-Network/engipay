@@ -92,7 +92,8 @@ pub async fn create_withdrawal(
     // Screen the destination against the block list *before* any hold is
     // placed. A blocked address is rejected with 400 Bad Request so no funds
     // are ever locked for a disallowed destination.
-    if let ScreenResult::Blocked { reason } = state.destination_screen.screen(&payload.destination) {
+    if let ScreenResult::Blocked { reason } = state.destination_screen.screen(&payload.destination)
+    {
         return Err(ApiError::BadRequest(format!(
             "withdrawal destination is blocked: {reason}"
         )));
@@ -456,6 +457,11 @@ mod tests {
         let mixed = "0xDeAdBeEf00000000000000000000000000000001";
         let state = state_with_blocked(&[lower]);
         assert!(state.destination_screen.screen(mixed).is_blocked());
-        assert!(state.destination_screen.screen(&lower.to_uppercase()).is_blocked());
+        assert!(
+            state
+                .destination_screen
+                .screen(&lower.to_uppercase())
+                .is_blocked()
+        );
     }
 }

@@ -6,7 +6,7 @@
 use anyhow::{Context, bail};
 use engipay_core::{Asset, Money};
 use serde::Deserialize;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
 use crate::ObservedDeposit;
 use crate::deposit_creditor::{CreditOutcome, DepositCreditor};
@@ -25,13 +25,13 @@ pub struct UncreditedRow {
 ///
 /// Returns rows ordered by creation time (newest first).
 pub async fn list(pool: &PgPool) -> anyhow::Result<Vec<UncreditedRow>> {
-    let rows = sqlx::query!(
+    let rows = sqlx::query(
         r#"
         SELECT id, created_at, reason, raw_payload, status
         FROM uncredited_deposits
         WHERE status = 'pending_investigation'
         ORDER BY created_at DESC
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await
@@ -39,12 +39,12 @@ pub async fn list(pool: &PgPool) -> anyhow::Result<Vec<UncreditedRow>> {
 
     Ok(rows
         .into_iter()
-        .map(|r| UncreditedRow {
-            id: r.id,
-            created_at: r.created_at,
-            reason: r.reason,
-            raw_payload: r.raw_payload,
-            status: r.status,
+        .map(|row| UncreditedRow {
+            id: row.get("id"),
+            created_at: row.get("created_at"),
+            reason: row.get("reason"),
+            raw_payload: row.get("raw_payload"),
+            status: row.get("status"),
         })
         .collect())
 }
@@ -63,28 +63,31 @@ pub async fn list(pool: &PgPool) -> anyhow::Result<Vec<UncreditedRow>> {
 /// - Returns an error if the creditor routes the deposit to the DLQ again
 pub async fn reprocess(pool: &PgPool, id: i64, creditor: &DepositCreditor) -> anyhow::Result<()> {
     // 1. Fetch the row and check it is pending.
-    let row = sqlx::query!(
+    let row = sqlx::query(
         r#"
         SELECT id, raw_payload, status
         FROM uncredited_deposits
         WHERE id = $1
         "#,
-        id
     )
+    .bind(id)
     .fetch_optional(pool)
     .await
     .context("could not fetch uncredited deposit")?
     .with_context(|| format!("uncredited deposit {id} not found"))?;
 
-    if row.status != "pending_investigation" {
+    let status: String = row.get("status");
+    let raw_payload: serde_json::Value = row.get("raw_payload");
+
+    if status != "pending_investigation" {
         bail!(
             "uncredited deposit {id} has status {:?}, cannot reprocess (must be pending_investigation)",
-            row.status
+            status
         );
     }
 
     // 2. Deserialise the raw_payload into an ObservedDeposit.
-    let deposit = deserialize_payload(&row.raw_payload)
+    let deposit = deserialize_payload(&raw_payload)
         .with_context(|| format!("could not parse raw_payload for uncredited deposit {id}"))?;
 
     // 3. Call the creditor. The reference acts as the idempotency key: if the
@@ -112,14 +115,14 @@ pub async fn reprocess(pool: &PgPool, id: i64, creditor: &DepositCreditor) -> an
     }
 
     // 4. Mark the row as reprocessed.
-    sqlx::query!(
+    sqlx::query(
         r#"
         UPDATE uncredited_deposits
         SET status = 'reprocessed'
         WHERE id = $1
         "#,
-        id
     )
+    .bind(id)
     .execute(pool)
     .await
     .context("could not mark deposit as reprocessed")?;
@@ -136,36 +139,38 @@ pub async fn reprocess(pool: &PgPool, id: i64, creditor: &DepositCreditor) -> an
 ///
 /// - Returns an error if `id` does not exist or is not `pending_investigation`
 pub async fn resolve(pool: &PgPool, id: i64, note: &str) -> anyhow::Result<()> {
-    let row = sqlx::query!(
+    let row = sqlx::query(
         r#"
         SELECT id, status
         FROM uncredited_deposits
         WHERE id = $1
         "#,
-        id
     )
+    .bind(id)
     .fetch_optional(pool)
     .await
     .context("could not fetch uncredited deposit")?
     .with_context(|| format!("uncredited deposit {id} not found"))?;
 
-    if row.status != "pending_investigation" {
+    let status: String = row.get("status");
+
+    if status != "pending_investigation" {
         bail!(
             "uncredited deposit {id} has status {:?}, cannot resolve (must be pending_investigation)",
-            row.status
+            status
         );
     }
 
     // Store the note in a new column or append to raw_payload. For now, just
     // mark as resolved. A future migration can add a `resolution_note TEXT`.
-    sqlx::query!(
+    sqlx::query(
         r#"
         UPDATE uncredited_deposits
         SET status = 'resolved'
         WHERE id = $1
         "#,
-        id
     )
+    .bind(id)
     .execute(pool)
     .await
     .context("could not mark deposit as resolved")?;

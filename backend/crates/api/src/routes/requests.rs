@@ -114,8 +114,9 @@ pub async fn create_payment_request(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| {
-            let m = Money::parse(asset, s)
-                .map_err(|_| ApiError::BadRequest("min_amount must be a positive value".to_string()))?;
+            let m = Money::parse(asset, s).map_err(|_| {
+                ApiError::BadRequest("min_amount must be a positive value".to_string())
+            })?;
             if m.minor <= 0 {
                 return Err(ApiError::BadRequest(
                     "min_amount must be greater than zero".to_string(),
@@ -136,8 +137,9 @@ pub async fn create_payment_request(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| {
-            let m = Money::parse(asset, s)
-                .map_err(|_| ApiError::BadRequest("max_amount must be a positive value".to_string()))?;
+            let m = Money::parse(asset, s).map_err(|_| {
+                ApiError::BadRequest("max_amount must be a positive value".to_string())
+            })?;
             if m.minor <= 0 {
                 return Err(ApiError::BadRequest(
                     "max_amount must be greater than zero".to_string(),

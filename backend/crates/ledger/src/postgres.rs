@@ -172,7 +172,9 @@ impl PostgresLedgerStore {
             let Ok(asset) = symbol.parse::<Asset>() else {
                 continue; // Unknown asset symbol — skip rather than failing the whole check.
             };
-            let total = total_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            let total = total_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
             out.push((asset, total));
         }
         Ok(out)
@@ -1671,13 +1673,12 @@ mod tests {
 
     /// Count outbox_events rows linked to a specific ledger_ref.
     async fn count_outbox_events(pool: &PgPool, ledger_ref: &str) -> i64 {
-        let row = sqlx::query(
-            "SELECT COUNT(*)::bigint AS cnt FROM outbox_events WHERE ledger_ref = $1",
-        )
-        .bind(ledger_ref)
-        .fetch_one(pool)
-        .await
-        .unwrap();
+        let row =
+            sqlx::query("SELECT COUNT(*)::bigint AS cnt FROM outbox_events WHERE ledger_ref = $1")
+                .bind(ledger_ref)
+                .fetch_one(pool)
+                .await
+                .unwrap();
         row.get::<i64, _>("cnt")
     }
 
@@ -1745,25 +1746,34 @@ mod tests {
         store.deposit(alice, usdc(50), &dep_ref).await.unwrap();
 
         // Fetch the event id written by the deposit.
-        let row = sqlx::query(
-            "SELECT id FROM outbox_events WHERE ledger_ref = $1 LIMIT 1",
-        )
-        .bind(&dep_ref)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let row = sqlx::query("SELECT id FROM outbox_events WHERE ledger_ref = $1 LIMIT 1")
+            .bind(&dep_ref)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         let event_id: Uuid = row.get("id");
 
         // First consumption: returns true (newly inserted).
-        let first = outbox.mark_consumed("notification-svc", event_id).await.unwrap();
+        let first = outbox
+            .mark_consumed("notification-svc", event_id)
+            .await
+            .unwrap();
         assert!(first, "first mark_consumed should return true");
 
         // Second consumption of same event: returns false (already present).
-        let second = outbox.mark_consumed("notification-svc", event_id).await.unwrap();
+        let second = outbox
+            .mark_consumed("notification-svc", event_id)
+            .await
+            .unwrap();
         assert!(!second, "duplicate mark_consumed should return false");
 
         // is_consumed reflects the consumed state.
-        assert!(outbox.is_consumed("notification-svc", event_id).await.unwrap());
+        assert!(
+            outbox
+                .is_consumed("notification-svc", event_id)
+                .await
+                .unwrap()
+        );
         // A different consumer has not consumed it yet.
         assert!(!outbox.is_consumed("other-svc", event_id).await.unwrap());
     }
@@ -1772,8 +1782,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn relay_cursor_advances_after_publish() {
-        use crate::outbox::{OutboxRelay, OutboxStore as _};
         use crate::outbox::pg::PostgresOutboxStore;
+        use crate::outbox::{OutboxRelay, OutboxStore as _};
 
         let pool = test_pool().await.unwrap();
         let store = PostgresLedgerStore::new(pool.clone());

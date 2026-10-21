@@ -6,7 +6,6 @@ use axum::{Json, Router};
 use engipay_core::{Asset, Money, UserId};
 use engipay_ledger::postgres::PostgresLedgerStore;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::AppState;
 use crate::error::ApiError;
@@ -53,13 +52,6 @@ impl TransferRequest {
         }
 
         Ok(())
-    }
-
-    /// The recipient's user id, parsed.
-    pub fn recipient_id(&self) -> Result<UserId, TransferRequestError> {
-        let raw = Uuid::parse_str(self.recipient.trim())
-            .map_err(|_| TransferRequestError::InvalidRecipient)?;
-        Ok(UserId::from_uuid(raw))
     }
 
     /// The amount as exact integer minor units for this request's asset.
@@ -154,6 +146,7 @@ impl TransferReceipt {
     pub fn completed(
         transaction_id: String,
         sender_tag: String,
+        recipient_tag: String,
         request: &TransferRequest,
         amount_minor_units: i128,
         created_at: String,
@@ -162,7 +155,7 @@ impl TransferReceipt {
             transaction_id,
             reference: request.reference.trim().to_string(),
             sender_tag,
-            recipient_tag: request.recipient.trim().to_string(),
+            recipient_tag,
             asset: request.asset,
             amount: amount_minor_units.to_string(),
             created_at,
@@ -290,6 +283,14 @@ async fn create_transfer(
             },
             signed_receipt: signed,
         }),
+        Json(TransferReceipt::completed(
+            receipt.transaction_id.to_string(),
+            sender.as_uuid().to_string(),
+            recipient_tag,
+            &request,
+            money.minor,
+            now_iso8601(),
+        )),
     ))
 }
 
@@ -467,6 +468,7 @@ mod tests {
         let receipt = TransferReceipt::completed(
             "txn-123".to_string(),
             BOB.to_string(),
+            ALICE.to_string(),
             &req,
             1_000_000_000,
             "2024-01-02T03:04:05Z".to_string(),
@@ -491,6 +493,7 @@ mod tests {
         let receipt = TransferReceipt::completed(
             "txn-456".to_string(),
             BOB.to_string(),
+            ALICE.to_string(),
             &req,
             amount,
             "2024-06-07T08:09:10Z".to_string(),
@@ -507,6 +510,7 @@ mod tests {
         let receipt = TransferReceipt::completed(
             "txn-123".to_string(),
             BOB.to_string(),
+            ALICE.to_string(),
             &req,
             1_000_000_000,
             "2024-01-02T03:04:05Z".to_string(),

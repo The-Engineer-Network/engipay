@@ -39,6 +39,10 @@ pub struct Config {
     /// before a key rotation remain verifiable (`RECEIPT_PUBLIC_KEYS`, formatted
     /// as `keyid:base64pubkey,keyid2:base64pubkey2`).
     pub receipt_historical_public_keys: Vec<(String, String)>,
+    /// Stellar Anchor URL for SEP-24 deposits and withdrawals (e.g. "https://testanchor.stellar.org").
+    pub stellar_anchor_url: String,
+    /// Stellar Anchor home domain for SEP-10 authentication (e.g. "testanchor.stellar.org").
+    pub stellar_anchor_home_domain: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -160,6 +164,10 @@ impl Config {
             receipt_signing_key_id,
             receipt_signing_key,
             receipt_historical_public_keys,
+            stellar_anchor_url: env::var("STELLAR_ANCHOR_URL")
+                .unwrap_or_else(|_| "https://testanchor.stellar.org".to_owned()),
+            stellar_anchor_home_domain: env::var("STELLAR_ANCHOR_HOME_DOMAIN")
+                .unwrap_or_else(|_| "testanchor.stellar.org".to_owned()),
         })
     }
 
@@ -189,6 +197,8 @@ impl Config {
                 "test-receipt-key".to_owned(),
                 "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=".to_owned(),
             )],
+            stellar_anchor_url: "https://testanchor.stellar.org".to_owned(),
+            stellar_anchor_home_domain: "testanchor.stellar.org".to_owned(),
         }
     }
 }

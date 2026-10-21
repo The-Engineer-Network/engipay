@@ -36,7 +36,11 @@ pub trait BankNameCheck: Send + Sync {
 pub struct FakeBankNameCheck;
 
 impl BankNameCheck for FakeBankNameCheck {
-    fn lookup(&self, _bank_code: &str, _account_number: &str) -> Result<AccountName, NameCheckError> {
+    fn lookup(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<AccountName, NameCheckError> {
         Ok(AccountName {
             name: "Verified Account Holder".to_owned(),
         })
@@ -47,7 +51,11 @@ impl BankNameCheck for FakeBankNameCheck {
 pub struct FakeBankNameCheckFails;
 
 impl BankNameCheck for FakeBankNameCheckFails {
-    fn lookup(&self, _bank_code: &str, _account_number: &str) -> Result<AccountName, NameCheckError> {
+    fn lookup(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<AccountName, NameCheckError> {
         Err(NameCheckError::NotFound)
     }
 }

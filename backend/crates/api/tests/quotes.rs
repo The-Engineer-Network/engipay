@@ -70,7 +70,12 @@ async fn quote_returns_fee_and_schedule_version_for_transfer() {
     // quote_id must be a UUID.
     assert!(body["quote_id"].is_string());
     // expires_at must be a non-empty string.
-    assert!(body["expires_at"].as_str().map(|s| !s.is_empty()).unwrap_or(false));
+    assert!(
+        body["expires_at"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    );
 }
 
 #[tokio::test]
@@ -181,7 +186,10 @@ async fn quote_schedule_version_is_stable_across_calls() {
 
     let v1 = body1["schedule_version"].as_str().unwrap();
     let v2 = body2["schedule_version"].as_str().unwrap();
-    assert_eq!(v1, v2, "schedule_version must be deterministic for the same product/asset schedule");
+    assert_eq!(
+        v1, v2,
+        "schedule_version must be deterministic for the same product/asset schedule"
+    );
 }
 
 #[tokio::test]
@@ -234,14 +242,14 @@ async fn settle_returns_503_without_database() {
 /// rates produce different fees, and each quote carries only its own version.
 #[tokio::test]
 async fn changing_schedule_does_not_alter_an_already_issued_quote() {
-    use engipay_core::{FeeSchedule};
+    use engipay_core::FeeSchedule;
     use uuid::Uuid;
 
     let old_schedule = FeeSchedule {
         id: Uuid::from_u128(0xAA),
         product: Product::Transfer,
         asset: Asset::Usdc,
-        fixed_minor: 1_000_000,  // 0.10 USDC
+        fixed_minor: 1_000_000, // 0.10 USDC
         bps: 0,
         min_fee_minor: 0,
         max_fee_minor: None,
@@ -251,7 +259,7 @@ async fn changing_schedule_does_not_alter_an_already_issued_quote() {
         id: Uuid::from_u128(0xBB),
         product: Product::Transfer,
         asset: Asset::Usdc,
-        fixed_minor: 5_000_000,  // 0.50 USDC — rate increase
+        fixed_minor: 5_000_000, // 0.50 USDC — rate increase
         bps: 0,
         min_fee_minor: 0,
         max_fee_minor: None,

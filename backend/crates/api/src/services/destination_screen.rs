@@ -180,10 +180,12 @@ mod tests {
 
     #[test]
     fn blocked_is_blocked() {
-        assert!(ScreenResult::Blocked {
-            reason: "test".to_string()
-        }
-        .is_blocked());
+        assert!(
+            ScreenResult::Blocked {
+                reason: "test".to_string()
+            }
+            .is_blocked()
+        );
     }
 
     #[test]

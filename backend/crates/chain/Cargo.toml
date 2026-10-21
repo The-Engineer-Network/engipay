@@ -22,6 +22,8 @@ futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# SEP-24 encodes its query parameters, and `sep24.rs` builds them.
+serde_urlencoded.workspace = true
 sha2.workspace = true
 # `json` is required by the JSONB columns selected in `dlq_commands.rs`.
 sqlx = { workspace = true, features = ["json"] }
