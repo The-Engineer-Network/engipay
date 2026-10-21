@@ -182,7 +182,9 @@ async fn create_order(
     let receive_minor: String = quote.try_get("receive_minor").map_err(db_error)?;
     let asset_symbol: String = quote.try_get("asset").map_err(db_error)?;
     let asset = Asset::from_symbol(&asset_symbol).ok_or_else(|| {
-        ApiError::Internal(anyhow::anyhow!("unknown asset on buy quote: {asset_symbol}"))
+        ApiError::Internal(anyhow::anyhow!(
+            "unknown asset on buy quote: {asset_symbol}"
+        ))
     })?;
 
     let inserted = sqlx::query(

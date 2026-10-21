@@ -1,11 +1,11 @@
 use axum::{
+    Json, Router,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -90,8 +90,7 @@ fn canonicalize(value: &Value) -> Vec<u8> {
                     if i > 0 {
                         out.push(b',');
                     }
-                    let encoded =
-                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
+                    let encoded = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
                     let inner = &encoded[1..encoded.len() - 1];
                     out.push(b'"');
                     out.extend_from_slice(inner.as_bytes());

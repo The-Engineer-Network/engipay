@@ -84,7 +84,10 @@ pub fn routes() -> Router<AppState> {
         .route("/naira/deposits", post(start_deposit))
         .route("/naira/deposits/{transaction_id}", get(get_deposit_status))
         .route("/naira/withdrawals", post(start_withdrawal))
-        .route("/naira/withdrawals/{transaction_id}", get(get_withdrawal_status))
+        .route(
+            "/naira/withdrawals/{transaction_id}",
+            get(get_withdrawal_status),
+        )
         .route(
             "/naira/transactions/{transaction_id}/complete",
             post(complete_transaction_testnet),
@@ -109,7 +112,9 @@ pub async fn start_deposit(
         .parse()
         .map_err(|_| ApiError::BadRequest("invalid deposit amount".to_owned()))?;
     if amt <= 0.0 {
-        return Err(ApiError::BadRequest("deposit amount must be positive".to_owned()));
+        return Err(ApiError::BadRequest(
+            "deposit amount must be positive".to_owned(),
+        ));
     }
 
     let transaction_id = Uuid::new_v4();
@@ -148,7 +153,12 @@ pub async fn start_deposit(
         .bind(jwt_expires_at)
         .execute(pool)
         .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to insert anchor transaction: {}", e)))?;
+        .map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!(
+                "failed to insert anchor transaction: {}",
+                e
+            ))
+        })?;
     }
 
     Ok((
@@ -246,7 +256,10 @@ pub async fn start_withdrawal(
 
     if let Some(ref pool) = state.database {
         let mut tx = pool.begin().await.map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("failed to start database transaction: {}", e))
+            ApiError::Internal(anyhow::anyhow!(
+                "failed to start database transaction: {}",
+                e
+            ))
         })?;
 
         // 1. Create withdrawal record (debiting user ledger)
@@ -265,7 +278,9 @@ pub async fn start_withdrawal(
         .bind(format!("{}:{}", request.bank_code, request.bank_account))
         .execute(&mut *tx)
         .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to record withdrawal debit: {}", e)))?;
+        .map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("failed to record withdrawal debit: {}", e))
+        })?;
 
         // 2. Record anchor transaction
         sqlx::query(
@@ -291,10 +306,15 @@ pub async fn start_withdrawal(
         .bind(withdrawal_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to insert anchor withdrawal: {}", e)))?;
+        .map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("failed to insert anchor withdrawal: {}", e))
+        })?;
 
         tx.commit().await.map_err(|e| {
-            ApiError::Internal(anyhow::anyhow!("failed to commit withdrawal transaction: {}", e))
+            ApiError::Internal(anyhow::anyhow!(
+                "failed to commit withdrawal transaction: {}",
+                e
+            ))
         })?;
     }
 
@@ -352,7 +372,10 @@ pub async fn complete_transaction_testnet(
 ) -> Result<impl IntoResponse, ApiError> {
     let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
 
-    let pool = state.database.clone().ok_or(ApiError::DatabaseUnavailable)?;
+    let pool = state
+        .database
+        .clone()
+        .ok_or(ApiError::DatabaseUnavailable)?;
 
     let record = sqlx::query_as::<_, (Uuid, String, String, Option<Uuid>, Option<Uuid>)>(
         r#"
@@ -370,12 +393,14 @@ pub async fn complete_transaction_testnet(
     let (creator_id, direction, amount_requested, deposit_transfer_id, withdrawal_id) = record;
 
     if creator_id != user_id.as_uuid() {
-        return Err(ApiError::Unauthorized("access denied to this anchor transaction".to_owned()));
+        return Err(ApiError::Unauthorized(
+            "access denied to this anchor transaction".to_owned(),
+        ));
     }
 
-    let tx_hash = request.stellar_tx_hash.unwrap_or_else(|| {
-        format!("0x{:x}", Uuid::new_v4().as_u128())
-    });
+    let tx_hash = request
+        .stellar_tx_hash
+        .unwrap_or_else(|| format!("0x{:x}", Uuid::new_v4().as_u128()));
 
     let now = Utc::now();
 
@@ -407,11 +432,15 @@ pub async fn complete_transaction_testnet(
     } else {
         // Finalize withdrawal in ledger
         if let Some(wd_id) = withdrawal_id {
-            sqlx::query("UPDATE withdrawals SET status = 'completed', updated_at = NOW() WHERE id = $1")
-                .bind(wd_id)
-                .execute(&pool)
-                .await
-                .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to update withdrawal: {}", e)))?;
+            sqlx::query(
+                "UPDATE withdrawals SET status = 'completed', updated_at = NOW() WHERE id = $1",
+            )
+            .bind(wd_id)
+            .execute(&pool)
+            .await
+            .map_err(|e| {
+                ApiError::Internal(anyhow::anyhow!("failed to update withdrawal: {}", e))
+            })?;
         }
 
         sqlx::query(
@@ -444,12 +473,25 @@ async fn fetch_anchor_transaction(
     transaction_id: Uuid,
     user_id: Uuid,
 ) -> Result<AnchorTransactionStatus, ApiError> {
-    let row = sqlx::query_as::<_, (
-        Uuid, String, String, String, String,
-        Option<String>, Option<String>, Option<String>, Option<String>,
-        Option<String>, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>,
-        Option<Uuid>, Option<Uuid>
-    )>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            chrono::DateTime<Utc>,
+            Option<chrono::DateTime<Utc>>,
+            Option<Uuid>,
+            Option<Uuid>,
+        ),
+    >(
         r#"
         SELECT
             transaction_id, sep24_id, direction::text, status::text, amount_requested,
@@ -468,10 +510,20 @@ async fn fetch_anchor_transaction(
     .ok_or(ApiError::NotFound)?;
 
     let (
-        tx_id, sep_id, dir, st, amt_req,
-        amt_in, amt_out, amt_fee, hash,
-        msg, started, completed,
-        dep_id, wd_id
+        tx_id,
+        sep_id,
+        dir,
+        st,
+        amt_req,
+        amt_in,
+        amt_out,
+        amt_fee,
+        hash,
+        msg,
+        started,
+        completed,
+        dep_id,
+        wd_id,
     ) = row;
 
     Ok(AnchorTransactionStatus {
