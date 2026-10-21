@@ -14,8 +14,10 @@ anyhow.workspace = true
 axum.workspace = true
 # Standard base64, used to encode the pagination cursor.
 base64.workspace = true
+csv = "1.3"
 futures-core.workspace = true
 futures-util.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

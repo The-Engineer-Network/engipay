@@ -263,12 +263,11 @@ async fn execute_conversion(
     let source_money = Money::from_minor(asset_in, amount_in);
     let ledger = engipay_ledger::postgres::PostgresLedgerStore::new(db.clone());
 
-    let hold_result = ledger.create_hold(user_id_core, source_money, &hold_ref).await;
+    let hold_result = ledger
+        .create_hold(user_id_core, source_money, &hold_ref)
+        .await;
 
-    let hold_err = match hold_result {
-        Ok(_) => None,
-        Err(e) => Some(e),
-    };
+    let hold_err = hold_result.err();
 
     if let Some(err) = hold_err {
         // Hold failed: mark the conversion failed, return the error.
@@ -280,9 +279,16 @@ async fn execute_conversion(
     }
 
     // ── 4. Atomic settle + credit ─────────────────────────────────────────────
-    let settle_result =
-        settle_conversion_atomic(db, user_id_core, &hold_ref, asset_in, asset_out, fee, amount_out)
-            .await;
+    let settle_result = settle_conversion_atomic(
+        db,
+        user_id_core,
+        &hold_ref,
+        asset_in,
+        asset_out,
+        fee,
+        amount_out,
+    )
+    .await;
 
     match settle_result {
         Ok(()) => {
@@ -383,9 +389,7 @@ fn map_ledger_error(err: engipay_ledger::LedgerError) -> ApiError {
             requested,
         } => ApiError::BadRequest(format!(
             "Insufficient {}: have {}, need {}",
-            available.asset,
-            available.minor,
-            requested.minor
+            available.asset, available.minor, requested.minor
         )),
         LedgerError::NonPositiveAmount => {
             ApiError::BadRequest("Amount must be positive.".to_string())
@@ -435,7 +439,7 @@ mod tests {
         let src = FakePriceSource;
         // 50 bps on 1 = 0.005 → ceil = 1
         let price = src.quote(Asset::Usdc, Asset::Xlm).unwrap();
-        let (_out, fee) = apply_price(1, &price).unwrap_or((0, 0));
+        let (_out, _fee) = apply_price(1, &price).unwrap_or((0, 0));
         // With fee=1 from 1 input, net = 0 → None. That's correct (too small).
         // Try a slightly larger amount.
         let (_out2, fee2) = apply_price(201, &price).unwrap();

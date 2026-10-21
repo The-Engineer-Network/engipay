@@ -172,7 +172,9 @@ impl PostgresLedgerStore {
             let Ok(asset) = symbol.parse::<Asset>() else {
                 continue; // Unknown asset symbol — skip rather than failing the whole check.
             };
-            let total = total_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            let total = total_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
             out.push((asset, total));
         }
         Ok(out)
@@ -236,6 +238,22 @@ impl PostgresLedgerStore {
         insert_posting_system(&mut tx, tx_id, "external_inflow", money.asset, neg).await?;
         insert_posting_user(&mut tx, tx_id, user, money.asset, "available", money.minor).await?;
 
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::FundsDeposited {
+            user_id: user,
+            asset: money.asset,
+            amount: money.minor,
+            reference: reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(reference),
+        )
+        .await?;
+
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
             transaction_id: tx_id,
@@ -289,6 +307,22 @@ impl PostgresLedgerStore {
         insert_posting_user(&mut tx, tx_id, user, money.asset, "held", money.minor).await?;
 
         insert_hold(&mut tx, reference, user, money).await?;
+
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::HoldCreated {
+            user_id: user,
+            asset: money.asset,
+            amount: money.minor,
+            reference: reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(reference),
+        )
+        .await?;
 
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
@@ -347,6 +381,23 @@ impl PostgresLedgerStore {
         insert_posting_user(&mut tx, tx_id, from, money.asset, "available", neg).await?;
         insert_posting_user(&mut tx, tx_id, to, money.asset, "available", money.minor).await?;
 
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::TransferCompleted {
+            from_user_id: from,
+            to_user_id: to,
+            asset: money.asset,
+            amount: money.minor,
+            reference: reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(reference),
+        )
+        .await?;
+
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
             transaction_id: tx_id,
@@ -402,6 +453,22 @@ impl PostgresLedgerStore {
         .await?;
 
         update_hold_state(&mut tx, hold_reference, "released").await?;
+
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::HoldReleased {
+            user_id: hold.user,
+            asset: hold.asset,
+            amount: hold.amount,
+            reference: hold_reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(&reference),
+        )
+        .await?;
 
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
@@ -498,6 +565,23 @@ impl PostgresLedgerStore {
         }
 
         update_hold_state(&mut tx, hold_reference, "settled").await?;
+
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::HoldSettled {
+            user_id: hold.user,
+            asset: hold.asset,
+            principal,
+            fee: fee_minor,
+            reference: hold_reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(&reference),
+        )
+        .await?;
 
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
@@ -801,7 +885,7 @@ fn transfer_fingerprint(from: UserId, to: UserId, money: Money) -> String {
 /// the guarantees in `migrations/`: a violated check constraint means the
 /// ledger refused to go out of balance, and a unique violation means the same
 /// reference was posted twice.
-fn db_err(e: sqlx::Error) -> LedgerError {
+pub(crate) fn db_err(e: sqlx::Error) -> LedgerError {
     let code = match &e {
         sqlx::Error::Database(db_err) => db_err.code().map(|c| c.to_string()),
         _ => None,
@@ -1578,5 +1662,162 @@ mod tests {
 
         let s: String = row.get("balance");
         s.parse::<i128>().unwrap()
+    }
+
+    // ── Outbox integration tests ───────────────────────────────────────
+    //
+    // Done when (issue #496):
+    //   1. A rolled-back transaction emits nothing.
+    //   2. A committed transaction writes exactly one event; consumers can
+    //      deduplicate it via outbox_consumed.
+
+    /// Count outbox_events rows linked to a specific ledger_ref.
+    async fn count_outbox_events(pool: &PgPool, ledger_ref: &str) -> i64 {
+        let row =
+            sqlx::query("SELECT COUNT(*)::bigint AS cnt FROM outbox_events WHERE ledger_ref = $1")
+                .bind(ledger_ref)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        row.get::<i64, _>("cnt")
+    }
+
+    // Rolled-back transaction: a deposit that fails balance checks should not
+    // leave any outbox row behind.  We simulate this by attempting a deposit
+    // with a non-positive amount (rejected before touching the DB), then
+    // verifying no event row exists for that reference.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn rollback_emits_nothing() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let bad_ref = format!("rollback-test-{}", Uuid::new_v4());
+
+        // Non-positive amount is rejected before we open a DB transaction,
+        // so no ledger row and no outbox row should exist.
+        let result = store.deposit(alice, usdc(0), &bad_ref).await;
+        assert!(result.is_err(), "deposit of zero should fail");
+
+        let count = count_outbox_events(&pool, &bad_ref).await;
+        assert_eq!(count, 0, "failed transaction must leave no outbox event");
+    }
+
+    // A successful deposit writes exactly one outbox_events row inside the
+    // same transaction.  A replayed deposit (same reference) must NOT add a
+    // second event row — the idempotency guard fires before the outbox insert.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn committed_deposit_writes_one_outbox_event() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let dep_ref = format!("outbox-dep-{}", Uuid::new_v4());
+
+        store.deposit(alice, usdc(100), &dep_ref).await.unwrap();
+        let count = count_outbox_events(&pool, &dep_ref).await;
+        assert_eq!(count, 1, "committed deposit must write exactly one event");
+
+        // Replay: idempotency fires, outbox insert is skipped.
+        store.deposit(alice, usdc(100), &dep_ref).await.unwrap();
+        let count_after_replay = count_outbox_events(&pool, &dep_ref).await;
+        assert_eq!(
+            count_after_replay, 1,
+            "replay must not add a second outbox event"
+        );
+    }
+
+    // Consumer deduplication: the outbox_consumed table prevents double-processing.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn consumer_deduplication_via_outbox_consumed() {
+        use crate::outbox::OutboxStore as _;
+        use crate::outbox::pg::PostgresOutboxStore;
+
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let outbox = PostgresOutboxStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let dep_ref = format!("outbox-consumer-{}", Uuid::new_v4());
+
+        store.deposit(alice, usdc(50), &dep_ref).await.unwrap();
+
+        // Fetch the event id written by the deposit.
+        let row = sqlx::query("SELECT id FROM outbox_events WHERE ledger_ref = $1 LIMIT 1")
+            .bind(&dep_ref)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let event_id: Uuid = row.get("id");
+
+        // First consumption: returns true (newly inserted).
+        let first = outbox
+            .mark_consumed("notification-svc", event_id)
+            .await
+            .unwrap();
+        assert!(first, "first mark_consumed should return true");
+
+        // Second consumption of same event: returns false (already present).
+        let second = outbox
+            .mark_consumed("notification-svc", event_id)
+            .await
+            .unwrap();
+        assert!(!second, "duplicate mark_consumed should return false");
+
+        // is_consumed reflects the consumed state.
+        assert!(
+            outbox
+                .is_consumed("notification-svc", event_id)
+                .await
+                .unwrap()
+        );
+        // A different consumer has not consumed it yet.
+        assert!(!outbox.is_consumed("other-svc", event_id).await.unwrap());
+    }
+
+    // Relay cursor advances after a successful publish.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn relay_cursor_advances_after_publish() {
+        use crate::outbox::pg::PostgresOutboxStore;
+        use crate::outbox::{OutboxRelay, OutboxStore as _};
+
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let outbox = PostgresOutboxStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let relay_name = format!("relay-{}", Uuid::new_v4());
+
+        // Seed the cursor row for our named relay.
+        sqlx::query(
+            "INSERT INTO outbox_relay_cursor (relay_name, last_sequence) VALUES ($1, NULL) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&relay_name)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let dep_ref = format!("relay-cursor-dep-{}", Uuid::new_v4());
+        store.deposit(alice, usdc(10), &dep_ref).await.unwrap();
+
+        let relay = OutboxRelay::new(
+            PostgresOutboxStore::new(pool.clone()),
+            relay_name.clone(),
+            10,
+        );
+
+        let cursor_before = outbox.load_cursor(&relay_name).await.unwrap();
+        assert!(cursor_before.is_none(), "cursor should start at None");
+
+        let n = relay.run_once(|_e| async { Ok(()) }).await.unwrap();
+        assert!(n >= 1, "at least the deposit event should be published");
+
+        let cursor_after = outbox.load_cursor(&relay_name).await.unwrap();
+        assert!(cursor_after.is_some(), "cursor must advance after publish");
     }
 }

@@ -2,6 +2,7 @@ pub mod assets;
 pub mod auth;
 pub mod balances;
 pub mod bank_accounts;
+pub mod batch_payments;
 pub mod buy;
 pub mod convert;
 pub mod deposits;
@@ -9,11 +10,12 @@ pub mod health;
 pub mod kyc;
 pub mod me;
 pub mod metrics;
-pub mod notifications;
+pub mod naira;
 pub mod openapi;
 pub mod payment_requests;
+pub mod quotes;
 pub mod requests;
-pub mod scheduled_transfers;
+pub mod settles;
 pub mod transactions;
 pub mod transfers;
 pub mod withdrawals;
@@ -26,6 +28,7 @@ use crate::AppState;
 pub fn v1() -> Router<AppState> {
     Router::new()
         .merge(assets::routes())
+        .merge(batch_payments::routes())
         .merge(buy::routes())
         .merge(bank_accounts::routes())
         .merge(auth::routes())
@@ -34,11 +37,13 @@ pub fn v1() -> Router<AppState> {
         .merge(deposits::routes())
         .merge(kyc::routes())
         .merge(me::routes())
-        .merge(notifications::routes())
+        .merge(naira::routes())
         .merge(transactions::routes())
         .merge(requests::routes())
         .merge(payment_requests::routes())
         .merge(transfers::routes())
         .merge(scheduled_transfers::routes())
         .merge(withdrawals::router())
+        .merge(quotes::routes())
+        .merge(settles::routes())
 }

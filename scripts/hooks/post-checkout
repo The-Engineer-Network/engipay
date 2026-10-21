@@ -1,0 +1,75 @@
+#!/usr/bin/env sh
+# post-checkout — warn after switching branches if the checkout introduced
+# supply-chain patterns in config files.
+#
+# Install: git config core.hooksPath scripts/hooks
+#
+# $1 = previous HEAD, $2 = new HEAD, $3 = 1 if branch checkout, 0 if file checkout
+# Only runs on branch checkouts ($3 = 1).
+#
+# Works on macOS, Linux and Git Bash on Windows.
+
+set -eu
+
+PREVIOUS_HEAD=$1
+NEW_HEAD=$2
+BRANCH_CHECKOUT=$3
+
+# Skip file checkouts
+[ "$BRANCH_CHECKOUT" = "0" ] && exit 0
+# Skip if same commit (e.g., force checkout same branch)
+[ "$PREVIOUS_HEAD" = "$NEW_HEAD" ] && exit 0
+
+RED='\033[0;31m'
+WARN_COLOR='\033[0;33m'
+NC='\033[0m'
+
+OBFUS_PATTERNS="global\.i[[:space:]]*= _0x[0-9a-fA-F]{4,}"
+CONFIG_PATTERNS="postcss.config.* next.config.* tailwind.config.* \
+  .eslintrc.* babel.config.* vite.config.* jest.config.* webpack.config.*"
+
+FOUND=0
+
+# Files that differ between old and new HEAD
+CHANGED=$(git diff --name-only "$PREVIOUS_HEAD" "$NEW_HEAD" 2>/dev/null || true)
+[ -z "$CHANGED" ] && exit 0
+
+for file in $CHANGED; do
+  [ -f "$file" ] || continue
+
+  # Long lines in config files
+  MATCH=0
+  for pat in $CONFIG_PATTERNS; do
+    case "$file" in
+      $pat) MATCH=1; break ;;
+      */$pat) MATCH=1; break ;;
+    esac
+  done
+
+  if [ "$MATCH" -eq 1 ]; then
+    while IFS= read -r line; do
+      len=${#line}
+      if [ "$len" -gt 1000 ]; then
+        printf "${RED}WARNING${NC}: $file has a line of $len chars on new branch.\n" >&2
+        FOUND=1
+      fi
+    done < "$file"
+  fi
+
+  # Obfuscation markers
+  case "$file" in
+    *.js|*.mjs|*.cjs|*.ts|*.tsx)
+      for pat in $OBFUS_PATTERNS; do
+        if grep -qE "$pat" "$file" 2>/dev/null; then
+          printf "${RED}WARNING${NC}: $file contains obfuscation marker on new branch: $pat\n" >&2
+          FOUND=1
+        fi
+      done
+      ;;
+  esac
+done
+
+if [ "$FOUND" -ne 0 ]; then
+  printf "\n${WARN_COLOR}post-checkout: suspicious patterns detected on this branch.${NC}\n" >&2
+  printf "Do not run npm install or builds until you have reviewed the changes.\n" >&2
+fi

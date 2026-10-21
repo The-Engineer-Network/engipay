@@ -8,7 +8,10 @@ pub mod cursor;
 pub mod horizon;
 pub mod network;
 pub mod payment;
+pub mod sep10;
+pub mod sep24;
 pub mod settlement;
+pub mod soroban;
 pub mod watcher;
 
 use std::sync::{Arc, Mutex};
@@ -48,6 +51,9 @@ fn hex_lower(bytes: &[u8]) -> String {
 pub struct StellarConfig {
     pub network: StellarNetwork,
     pub horizon_url: String,
+    /// The Stellar RPC (ex-Soroban RPC) endpoint for `getEvents`. Used to
+    /// detect Soroban contract token transfers that Horizon does not report.
+    pub rpc_url: String,
     /// The custody account deposits arrive in, `G...`.
     pub custody_account: String,
 }
@@ -58,12 +64,28 @@ impl StellarConfig {
         horizon_url: Option<String>,
         custody_account: &str,
     ) -> Result<Self, ChainError> {
+        Self::new_with_rpc(network, horizon_url, None, custody_account)
+    }
+
+    /// Creates a config with an explicit Stellar RPC URL. Pass `None` to use
+    /// the network's default.
+    pub fn new_with_rpc(
+        network: StellarNetwork,
+        horizon_url: Option<String>,
+        rpc_url: Option<String>,
+        custody_account: &str,
+    ) -> Result<Self, ChainError> {
         match parse_address(custody_account) {
             Ok(StellarAddress::Account(account)) => Ok(Self {
                 network,
                 horizon_url: horizon_url
                     .filter(|url| !url.trim().is_empty())
                     .unwrap_or_else(|| network.default_horizon_url().to_owned())
+                    .trim_end_matches('/')
+                    .to_owned(),
+                rpc_url: rpc_url
+                    .filter(|url| !url.trim().is_empty())
+                    .unwrap_or_else(|| network.default_rpc_url().to_owned())
                     .trim_end_matches('/')
                     .to_owned(),
                 custody_account: account,
@@ -75,6 +97,7 @@ impl StellarConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct StellarClient {
     config: StellarConfig,
     http: reqwest::Client,
@@ -82,6 +105,24 @@ pub struct StellarClient {
     /// Wrapped in a `Mutex` so `deposits_since` (which takes `&self` via the
     /// trait) can populate the cache without needing `&mut self`.
     transaction_cache: Mutex<TransactionCache>,
+}
+
+impl Clone for StellarClient {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            http: self.http.clone(),
+            // Clone the inner cache; each instance gets an independent copy.
+            // The cache is short-lived (60-second TTL) so a stale snapshot is
+            // harmless.
+            transaction_cache: Mutex::new(
+                self.transaction_cache
+                    .lock()
+                    .expect("transaction cache lock poisoned")
+                    .clone(),
+            ),
+        }
+    }
 }
 
 impl StellarClient {
@@ -185,12 +226,12 @@ impl StellarClient {
             })?;
             match bal.asset_type.as_str() {
                 "native" => out.push((Asset::Xlm, i128::from(stroops))),
-                "credit_alphanum4" => {
+                "credit_alphanum4"
                     if bal.asset_code.as_deref() == Some("USDC")
-                        && bal.asset_issuer.as_deref() == Some(self.config.network.usdc_issuer())
-                    {
-                        out.push((Asset::Usdc, i128::from(stroops)));
-                    }
+                        && bal.asset_issuer.as_deref()
+                            == Some(self.config.network.usdc_issuer()) =>
+                {
+                    out.push((Asset::Usdc, i128::from(stroops)));
                 }
                 _ => {}
             }
@@ -323,9 +364,9 @@ impl StellarClient {
     ///
     /// Errors say whether the transaction can still land:
     ///
-    /// * [`ChainError::Rejected`] — Horizon answered `400`: the network
+    /// * [`ChainError::Rejected`] ΓÇö Horizon answered `400`: the network
     ///   refused it, with the result codes in the message. It did not land.
-    /// * [`ChainError::Unavailable`] — no definitive answer (unreachable,
+    /// * [`ChainError::Unavailable`] ΓÇö no definitive answer (unreachable,
     ///   timeouts, `5xx` after retries). It may still land, so callers must not
     ///   release funds on this error.
     pub async fn submit_transaction(&self, envelope_xdr: &str) -> Result<Submitted, ChainError> {
@@ -450,7 +491,7 @@ impl ChainClient for StellarClient {
                 // Prefer the inlined transaction from `join=transactions`. If it
                 // is absent (e.g. the endpoint returned a stripped record), fall
                 // back to an explicit `GET /transactions/{hash}` which benefits
-                // from the 60-second cache — critical for multi-operation
+                // from the 60-second cache ΓÇö critical for multi-operation
                 // transactions where every operation shares the same hash.
                 let mut record_with_tx = record.clone();
                 if record_with_tx.transaction.is_none() {
@@ -513,6 +554,32 @@ impl ChainClient for StellarClient {
                 _ => break,
             }
         }
+
+        // Merge Soroban SAC transfer events alongside Horizon payments.
+        // A Soroban wallet transfer never appears in Horizon's payments stream,
+        // so we poll the Stellar RPC `getEvents` endpoint in parallel.
+        // If the RPC is unreachable we log a warning but still return the
+        // Horizon deposits — partial data is better than a hard failure.
+        match soroban::soroban_deposits_since(
+            &self.http,
+            &self.config.rpc_url,
+            self.config.network,
+            &self.config.custody_account,
+            height,
+            latest,
+        )
+        .await
+        {
+            Ok(soroban_deposits) => deposits.extend(soroban_deposits),
+            Err(error) => {
+                warn!(
+                    %error,
+                    rpc_url = %self.config.rpc_url,
+                    "Stellar RPC unavailable; Soroban transfer events not checked this poll"
+                );
+            }
+        }
+
         Ok(deposits)
     }
 
@@ -690,7 +757,7 @@ mod tests {
                         "amount": "100.0000000",
                         "transaction": { "ledger": 48, "successful": true }
                     },
-                    // Counterfeit USDC alphanum12 (padded code) — still counterfeit.
+                    // Counterfeit USDC alphanum12 (padded code) ΓÇö still counterfeit.
                     {
                         "paging_token": "2",
                         "type": "payment",
@@ -750,7 +817,7 @@ mod tests {
             .and(query_param("join", "transactions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "_embedded": { "records": [
-                    // Legitimate Circle USDC on testnet — must be credited.
+                    // Legitimate Circle USDC on testnet ΓÇö must be credited.
                     {
                         "paging_token": "10",
                         "type": "payment",
@@ -764,7 +831,7 @@ mod tests {
                         "amount": "5.0000000",
                         "transaction": { "ledger": 58, "successful": true }
                     },
-                    // Mainnet Circle issuer on testnet — different network, must be refused.
+                    // Mainnet Circle issuer on testnet ΓÇö different network, must be refused.
                     {
                         "paging_token": "11",
                         "type": "payment",
@@ -847,6 +914,7 @@ mod tests {
             destination: account(2),
             money: Money::parse(Asset::Xlm, "1").unwrap(),
             memo: None,
+            use_claimable_balance: false,
         };
         let error = client(&server)
             .await
@@ -893,7 +961,7 @@ mod tests {
                         "to_muxed": muxed,
                         "asset_type": "native",
                         "amount": "1.0000000"
-                        // no "transaction" key → forces fetch_transaction
+                        // no "transaction" key ΓåÆ forces fetch_transaction
                     },
                     {
                         "paging_token": "2",
@@ -920,7 +988,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        // The transaction detail endpoint — mounted with an explicit call count
+        // The transaction detail endpoint ΓÇö mounted with an explicit call count
         // so the test verifies it is hit exactly once (cache hit for ops 2 & 3).
         Mock::given(method("GET"))
             .and(path(format!("/transactions/{tx_hash}")))
@@ -990,7 +1058,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        // No mock for GET /transactions/feed — if it were called the test would
+        // No mock for GET /transactions/feed ΓÇö if it were called the test would
         // fail with an unexpected request error from wiremock.
 
         let deposits = client(&server).await.deposits_since(48).await.unwrap();
@@ -998,7 +1066,7 @@ mod tests {
         assert_eq!(deposits[0].money, Money::from_minor(Asset::Xlm, 40_000_000));
     }
 
-    // ── Fee stats tests ───────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Fee stats tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[tokio::test]
     async fn recommended_fee_returns_p90_from_horizon() {
@@ -1094,6 +1162,7 @@ mod tests {
             destination: account(2),
             money: Money::parse(Asset::Xlm, "1").unwrap(),
             memo: Some(payment::StellarMemo::Id(7)),
+            use_claimable_balance: false,
         };
         let prepared = client(&server)
             .await

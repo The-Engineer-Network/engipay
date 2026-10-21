@@ -1,18 +1,18 @@
 //! Withdrawal worker: broadcasts pending outflows.
 //!
 //! Polls `withdrawals` for rows with `status = 'pending_broadcast'`, claims
-//! them with `SELECT … FOR UPDATE SKIP LOCKED`, and hands each one to the
+//! them with `SELECT ΓÇª FOR UPDATE SKIP LOCKED`, and hands each one to the
 //! [`WithdrawalSender`] registered for its chain.
 //!
 //! # Claiming
 //!
 //! ```text
-//!   pending_broadcast ──claim──► broadcasting ──► broadcast_accepted
-//!          ▲                         │  │  └────► failed
-//!          └────── Retry ────────────┘  └───────► pending_manual_review
+//!   pending_broadcast ΓöÇΓöÇclaimΓöÇΓöÇΓû║ broadcasting ΓöÇΓöÇΓû║ broadcast_accepted
+//!          Γû▓                         Γöé  Γöé  ΓööΓöÇΓöÇΓöÇΓöÇΓû║ failed
+//!          ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ Retry ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ  ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓû║ pending_manual_review
 //! ```
 //!
-//! The claim is one statement: the inner `SELECT … FOR UPDATE SKIP LOCKED`
+//! The claim is one statement: the inner `SELECT ΓÇª FOR UPDATE SKIP LOCKED`
 //! picks rows no other worker holds, and the outer `UPDATE` moves them to
 //! `broadcasting` before the statement commits. Two workers polling at the
 //! same moment therefore take disjoint rows, and once committed the status
@@ -231,7 +231,7 @@ impl WithdrawalWorker {
     }
 }
 
-// ── Stellar ──────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Stellar ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// Sends XLM and USDC withdrawals on Stellar.
 pub struct StellarWithdrawalSender {
@@ -254,6 +254,7 @@ impl StellarWithdrawalSender {
             destination: withdrawal.destination.clone(),
             money: withdrawal.money,
             memo: withdrawal.memo.as_deref().map(stellar_memo),
+            use_claimable_balance: false,
         };
 
         let prepared = match self
@@ -302,7 +303,7 @@ pub fn stellar_memo(memo: &str) -> StellarMemo {
     }
 }
 
-// ── Database ─────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Database ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// A claimed row as stored, before decoding.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -518,7 +519,7 @@ mod tests {
             .unwrap()
     }
 
-    // ── Decoding ─────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Decoding ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[test]
     fn decodes_a_stored_row_exactly() {
@@ -574,7 +575,7 @@ mod tests {
         }
     }
 
-    // ── Memos ────────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Memos ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[test]
     fn numeric_memos_become_id_memos() {
@@ -600,7 +601,7 @@ mod tests {
         );
     }
 
-    // ── Dispatch ─────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Dispatch ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[tokio::test]
     async fn dispatch_routes_to_the_sender_for_the_chain() {
@@ -636,7 +637,7 @@ mod tests {
         ));
     }
 
-    // ── Stellar sender ───────────────────────────────────────────────────
+    // ΓöÇΓöÇ Stellar sender ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     fn testnet_signer() -> Arc<dyn StellarSigner> {
         Arc::new(
@@ -782,11 +783,11 @@ mod tests {
         );
     }
 
-    // ── Integration tests (require a PostgreSQL database) ──────────────
+    // ΓöÇΓöÇ Integration tests (require a PostgreSQL database) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     //
     // The database must already have backend/migrations applied, as
     // scripts/verify-migrations.sh does.
-    // Run with: DATABASE_URL=postgres://… cargo test -p engipay-chain \
+    // Run with: DATABASE_URL=postgres://ΓÇª cargo test -p engipay-chain \
     //           workers::withdrawal -- --ignored
 
     async fn test_pool() -> Option<PgPool> {

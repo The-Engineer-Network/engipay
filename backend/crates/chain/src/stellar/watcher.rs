@@ -80,12 +80,8 @@ impl StellarWatcher {
     /// `on_deposit` receives every new creditable deposit.  Errors it returns
     /// are surfaced to the caller as the `Err` variant of the run result so
     /// the supervisor can decide whether to restart.
-    pub async fn run<F, Fut>(
-        &self,
-        start_ledger: u64,
-        cancel: CancellationToken,
-        mut on_deposit: F,
-    ) where
+    pub async fn run<F, Fut>(&self, start_ledger: u64, cancel: CancellationToken, mut on_deposit: F)
+    where
         F: FnMut(ObservedDeposit) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
@@ -171,7 +167,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use tokio_util::sync::CancellationToken;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::stellar::{StellarClient, StellarConfig, StellarNetwork};
@@ -370,7 +366,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         cancel.cancel();
         // The watcher must not have panicked.
-        handle.await.expect("watcher task must not panic after error");
+        handle
+            .await
+            .expect("watcher task must not panic after error");
     }
 
     // ── Test: cancellation stops the loop promptly ────────────────────────────

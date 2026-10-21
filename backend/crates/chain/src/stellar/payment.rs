@@ -7,10 +7,11 @@
 use engipay_core::stellar::{StellarAddress, StellarAddressError, parse_address};
 use engipay_core::{Asset, Chain, Money};
 use stellar_xdr::{
-    AccountId, AlphaNum4, AssetCode4, DecoratedSignature, Limits, Memo, MuxedAccount,
-    MuxedAccountMed25519, Operation, OperationBody, PaymentOp, Preconditions, PublicKey,
-    SequenceNumber, Signature, SignatureHint, StringM, TimeBounds, TimePoint, Transaction,
-    TransactionEnvelope, TransactionExt, TransactionV1Envelope, Uint256, WriteXdr,
+    AccountId, AlphaNum4, AssetCode4, ClaimPredicate, Claimant, ClaimantV0,
+    CreateClaimableBalanceOp, DecoratedSignature, Limits, Memo, MuxedAccount, MuxedAccountMed25519,
+    Operation, OperationBody, PaymentOp, Preconditions, PublicKey, SequenceNumber, Signature,
+    SignatureHint, StringM, TimeBounds, TimePoint, Transaction, TransactionEnvelope,
+    TransactionExt, TransactionV1Envelope, Uint256, WriteXdr,
 };
 use zeroize::Zeroizing;
 
@@ -50,12 +51,12 @@ pub enum PaymentError {
 /// Stellar supports several memo types; EngiPay uses only the two that are
 /// meaningful for payments:
 ///
-/// * `Text` — a UTF-8 string, at most 28 bytes (protocol limit).
-/// * `Id` — an unsigned 64-bit integer, commonly used by exchanges and anchors
+/// * `Text` ΓÇö a UTF-8 string, at most 28 bytes (protocol limit).
+/// * `Id` ΓÇö an unsigned 64-bit integer, commonly used by exchanges and anchors
 ///   to route a deposit to a specific account without a muxed address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StellarMemo {
-    /// A free-form text memo (≤ 28 bytes UTF-8).
+    /// A free-form text memo (Γëñ 28 bytes UTF-8).
     Text(String),
     /// A numeric ID memo (u64).
     Id(u64),
@@ -68,6 +69,9 @@ pub struct PaymentRequest {
     pub money: Money,
     /// Optional memo attached to the transaction on-chain.
     pub memo: Option<StellarMemo>,
+    /// If true, create a claimable balance instead of a direct payment.
+    /// Use this when the destination might not have a trustline for the asset.
+    pub use_claimable_balance: bool,
 }
 
 /// Anything that can sign for a Stellar account: a local key in development,
@@ -126,6 +130,59 @@ impl std::fmt::Debug for LocalTestnetSigner {
     }
 }
 
+/// Backend for KMS or HSM signing operations.
+///
+/// Implementations must never expose the private key to process memory, only
+/// return signatures. The signature is verified against the public key before
+/// being sent to the network.
+pub trait KmsBackend: Send + Sync {
+    /// Signs the given message and returns the 64-byte Ed25519 signature.
+    ///
+    /// The implementation must call the KMS/HSM to sign the message without
+    /// ever exposing the private key to this process.
+    fn sign(&self, message: &[u8]) -> [u8; 64];
+}
+
+/// A KMS-backed signer that never exposes the private key to process memory.
+///
+/// The private key is held by a Key Management Service or Hardware Security
+/// Module and only returns signatures. This is the production signing path.
+pub struct KmsSigner {
+    public_key: [u8; 32],
+    backend: Box<dyn KmsBackend>,
+}
+
+impl KmsSigner {
+    /// Creates a new KMS signer with the given public key and backend.
+    ///
+    /// The public key must match the key held by the KMS, but that is verified
+    /// by checking the signature against the public key in `sign_withdrawal`.
+    pub fn new(public_key: [u8; 32], backend: Box<dyn KmsBackend>) -> Self {
+        Self {
+            public_key,
+            backend,
+        }
+    }
+}
+
+impl StellarSigner for KmsSigner {
+    fn public_key(&self) -> [u8; 32] {
+        self.public_key
+    }
+
+    fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.backend.sign(message)
+    }
+}
+
+impl std::fmt::Debug for KmsSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KmsSigner")
+            .field("account", &self.account())
+            .finish_non_exhaustive()
+    }
+}
+
 /// The signer for the custody account that withdrawals are paid from.
 ///
 /// Wraps any [`StellarSigner`] (a local key on testnet, a KMS or HSM in
@@ -171,17 +228,21 @@ impl<S: StellarSigner> std::fmt::Debug for CustodySigner<S> {
 
 /// Builds an unsigned payment transaction.
 ///
-/// * `source` — the ed25519 public key bytes of the signing account.
-/// * `sequence` — the source account's *current* sequence number; the
+/// * `source` ΓÇö the ed25519 public key bytes of the signing account.
+/// * `sequence` ΓÇö the source account's *current* sequence number; the
 ///   transaction uses `sequence + 1`.
-/// * `request` — what to pay and the optional on-chain memo.
-/// * `network` — testnet or mainnet (affects the USDC issuer and the network
+/// * `request` ΓÇö what to pay and the optional on-chain memo.
+/// * `network` ΓÇö testnet or mainnet (affects the USDC issuer and the network
 ///   hash used for signing).
-/// * `valid_until` — Unix timestamp after which the network will reject the
+/// * `valid_until` ΓÇö Unix timestamp after which the network will reject the
 ///   transaction, so a stuck payment cannot land hours later.
-/// * `fee_per_op` — base fee in stroops per operation. Pass [`BASE_FEE`] for
+/// * `fee_per_op` ΓÇö base fee in stroops per operation. Pass [`BASE_FEE`] for
 ///   the network minimum, or a value from Horizon's `/fee_stats` endpoint
 ///   (e.g. `p90_accepted_fee`) under load.
+///
+/// If `request.use_claimable_balance` is true, creates a claimable balance
+/// instead of a direct payment. This allows sending to accounts that don't
+/// have a trustline for the asset yet.
 pub fn build_payment(
     source: &[u8; 32],
     sequence: i64,
@@ -190,7 +251,7 @@ pub fn build_payment(
     valid_until: u64,
     fee_per_op: u32,
 ) -> Result<Transaction, PaymentError> {
-    let destination = muxed_account(&request.destination)?;
+    let destination = parse_destination(&request.destination)?;
     let asset = xdr_asset(request.money.asset, network)?;
 
     let units = request
@@ -209,13 +270,42 @@ pub fn build_payment(
 
     let memo = memo_xdr(request.memo.as_ref())?;
 
-    let operation = Operation {
-        source_account: None,
-        body: OperationBody::Payment(PaymentOp {
-            destination,
-            asset,
-            amount,
-        }),
+    let operation = if request.use_claimable_balance {
+        // Create a claimable balance that only the destination can claim.
+        // The predicate is unconditional, so they can claim it anytime.
+        let claimants = vec![Claimant::ClaimantTypeV0(ClaimantV0 {
+            destination: destination.clone(),
+            predicate: ClaimPredicate::Unconditional,
+        })];
+        Operation {
+            source_account: None,
+            body: OperationBody::CreateClaimableBalance(CreateClaimableBalanceOp {
+                asset,
+                amount,
+                claimants: claimants
+                    .try_into()
+                    .map_err(|_| PaymentError::Encoding("too many claimants".to_owned()))?,
+            }),
+        }
+    } else {
+        // Direct payment to the destination account.
+        let muxed_dest = match parse_address(&request.destination)? {
+            StellarAddress::Account(account) => MuxedAccount::Ed25519(Uint256(raw_key(&account)?)),
+            StellarAddress::Muxed { base, id } => {
+                MuxedAccount::MuxedEd25519(MuxedAccountMed25519 {
+                    id,
+                    ed25519: Uint256(raw_key(&base)?),
+                })
+            }
+        };
+        Operation {
+            source_account: None,
+            body: OperationBody::Payment(PaymentOp {
+                destination: muxed_dest,
+                asset,
+                amount,
+            }),
+        }
     };
 
     Ok(Transaction {
@@ -232,6 +322,19 @@ pub fn build_payment(
             .map_err(|_| PaymentError::Encoding("too many operations".to_owned()))?,
         ext: TransactionExt::V0,
     })
+}
+
+/// Parses the destination address into an AccountId for claimable balances.
+/// This is separate from muxed_account because claimable balances use AccountId.
+fn parse_destination(address: &str) -> Result<AccountId, PaymentError> {
+    let parsed = parse_address(address)?;
+    let account = match parsed {
+        StellarAddress::Account(acc) => acc,
+        StellarAddress::Muxed { base, .. } => base,
+    };
+    Ok(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+        raw_key(&account)?,
+    ))))
 }
 
 /// Converts the optional [`StellarMemo`] into the XDR `Memo` type.
@@ -418,6 +521,30 @@ mod tests {
     use ed25519_dalek::{Verifier, VerifyingKey};
     use stellar_xdr::ReadXdr;
 
+    /// A fake KMS backend for testing that wraps a real key.
+    ///
+    /// This is only used in tests to verify the KMS signer trait works correctly.
+    /// Real production implementations would call out to AWS KMS, Azure Key Vault,
+    /// Google Cloud KMS, or a hardware security module.
+    struct FakeKmsBackend {
+        key: ed25519_dalek::SigningKey,
+    }
+
+    impl FakeKmsBackend {
+        fn new(seed: [u8; 32]) -> Self {
+            Self {
+                key: ed25519_dalek::SigningKey::from_bytes(&seed),
+            }
+        }
+    }
+
+    impl KmsBackend for FakeKmsBackend {
+        fn sign(&self, message: &[u8]) -> [u8; 64] {
+            use ed25519_dalek::Signer;
+            self.key.sign(message).to_bytes()
+        }
+    }
+
     fn signer() -> LocalTestnetSigner {
         let secret = stellar_strkey::ed25519::PrivateKey([7; 32]);
         LocalTestnetSigner::from_secret(
@@ -425,6 +552,14 @@ mod tests {
             StellarNetwork::Testnet,
         )
         .unwrap()
+    }
+
+    fn kms_signer() -> KmsSigner {
+        let seed = [9; 32];
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let public_key = signing_key.verifying_key().to_bytes();
+        let backend = Box::new(FakeKmsBackend::new(seed));
+        KmsSigner::new(public_key, backend)
     }
 
     fn account(seed: u8) -> String {
@@ -439,6 +574,7 @@ mod tests {
             destination,
             money: Money::parse(asset, amount).unwrap(),
             memo: None,
+            use_claimable_balance: false,
         }
     }
 
@@ -597,7 +733,7 @@ mod tests {
         assert_eq!(decoded, envelope);
     }
 
-    // ── Memo tests ────────────────────────────────────────────────────────────
+    // ΓöÇΓöÇ Memo tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[test]
     fn text_memo_is_encoded_in_the_xdr() {
@@ -721,5 +857,232 @@ mod tests {
             panic!("expected text memo");
         };
         assert_eq!(text.as_slice(), b"round-trip test");
+    }
+
+    // ΓöÇΓöÇ KMS signer tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    #[test]
+    fn kms_signer_produces_valid_signatures() {
+        let kms = kms_signer();
+        let tx = build_payment(
+            &kms.public_key(),
+            1,
+            &request(account(2), Asset::Xlm, "3"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        let (envelope, hash) = sign(tx, &kms, StellarNetwork::Testnet).unwrap();
+
+        // Verify the signature against the public key.
+        let TransactionEnvelope::Tx(v1) = &envelope else {
+            panic!("not a v1 envelope");
+        };
+        let verifying = VerifyingKey::from_bytes(&kms.public_key()).unwrap();
+        let signature =
+            ed25519_dalek::Signature::from_slice(v1.signatures[0].signature.0.as_slice()).unwrap();
+        assert!(verifying.verify(&hash, &signature).is_ok());
+    }
+
+    #[test]
+    fn kms_signer_works_with_custody_wrapper() {
+        let kms = kms_signer();
+        let account_g = stellar_strkey::ed25519::PublicKey(kms.public_key())
+            .to_string()
+            .as_str()
+            .to_owned();
+        let custody = CustodySigner::new(kms, &account_g).unwrap();
+
+        let tx = build_payment(
+            &custody.public_key(),
+            5,
+            &request(account(3), Asset::Usdc, "10.50"),
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+
+        let (envelope, _) = sign_withdrawal(tx, &custody, StellarNetwork::Testnet).unwrap();
+
+        // The signature should verify against the custody key.
+        assert!(
+            verify_signature(&envelope, &custody.public_key(), StellarNetwork::Testnet).unwrap()
+        );
+    }
+
+    #[test]
+    fn kms_signer_can_be_used_on_mainnet() {
+        // Unlike LocalTestnetSigner, KMS signers work on any network.
+        let kms = kms_signer();
+        let tx = build_payment(
+            &kms.public_key(),
+            1,
+            &request(account(2), Asset::Xlm, "1"),
+            StellarNetwork::Mainnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        let result = sign(tx, &kms, StellarNetwork::Mainnet);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn local_testnet_signer_still_refuses_mainnet() {
+        // Verify that the testnet-only restriction on LocalTestnetSigner is untouched.
+        let secret = stellar_strkey::ed25519::PrivateKey([7; 32]);
+        let refused = LocalTestnetSigner::from_secret(
+            secret.as_unredacted().to_string().as_str(),
+            StellarNetwork::Mainnet,
+        );
+        assert!(matches!(refused, Err(PaymentError::Key(_))));
+    }
+
+    // ΓöÇΓöÇ Claimable balance tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    #[test]
+    fn creates_claimable_balance_when_requested() {
+        let mut req = request(account(2), Asset::Xlm, "5");
+        req.use_claimable_balance = true;
+        let tx = build_payment(
+            &signer().public_key(),
+            1,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+
+        // Should be a CreateClaimableBalance operation, not a Payment.
+        let OperationBody::CreateClaimableBalance(op) = &tx.operations[0].body else {
+            panic!("expected CreateClaimableBalance operation");
+        };
+        assert_eq!(op.amount, 50_000_000); // 5 XLM in stroops
+        assert_eq!(op.asset, stellar_xdr::Asset::Native);
+        assert_eq!(op.claimants.len(), 1);
+
+        // Verify the claimant is the destination.
+        let Claimant::ClaimantTypeV0(claimant) = &op.claimants[0];
+        assert_eq!(
+            claimant.destination,
+            AccountId(PublicKey::PublicKeyTypeEd25519(Uint256([2; 32])))
+        );
+        assert_eq!(claimant.predicate, ClaimPredicate::Unconditional);
+    }
+
+    #[test]
+    fn claimable_balance_works_with_usdc() {
+        let mut req = request(account(3), Asset::Usdc, "100");
+        req.use_claimable_balance = true;
+        let tx = build_payment(
+            &signer().public_key(),
+            10,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+
+        let OperationBody::CreateClaimableBalance(op) = &tx.operations[0].body else {
+            panic!("expected CreateClaimableBalance operation");
+        };
+        assert_eq!(op.amount, 1_000_000_000); // 100 USDC (7 decimals)
+        assert!(matches!(op.asset, stellar_xdr::Asset::CreditAlphanum4(_)));
+    }
+
+    #[test]
+    fn claimable_balance_works_with_muxed_address() {
+        let custody = account(9);
+        let muxed = engipay_core::stellar::muxed_deposit_address(&custody, 777).unwrap();
+        let mut req = request(muxed, Asset::Xlm, "2");
+        req.use_claimable_balance = true;
+        let tx = build_payment(
+            &signer().public_key(),
+            1,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+
+        let OperationBody::CreateClaimableBalance(op) = &tx.operations[0].body else {
+            panic!("expected CreateClaimableBalance operation");
+        };
+        // Should extract the base G... address, not the M... address.
+        let Claimant::ClaimantTypeV0(claimant) = &op.claimants[0];
+        assert_eq!(
+            claimant.destination,
+            AccountId(PublicKey::PublicKeyTypeEd25519(Uint256([9; 32])))
+        );
+    }
+
+    #[test]
+    fn claimable_balance_can_be_signed_and_encoded() {
+        let signer = signer();
+        let mut req = request(account(4), Asset::Xlm, "10");
+        req.use_claimable_balance = true;
+        let tx = build_payment(
+            &signer.public_key(),
+            5,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+        let (envelope, _) = sign(tx, &signer, StellarNetwork::Testnet).unwrap();
+        let encoded = envelope_base64(&envelope).unwrap();
+        let decoded = TransactionEnvelope::from_xdr_base64(&encoded, Limits::none()).unwrap();
+        assert_eq!(decoded, envelope);
+    }
+
+    #[test]
+    fn claimable_balance_with_memo() {
+        let mut req = request(account(5), Asset::Usdc, "25.50");
+        req.use_claimable_balance = true;
+        req.memo = Some(StellarMemo::Text("no trustline".to_owned()));
+        let tx = build_payment(
+            &signer().public_key(),
+            1,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+
+        let OperationBody::CreateClaimableBalance(_) = &tx.operations[0].body else {
+            panic!("expected CreateClaimableBalance operation");
+        };
+        let Memo::Text(text) = tx.memo else {
+            panic!("expected text memo");
+        };
+        assert_eq!(text.as_slice(), b"no trustline");
+    }
+
+    #[test]
+    fn direct_payment_still_works_when_flag_is_false() {
+        let mut req = request(account(2), Asset::Xlm, "1");
+        req.use_claimable_balance = false;
+        let tx = build_payment(
+            &signer().public_key(),
+            1,
+            &req,
+            StellarNetwork::Testnet,
+            1_800_000_000,
+            BASE_FEE,
+        )
+        .unwrap();
+
+        // Should be a normal Payment operation.
+        let OperationBody::Payment(payment) = &tx.operations[0].body else {
+            panic!("expected Payment operation, not CreateClaimableBalance");
+        };
+        assert_eq!(payment.amount, 10_000_000);
     }
 }

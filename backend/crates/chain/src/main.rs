@@ -25,7 +25,7 @@ use engipay_chain::stellar::cursor::{CursorStore, STELLAR_CHAIN_KEY, cursor_to_l
 use engipay_chain::stellar::horizon::cursor_for_ledger;
 use engipay_chain::stellar::payment::{LocalTestnetSigner, PaymentRequest, StellarSigner};
 use engipay_chain::stellar::{StellarClient, StellarConfig, StellarNetwork};
-use engipay_chain::workers::reconcile::{ReconcileWorker, DEFAULT_INTERVAL as RECONCILE_INTERVAL};
+use engipay_chain::workers::reconcile::{DEFAULT_INTERVAL as RECONCILE_INTERVAL, ReconcileWorker};
 use engipay_chain::workers::withdrawal::{
     DEFAULT_POLL_INTERVAL, StellarWithdrawalSender, WithdrawalWorker,
 };
@@ -145,7 +145,12 @@ fn stellar_client() -> anyhow::Result<Option<StellarClient>> {
     let network = StellarNetwork::parse(&network_name).with_context(|| {
         format!("STELLAR_NETWORK must be testnet or mainnet, got {network_name:?}")
     })?;
-    let config = StellarConfig::new(network, env::var("STELLAR_HORIZON_URL").ok(), &custody)?;
+    let config = StellarConfig::new_with_rpc(
+        network,
+        env::var("STELLAR_HORIZON_URL").ok(),
+        env::var("STELLAR_RPC_URL").ok(),
+        &custody,
+    )?;
     Ok(Some(StellarClient::new(config)?))
 }
 
@@ -165,22 +170,25 @@ async fn db_pool() -> anyhow::Result<Option<sqlx::PgPool>> {
 }
 
 async fn watch() -> anyhow::Result<()> {
-    // ── Shared shutdown token ────────────────────────────────────────────────
+    // ΓöÇΓöÇ Shared shutdown token ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     // One token drives both the HTTP server and the watcher loop: Ctrl+C
     // cancels the token, which gracefully drains in-flight requests before the
     // process exits.  If the server exits on its own (e.g. a bind error after
     // startup) the watcher loop also stops rather than running headless.
     let shutdown = CancellationToken::new();
 
-    // ── Internal HTTP server ─────────────────────────────────────────────────
+    // ΓöÇΓöÇ Internal HTTP server ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     // Always start the internal HTTP server so the API can reach fee estimates
     // even when no Stellar custody account is configured.
     let internal_addr =
         env::var("CHAIN_INTERNAL_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_owned());
 
-    let internal_addr_parsed = internal_addr
-        .parse::<std::net::SocketAddr>()
-        .with_context(|| format!("CHAIN_INTERNAL_ADDR must be a host:port, got {internal_addr:?}"))?;
+    let internal_addr_parsed =
+        internal_addr
+            .parse::<std::net::SocketAddr>()
+            .with_context(|| {
+                format!("CHAIN_INTERNAL_ADDR must be a host:port, got {internal_addr:?}")
+            })?;
 
     let token = internal_token();
     if !internal_addr_parsed.ip().is_loopback() && token.is_none() {
@@ -220,7 +228,7 @@ async fn watch() -> anyhow::Result<()> {
     });
     tokio::pin!(server_handle);
 
-    // ── No-Stellar early exit ────────────────────────────────────────────────
+    // ΓöÇΓöÇ No-Stellar early exit ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     let Some(stellar) = stellar_client()? else {
         info!("no networks configured; set STELLAR_CUSTODY_ACCOUNT to watch Stellar deposits");
         tokio::select! {
@@ -267,7 +275,7 @@ async fn watch() -> anyhow::Result<()> {
         match store.load(STELLAR_CHAIN_KEY).await? {
             Some(saved_cursor) => {
                 // The saved cursor is a TOID; recover the ledger by shifting
-                // the top 32 bits back out. This is a conservative estimate —
+                // the top 32 bits back out. This is a conservative estimate ΓÇö
                 // we will re-process the same ledger rather than miss it.
                 //
                 // If the cursor is unparsable or corrupt, refuse to start.
@@ -334,7 +342,7 @@ async fn watch() -> anyhow::Result<()> {
                 return Ok(());
             }
             result = &mut server_handle => {
-                // The HTTP server stopped on its own — this is unexpected.
+                // The HTTP server stopped on its own ΓÇö this is unexpected.
                 reconcile_shutdown.cancel();
                 return match result {
                     Ok(Ok(())) => bail!("internal HTTP server stopped unexpectedly"),
@@ -392,7 +400,7 @@ async fn watch() -> anyhow::Result<()> {
                         amount    = %deposit.money,
                         reference = %deposit.reference,
                         address   = %deposit.address,
-                        "stellar deposit creditable (no database configured — not credited)"
+                        "stellar deposit creditable (no database configured ΓÇö not credited)"
                     );
                 }
             }
@@ -430,6 +438,7 @@ async fn stellar_send(args: &[String]) -> anyhow::Result<()> {
         destination: destination.clone(),
         money: Money::parse(asset, amount)?,
         memo: None,
+        use_claimable_balance: false,
     };
     info!(from = %signer.account(), to = %request.destination, amount = %request.money, "sending");
     let hash = client.send_payment(&signer, &request).await?;
@@ -452,10 +461,9 @@ async fn withdrawals() -> anyhow::Result<()> {
     info!(from = %signer.account(), "withdrawal worker starting");
 
     let worker_pool = pool.clone();
-    let worker = WithdrawalWorker::new(worker_pool).with_sender(Arc::new(StellarWithdrawalSender::new(
-        client.clone(),
-        Arc::new(signer),
-    )));
+    let worker = WithdrawalWorker::new(worker_pool).with_sender(Arc::new(
+        StellarWithdrawalSender::new(client.clone(), Arc::new(signer)),
+    ));
     let shutdown = CancellationToken::new();
     let on_signal = shutdown.clone();
     tokio::spawn(async move {
@@ -468,9 +476,9 @@ async fn withdrawals() -> anyhow::Result<()> {
     let finality_pool = pool.clone();
     let finality_client = client.clone();
     tokio::spawn(async move {
-        use engipay_chain::withdrawals::PgWithdrawalStore;
-        use engipay_chain::stellar::broadcast::FinalityPoller;
+        use engipay_chain::stellar::broadcast::{FinalityPoller, poll_transaction_finality};
         use engipay_chain::stellar::settlement::apply_finality;
+        use engipay_chain::withdrawals::PgWithdrawalStore;
         use engipay_ledger::postgres::PostgresLedgerStore;
 
         let poller = FinalityPoller::new();
@@ -484,7 +492,7 @@ async fn withdrawals() -> anyhow::Result<()> {
             .fetch_all(&finality_pool)
             .await {
                 for (id, tx_hash) in rows {
-                    let outcome = poller.poll(&finality_client, &tx_hash).await;
+                    let outcome = poll_transaction_finality(&finality_client, &tx_hash, &poller).await;
                     let _ = apply_finality(&store, &ledger, id, outcome).await;
                 }
             }
@@ -544,10 +552,22 @@ async fn dlq_list(pool: &sqlx::PgPool) -> anyhow::Result<()> {
         println!("  ID:         {}", row.id);
         println!("  Created:    {}", row.created_at);
         println!("  Reason:     {}", row.reason);
-        println!("  Reference:  {}", row.raw_payload["reference"].as_str().unwrap_or("?"));
-        println!("  Address:    {}", row.raw_payload["address"].as_str().unwrap_or("?"));
-        println!("  Amount:     {} (minor units)", row.raw_payload["amount_minor"].as_i64().unwrap_or(0));
-        println!("  Asset:      {}", row.raw_payload["asset"].as_str().unwrap_or("?"));
+        println!(
+            "  Reference:  {}",
+            row.raw_payload["reference"].as_str().unwrap_or("?")
+        );
+        println!(
+            "  Address:    {}",
+            row.raw_payload["address"].as_str().unwrap_or("?")
+        );
+        println!(
+            "  Amount:     {} (minor units)",
+            row.raw_payload["amount_minor"].as_i64().unwrap_or(0)
+        );
+        println!(
+            "  Asset:      {}",
+            row.raw_payload["asset"].as_str().unwrap_or("?")
+        );
         println!();
     }
     Ok(())

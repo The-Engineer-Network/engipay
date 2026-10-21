@@ -26,14 +26,14 @@
 //!
 //! ```text
 //!   pending_broadcast
-//!        │
-//!        ▼  submit_payment_with_retry()
+//!        Γöé
+//!        Γû╝  submit_payment_with_retry()
 //!   broadcast_accepted  (Horizon accepted the XDR)
-//!        │
-//!        ▼  poll_for_finality()
+//!        Γöé
+//!        Γû╝  poll_for_finality()
 //!   confirmed           (landed in a closed ledger)
-//!        │
-//!        or──► pending_manual_review  (timeout / not successful)
+//!        Γöé
+//!        orΓöÇΓöÇΓû║ pending_manual_review  (timeout / not successful)
 //! ```
 //!
 //! Signing keys are never invoked again after `broadcast_accepted`; the poll
@@ -51,7 +51,7 @@ use super::settlement::{self, HoldLedger, SettlementError};
 use crate::ChainError;
 use crate::withdrawals::{StatusUpdate, WithdrawalError, WithdrawalStatus, WithdrawalStore};
 
-// ── Broadcast ─────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Broadcast ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// A withdrawal Horizon accepted into a ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,12 +94,12 @@ pub fn hash_hex(hash: &[u8; 32]) -> String {
 
 /// Submits a signed withdrawal to Horizon and records the outcome.
 ///
-/// * Accepted — `tx_hash` is stored and the withdrawal moves to
+/// * Accepted ΓÇö `tx_hash` is stored and the withdrawal moves to
 ///   `broadcast_accepted`. The finality poller takes it from there.
-/// * Rejected (`400`) — unless the transaction is in fact already on the
+/// * Rejected (`400`) ΓÇö unless the transaction is in fact already on the
 ///   ledger (a resubmission of a landed transaction is refused with
 ///   `tx_bad_seq`), the withdrawal moves to `failed` and its hold is released.
-/// * Unknown — the hash is stored and the withdrawal moves to
+/// * Unknown ΓÇö the hash is stored and the withdrawal moves to
 ///   `pending_manual_review`. Its money stays held.
 ///
 /// Safe to call again for a withdrawal already `broadcast_accepted` with the
@@ -217,16 +217,16 @@ async fn unknown<W: WithdrawalStore>(
     })
 }
 
-// ── Defaults ──────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Defaults ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
-/// How long to wait between Horizon polls (one Stellar ledger ≈ 5 s).
+/// How long to wait between Horizon polls (one Stellar ledger Γëê 5 s).
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Maximum wall-clock time to wait for a single transaction to land.
 /// After this the transaction is considered unconfirmed by this service.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
-// ── FinalityOutcome ───────────────────────────────────────────────────────────
+// ΓöÇΓöÇ FinalityOutcome ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// The result of polling for transaction finality.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,7 +244,7 @@ pub enum FinalityOutcome {
     Failed { hash: String, ledger: u64 },
 }
 
-// ── FinalityError ─────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ FinalityError ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// Errors from the finality polling loop.
 #[derive(Debug, thiserror::Error)]
@@ -265,7 +265,7 @@ pub enum FinalityError {
     },
 }
 
-// ── FinalistPoller ────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ FinalistPoller ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// Polls Horizon for transaction finality.
 ///
@@ -304,8 +304,8 @@ impl FinalityPoller {
     ///
     /// # Errors
     ///
-    /// * [`FinalityError::Timeout`] — no confirmation within `self.timeout`.
-    /// * [`FinalityError::Horizon`] — Horizon returned a non-transient error.
+    /// * [`FinalityError::Timeout`] ΓÇö no confirmation within `self.timeout`.
+    /// * [`FinalityError::Horizon`] ΓÇö Horizon returned a non-transient error.
     ///
     /// Transient Horizon errors (503, 429, etc.) are **not** surfaced; polling
     /// continues until the timeout rather than aborting on a transient glitch.
@@ -413,7 +413,7 @@ impl Default for FinalityPoller {
     }
 }
 
-// ── TxStatus ─────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ TxStatus ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// The result of a single `GET /transactions/{hash}` call, reduced to the
 /// three states the finality poller cares about.
@@ -451,7 +451,7 @@ impl TxStatus {
     }
 }
 
-// ── Integration with StellarClient ───────────────────────────────────────────
+// ΓöÇΓöÇ Integration with StellarClient ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// Polls for finality using a live [`StellarClient`].
 ///
@@ -482,7 +482,7 @@ pub async fn poll_transaction_finality(
         .await
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ Tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
@@ -491,7 +491,7 @@ mod tests {
 
     use super::*;
 
-    // ── broadcast_withdrawal ──────────────────────────────────────────────────
+    // ΓöÇΓöÇ broadcast_withdrawal ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     use engipay_core::Asset;
     use engipay_ledger::{HoldState, SystemAccount};
@@ -556,6 +556,7 @@ mod tests {
                 destination,
                 money: withdrawal.amount,
                 memo: None,
+                use_claimable_balance: false,
             },
             StellarNetwork::Testnet,
             1_800_000_000,
@@ -833,7 +834,7 @@ mod tests {
         assert_eq!(h.ledger.system(SystemAccount::Fees, Asset::Usdc), 1_000_000);
     }
 
-    // ── TxStatus::from_horizon ────────────────────────────────────────────────
+    // ΓöÇΓöÇ TxStatus::from_horizon ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[test]
     fn ledger_zero_means_not_yet_included() {
@@ -857,7 +858,7 @@ mod tests {
         );
     }
 
-    // ── happy path: transaction confirms on the first poll ────────────────────
+    // ΓöÇΓöÇ happy path: transaction confirms on the first poll ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[tokio::test]
     async fn confirms_immediately_when_already_in_ledger() {
@@ -879,7 +880,7 @@ mod tests {
         );
     }
 
-    // ── transaction lands after a few polls ───────────────────────────────────
+    // ΓöÇΓöÇ transaction lands after a few polls ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[tokio::test]
     async fn confirms_after_several_not_yet_included_responses() {
@@ -915,7 +916,7 @@ mod tests {
         assert!(*call_count.lock().unwrap() >= 3);
     }
 
-    // ── timeout: transaction never lands ─────────────────────────────────────
+    // ΓöÇΓöÇ timeout: transaction never lands ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[tokio::test]
     async fn times_out_when_transaction_never_lands() {
@@ -935,7 +936,7 @@ mod tests {
         );
     }
 
-    // ── failed transaction in ledger ──────────────────────────────────────────
+    // ΓöÇΓöÇ failed transaction in ledger ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[tokio::test]
     async fn reports_failed_when_included_but_unsuccessful() {
@@ -957,7 +958,7 @@ mod tests {
         );
     }
 
-    // ── horizon error aborts the poll ────────────────────────────────────────
+    // ΓöÇΓöÇ horizon error aborts the poll ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[tokio::test]
     async fn horizon_error_surfaces_as_finality_error() {
@@ -979,14 +980,14 @@ mod tests {
         );
     }
 
-    // ── rejected (non-transient) error from Horizon immediately stops polling ─
+    // ΓöÇΓöÇ rejected (non-transient) error from Horizon immediately stops polling ΓöÇ
 
     #[tokio::test]
     async fn non_transient_horizon_error_stops_polling_immediately() {
         let call_count = Arc::new(Mutex::new(0u32));
         let poller = FinalityPoller::with_config(
             Duration::from_millis(1),
-            Duration::from_secs(60), // long timeout — error should cut it short
+            Duration::from_secs(60), // long timeout ΓÇö error should cut it short
         );
 
         let call_count_clone = call_count.clone();
@@ -1007,12 +1008,12 @@ mod tests {
         assert_eq!(*call_count.lock().unwrap(), 1);
     }
 
-    // ── confirms at the last moment before timeout ────────────────────────────
+    // ΓöÇΓöÇ confirms at the last moment before timeout ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[tokio::test]
     async fn confirms_on_the_final_poll_before_timeout() {
         let call_count = Arc::new(Mutex::new(0u32));
-        // Timeout = 50 ms, interval = 10 ms → up to ~5 polls.
+        // Timeout = 50 ms, interval = 10 ms ΓåÆ up to ~5 polls.
         let poller =
             FinalityPoller::with_config(Duration::from_millis(10), Duration::from_millis(50));
 
@@ -1035,7 +1036,7 @@ mod tests {
             })
             .await;
 
-        // Either confirms or times out — both are valid depending on timing,
+        // Either confirms or times out ΓÇö both are valid depending on timing,
         // but must not panic.
         match result {
             Ok(FinalityOutcome::Confirmed { ledger: 99, .. }) => {}
@@ -1044,7 +1045,7 @@ mod tests {
         }
     }
 
-    // ── TxStatus::from_horizon edge cases ─────────────────────────────────────
+    // ΓöÇΓöÇ TxStatus::from_horizon edge cases ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[test]
     fn from_horizon_max_ledger_successful() {
