@@ -1,8 +1,11 @@
 use axum::{extract::State, routing::post, Json, Router};
+use k256::ecdsa::{RecoveryId, Signature};
 use serde::{Deserialize, Serialize};
+use sha3::{Digest, Keccak256};
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::auth::jwt::create_token;
 use crate::{error::ApiError, AppState};
 
 #[derive(Debug, Deserialize)]
@@ -13,7 +16,8 @@ pub struct VerifyEvmRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub struct AuthResponse {
+pub struct VerifyEvmResponse {
+    pub token: String,
     pub user_id: Uuid,
 }
 
@@ -24,116 +28,124 @@ pub fn routes() -> Router<AppState> {
 async fn verify_evm(
     State(state): State<AppState>,
     Json(req): Json<VerifyEvmRequest>,
-) -> Result<Json<AuthResponse>, ApiError> {
-    let db = state
+) -> Result<Json<VerifyEvmResponse>, ApiError> {
+    let pool = state
         .database
         .as_ref()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
-    // Verify the signature
-    let address = verify_signature(&req.message, &req.signature, &req.address)?;
+    // Verify the signature and recover the address
+    let recovered = recover_address(&req.message, &req.signature)
+        .ok_or_else(|| ApiError::Unauthorized("signature is not valid".to_string()))?;
 
-    // Normalize the address to lowercase for consistent storage
-    let wallet_address = address.to_lowercase();
+    let claimed = normalise_address(&req.address)
+        .ok_or_else(|| ApiError::BadRequest("address must be a valid Ethereum address".to_string()))?;
 
-    // Check if user exists
-    let existing_user = sqlx::query("SELECT id FROM users WHERE wallet_address = $1")
-        .bind(&wallet_address)
-        .fetch_optional(db)
+    if recovered != claimed {
+        return Err(ApiError::Unauthorized("signature does not match the address".to_string()));
+    }
+
+    // Find or create user and issue token in one transaction
+    let mut tx = pool
+        .begin()
         .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to start transaction: {}", e)))?;
 
-    let user_id = if let Some(user) = existing_user {
-        let id: Uuid = user.try_get("id").map_err(|e| ApiError::Internal(e.into()))?;
+    let existing_user = sqlx::query_as::<_, (Uuid,)>("SELECT id FROM users WHERE wallet_address = $1")
+        .bind(&claimed)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to query user: {}", e)))?;
+
+    let user_id = if let Some((id,)) = existing_user {
         id
     } else {
-        // Create new user
-        let new_user_id = Uuid::new_v4();
+        let new_id = Uuid::new_v4();
         sqlx::query("INSERT INTO users (id, wallet_address) VALUES ($1, $2)")
-            .bind(new_user_id)
-            .bind(&wallet_address)
-            .execute(db)
+            .bind(new_id)
+            .bind(&claimed)
+            .execute(&mut *tx)
             .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to create user: {}", e)))?;
 
-        // Create user profile
         sqlx::query("INSERT INTO user_profiles (id, tier) VALUES ($1, 0)")
-            .bind(new_user_id)
-            .execute(db)
+            .bind(new_id)
+            .execute(&mut *tx)
             .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to create profile: {}", e)))?;
 
-        new_user_id
+        new_id
     };
 
-    Ok(Json(AuthResponse { user_id }))
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to commit transaction: {}", e)))?;
+
+    let token = create_token(user_id, &state.config.jwt_secret)
+        .map_err(|e| ApiError::Internal(e))?;
+
+    Ok(Json(VerifyEvmResponse { token, user_id }))
 }
 
-fn verify_signature(message: &str, signature: &str, claimed_address: &str) -> Result<String, ApiError> {
-    use k256::ecdsa::{RecoveryId, Signature};
-    use k256::PublicKey;
+fn normalise_address(address: &str) -> Option<String> {
+    let addr = address.trim_start_matches("0x");
+    if addr.len() != 40 {
+        return None;
+    }
+    if !addr.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!("0x{}", addr.to_lowercase()))
+}
 
-    // Decode the signature from hex
-    let sig_bytes = hex::decode(signature.trim_start_matches("0x"))
-        .map_err(|_| ApiError::BadRequest("invalid signature encoding".to_string()))?;
+fn recover_address(message: &str, signature: &str) -> Option<String> {
+    // Decode signature from hex (with optional 0x prefix)
+    let sig_hex = signature.trim_start_matches("0x");
+    let sig_bytes = hex::decode(sig_hex).ok()?;
 
     if sig_bytes.len() != 65 {
-        return Err(ApiError::BadRequest(
-            "signature must be 65 bytes".to_string(),
-        ));
+        return None;
     }
 
-    let recovery_id = RecoveryId::try_from(sig_bytes[64])
-        .map_err(|_| ApiError::BadRequest("invalid recovery id".to_string()))?;
+    // Split signature into r, s, and recovery_id
+    let recovery_id = RecoveryId::try_from(sig_bytes[64]).ok()?;
+    let sig = Signature::from_bytes((&sig_bytes[..64]).into());
 
-    let signature = Signature::from_bytes((&sig_bytes[..64]).into());
-
-    // Hash the message with EIP-191 prefix
+    // Hash the message with EIP-191 prefix using Keccak-256
     let message_hash = hash_eip191_message(message);
 
-    // Recover the public key
-    let public_key =
-        PublicKey::recover_from_digest(&message_hash, &signature, recovery_id).map_err(|_| {
-            ApiError::BadRequest("signature verification failed".to_string())
-        })?;
+    // Recover public key from signature
+    use k256::PublicKey;
+    let public_key = PublicKey::recover_from_digest(&message_hash, &sig, recovery_id).ok()?;
 
-    // Get the address from the public key
-    let recovered_address = public_key_to_address(&public_key);
-
-    // Compare with claimed address (case-insensitive)
-    if recovered_address.to_lowercase() != claimed_address.to_lowercase() {
-        return Err(ApiError::BadRequest(
-            "signature does not match address".to_string(),
-        ));
-    }
-
-    Ok(recovered_address)
+    // Derive Ethereum address from public key
+    Some(public_key_to_address(&public_key))
 }
 
-fn hash_eip191_message(message: &str) -> sha2::digest::Output<sha2::Sha256> {
-    use sha2::Digest;
-
+fn hash_eip191_message(message: &str) -> [u8; 32] {
     let prefix = format!("\x19Ethereum Signed Message:\n{}", message.len());
     let full_message = format!("{}{}", prefix, message);
 
-    let mut hasher = sha2::Sha256::new();
+    let mut hasher = Keccak256::new();
     hasher.update(full_message.as_bytes());
-    hasher.finalize()
+    let result = hasher.finalize();
+
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&result[..]);
+    hash
 }
 
 fn public_key_to_address(public_key: &k256::PublicKey) -> String {
-    use sha3::Digest;
-
     // Get uncompressed public key bytes (skip the first byte which is 0x04)
     let uncompressed = public_key.to_encoded_point(false);
     let public_key_bytes = &uncompressed.as_bytes()[1..];
 
     // Keccak-256 hash of the public key
-    let mut hasher = sha3::Keccak256::new();
+    let mut hasher = Keccak256::new();
     hasher.update(public_key_bytes);
     let hash = hasher.finalize();
 
-    // Take the last 20 bytes and format as address
+    // Take the last 20 bytes and format as address with 0x prefix
     format!("0x{}", hex::encode(&hash[12..]))
 }
 
