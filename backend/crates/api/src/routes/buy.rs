@@ -52,6 +52,8 @@ pub struct QuoteResponse {
     pub receive_decimals: u32,
     /// Kobo per whole unit of the asset at this quote.
     pub kobo_per_unit: String,
+    /// Price source identifier used for the configured Naira rate.
+    pub price_sources: Vec<String>,
     /// RFC 3339 instant after which the quote can no longer be used.
     pub expires_at: String,
 }
@@ -112,8 +114,8 @@ async fn create_quote(
 
     let row = sqlx::query(
         r#"INSERT INTO buy_quotes
-               (user_id, asset, naira_kobo, fee_kobo, receive_minor, kobo_per_unit, fee_bps, expires_at)
-           VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6::numeric, $7, now() + $8::interval)
+               (user_id, asset, naira_kobo, fee_kobo, receive_minor, kobo_per_unit, fee_bps, expires_at, price_sources)
+           VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6::numeric, $7, now() + $8::interval, $9::text[])
            RETURNING id,
                      to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS expires_at"#,
     )
@@ -125,6 +127,7 @@ async fn create_quote(
     .bind(kobo_per_unit.to_string())
     .bind(i32::try_from(fee_bps).map_err(|_| ApiError::Unavailable(NOT_CONFIGURED.to_string()))?)
     .bind(QUOTE_LIFETIME_SQL)
+    .bind(["configured-env"])
     .fetch_one(db)
     .await
     .map_err(db_error)?;
@@ -137,6 +140,7 @@ async fn create_quote(
         receive: buy::format_fixed(priced.receive_minor, Asset::Usdc.decimals()),
         receive_decimals: Asset::Usdc.decimals(),
         kobo_per_unit: kobo_per_unit.to_string(),
+        price_sources: vec!["configured-env".to_owned()],
         expires_at: row.try_get("expires_at").map_err(db_error)?,
     };
     Ok((StatusCode::CREATED, Json(response)))

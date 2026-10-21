@@ -15,6 +15,10 @@
 //! computing fees the platform collects.** This is enforced below by explicit
 //! integer division with the direction noted.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
 use engipay_core::Asset;
 
 /// A quoted price for converting `from` to `to`.
@@ -29,6 +33,10 @@ pub struct ConversionPrice {
     pub fee_bps: u32,
     /// Number of seconds until this price expires.
     pub ttl_seconds: u32,
+    /// Source identifiers that contributed to the aggregate.
+    pub source_ids: Vec<String>,
+    /// Unix timestamp in seconds of the newest contributing observation.
+    pub observed_at_unix: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -37,6 +45,16 @@ pub enum PriceError {
     NoPair(String, String),
     #[error("converting an asset to itself is not allowed")]
     SameAsset,
+    #[error("fewer than two price sources returned a usable observation")]
+    InsufficientSources,
+    #[error("price sources disagree beyond the configured threshold")]
+    SourcesDisagree,
+    #[error("price source observation is stale")]
+    StalePrice,
+    #[error("price source cache is unavailable")]
+    CacheUnavailable,
+    #[error("price arithmetic overflow")]
+    ArithmeticOverflow,
 }
 
 /// Source of live (or simulated) conversion prices.
@@ -46,6 +64,194 @@ pub enum PriceError {
 /// `AppState`.
 pub trait PriceSource: Send + Sync {
     fn quote(&self, from: Asset, to: Asset) -> Result<ConversionPrice, PriceError>;
+}
+
+/// Combines independent providers, rejecting stale or materially divergent data.
+pub struct AggregatedPriceSource {
+    sources: Vec<Arc<dyn PriceSource>>,
+    max_deviation_bps: u32,
+    max_age: Duration,
+    cache_ttl: Duration,
+    cache: Mutex<HashMap<(Asset, Asset), (Instant, ConversionPrice)>>,
+}
+
+impl AggregatedPriceSource {
+    pub fn new(
+        sources: Vec<Arc<dyn PriceSource>>,
+        max_deviation_bps: u32,
+        max_age: Duration,
+        cache_ttl: Duration,
+    ) -> Self {
+        Self {
+            sources,
+            max_deviation_bps,
+            max_age,
+            cache_ttl,
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn load(&self, from: Asset, to: Asset) -> Result<ConversionPrice, PriceError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| PriceError::StalePrice)?
+            .as_secs();
+        let now = i64::try_from(now).map_err(|_| PriceError::ArithmeticOverflow)?;
+        let mut prices = Vec::new();
+        for source in &self.sources {
+            let price = match source.quote(from, to) {
+                Ok(price) => price,
+                Err(_) => continue,
+            };
+            if price.rate_numerator <= 0
+                || price.rate_denominator <= 0
+                || price.source_ids.len() != 1
+                || prices
+                    .iter()
+                    .any(|accepted: &ConversionPrice| accepted.source_ids == price.source_ids)
+            {
+                continue;
+            }
+            if price.observed_at_unix > now
+                || now.saturating_sub(price.observed_at_unix)
+                    > i64::try_from(self.max_age.as_secs()).unwrap_or(i64::MAX)
+            {
+                continue;
+            }
+            prices.push(price);
+        }
+        if prices.len() < 2 {
+            return Err(if prices.is_empty() {
+                PriceError::StalePrice
+            } else {
+                PriceError::InsufficientSources
+            });
+        }
+
+        for index in 1..prices.len() {
+            let mut position = index;
+            while position > 0 {
+                let left = &prices[position - 1];
+                let right = &prices[position];
+                let left_scaled = left
+                    .rate_numerator
+                    .checked_mul(right.rate_denominator)
+                    .ok_or(PriceError::ArithmeticOverflow)?;
+                let right_scaled = right
+                    .rate_numerator
+                    .checked_mul(left.rate_denominator)
+                    .ok_or(PriceError::ArithmeticOverflow)?;
+                if left_scaled <= right_scaled {
+                    break;
+                }
+                prices.swap(position - 1, position);
+                position -= 1;
+            }
+        }
+        let middle = prices.len() / 2;
+        let median = if prices.len() % 2 == 1 {
+            prices[middle].clone()
+        } else {
+            let lower = &prices[middle - 1];
+            let upper = &prices[middle];
+            ConversionPrice {
+                rate_numerator: lower
+                    .rate_numerator
+                    .checked_mul(upper.rate_denominator)
+                    .and_then(|value| {
+                        upper
+                            .rate_numerator
+                            .checked_mul(lower.rate_denominator)
+                            .and_then(|other| value.checked_add(other))
+                    })
+                    .ok_or(PriceError::ArithmeticOverflow)?,
+                rate_denominator: lower
+                    .rate_denominator
+                    .checked_mul(upper.rate_denominator)
+                    .and_then(|value| value.checked_mul(2))
+                    .ok_or(PriceError::ArithmeticOverflow)?,
+                fee_bps: upper.fee_bps,
+                ttl_seconds: upper.ttl_seconds,
+                source_ids: Vec::new(),
+                observed_at_unix: 0,
+            }
+        };
+        for price in &prices {
+            let left = price
+                .rate_numerator
+                .checked_mul(median.rate_denominator)
+                .ok_or(PriceError::ArithmeticOverflow)?;
+            let right = median
+                .rate_numerator
+                .checked_mul(price.rate_denominator)
+                .ok_or(PriceError::ArithmeticOverflow)?;
+            let difference = left.abs_diff(right);
+            let allowed = u128::try_from(right)
+                .ok()
+                .and_then(|value| value.checked_mul(u128::from(self.max_deviation_bps)))
+                .ok_or(PriceError::ArithmeticOverflow)?;
+            if difference
+                .checked_mul(10_000)
+                .ok_or(PriceError::ArithmeticOverflow)?
+                > allowed
+            {
+                return Err(PriceError::SourcesDisagree);
+            }
+        }
+
+        let source_ids = prices
+            .iter()
+            .flat_map(|price| price.source_ids.iter().cloned())
+            .collect();
+        let observed_at_unix = prices
+            .iter()
+            .map(|price| price.observed_at_unix)
+            .max()
+            .ok_or(PriceError::InsufficientSources)?;
+        Ok(ConversionPrice {
+            rate_numerator: median.rate_numerator,
+            rate_denominator: median.rate_denominator,
+            fee_bps: median.fee_bps,
+            ttl_seconds: u32::try_from(self.cache_ttl.as_secs()).unwrap_or(u32::MAX),
+            source_ids,
+            observed_at_unix,
+        })
+    }
+}
+
+impl PriceSource for AggregatedPriceSource {
+    fn quote(&self, from: Asset, to: Asset) -> Result<ConversionPrice, PriceError> {
+        if from == to {
+            return Err(PriceError::SameAsset);
+        }
+        {
+            let cache = self
+                .cache
+                .lock()
+                .map_err(|_| PriceError::CacheUnavailable)?;
+            if let Some((cached_at, price)) = cache.get(&(from, to)) {
+                let within_ttl = cached_at.elapsed() < self.cache_ttl;
+                let within_max_age = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .and_then(|now| i64::try_from(now.as_secs()).ok())
+                    .is_some_and(|now| {
+                        price.observed_at_unix <= now
+                            && now.saturating_sub(price.observed_at_unix)
+                                <= i64::try_from(self.max_age.as_secs()).unwrap_or(i64::MAX)
+                    });
+                if within_ttl && within_max_age {
+                    return Ok(price.clone());
+                }
+            }
+        }
+        let price = self.load(from, to)?;
+        self.cache
+            .lock()
+            .map_err(|_| PriceError::CacheUnavailable)?
+            .insert((from, to), (Instant::now(), price.clone()));
+        Ok(price)
+    }
 }
 
 // ── Fake implementation ───────────────────────────────────────────────────────
@@ -129,6 +335,12 @@ impl PriceSource for FakePriceSource {
             rate_denominator,
             fee_bps: Self::FEE_BPS,
             ttl_seconds: Self::TTL_SECONDS,
+            source_ids: vec!["fake".to_owned()],
+            observed_at_unix: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|value| i64::try_from(value.as_secs()).ok())
+                .unwrap_or_default(),
         })
     }
 }
@@ -173,6 +385,134 @@ pub fn apply_price(amount_in: i128, price: &ConversionPrice) -> Option<(i128, i1
 #[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
+
+    struct TestSource {
+        id: &'static str,
+        result: Result<ConversionPrice, PriceError>,
+    }
+
+    impl PriceSource for TestSource {
+        fn quote(&self, _from: Asset, _to: Asset) -> Result<ConversionPrice, PriceError> {
+            self.result.clone().map(|mut price| {
+                price.source_ids = vec![self.id.to_owned()];
+                price
+            })
+        }
+    }
+
+    fn observed_price(rate_numerator: i128, observed_at_unix: i64) -> ConversionPrice {
+        ConversionPrice {
+            rate_numerator,
+            rate_denominator: 1,
+            fee_bps: 50,
+            ttl_seconds: 30,
+            source_ids: Vec::new(),
+            observed_at_unix,
+        }
+    }
+
+    fn aggregate(sources: Vec<Arc<dyn PriceSource>>) -> AggregatedPriceSource {
+        AggregatedPriceSource::new(
+            sources,
+            500,
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        )
+    }
+
+    fn source(id: &'static str, rate: i128) -> Arc<dyn PriceSource> {
+        Arc::new(TestSource {
+            id,
+            result: Ok(observed_price(rate, unix_now())),
+        })
+    }
+
+    struct CountingSource {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl PriceSource for CountingSource {
+        fn quote(&self, _from: Asset, _to: Asset) -> Result<ConversionPrice, PriceError> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(observed_price(100, unix_now()))
+        }
+    }
+
+    fn unix_now() -> i64 {
+        i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn agreeing_sources_are_aggregated_by_median_and_recorded() {
+        let prices = aggregate(vec![source("one", 100), source("two", 102)])
+            .quote(Asset::Usdc, Asset::Xlm)
+            .unwrap();
+        assert_eq!(prices.rate_numerator, 202);
+        assert_eq!(prices.rate_denominator, 2);
+        assert_eq!(prices.source_ids, vec!["one", "two"]);
+        assert_eq!(prices.ttl_seconds, 5);
+    }
+
+    #[test]
+    fn disagreeing_sources_are_rejected() {
+        let result =
+            aggregate(vec![source("one", 100), source("two", 130)]).quote(Asset::Usdc, Asset::Xlm);
+        assert_eq!(result, Err(PriceError::SourcesDisagree));
+    }
+
+    #[test]
+    fn one_source_down_is_tolerated_when_two_others_agree() {
+        let offline: Arc<dyn PriceSource> = Arc::new(TestSource {
+            id: "offline",
+            result: Err(PriceError::NoPair("USDC".to_owned(), "XLM".to_owned())),
+        });
+        let result = aggregate(vec![source("one", 100), offline, source("two", 102)])
+            .quote(Asset::Usdc, Asset::Xlm)
+            .unwrap();
+        assert_eq!(result.source_ids, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn stale_observations_are_rejected() {
+        let stale_at = unix_now() - 120;
+        let stale: Arc<dyn PriceSource> = Arc::new(TestSource {
+            id: "stale-one",
+            result: Ok(observed_price(100, stale_at)),
+        });
+        let also_stale: Arc<dyn PriceSource> = Arc::new(TestSource {
+            id: "stale-two",
+            result: Ok(observed_price(101, stale_at)),
+        });
+        assert_eq!(
+            aggregate(vec![stale, also_stale]).quote(Asset::Usdc, Asset::Xlm),
+            Err(PriceError::StalePrice)
+        );
+    }
+
+    #[test]
+    fn cached_price_avoids_requerying_sources() {
+        let first_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let second_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let price_source = aggregate(vec![
+            Arc::new(CountingSource {
+                calls: first_calls.clone(),
+            }),
+            Arc::new(CountingSource {
+                calls: second_calls.clone(),
+            }),
+        ]);
+        price_source.quote(Asset::Usdc, Asset::Xlm).unwrap();
+        price_source.quote(Asset::Usdc, Asset::Xlm).unwrap();
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn same_asset_is_refused() {
