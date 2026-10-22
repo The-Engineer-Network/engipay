@@ -605,7 +605,8 @@ mod tests {
         // Should select 50_000 + 30_000 = 80_000
         assert_eq!(prepared.inputs.len(), 2);
         assert!(prepared.fee_sats > 0);
-        assert!(prepared.change_sats >= 0);
+        // 80_000 in, 60_000 out, so the change is 20_000 less the fee.
+        assert!(prepared.change_sats < 20_000);
     }
 
     #[tokio::test]
