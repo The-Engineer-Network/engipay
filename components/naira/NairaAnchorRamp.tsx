@@ -26,47 +26,37 @@ import {
   ShieldCheck,
   ChevronRight,
 } from "lucide-react"
-import { useWallet } from "@/contexts/WalletContext"
 import {
-  SUPPORTED_BANKS,
+  SUPPORTED_NIGERIAN_BANKS,
   isValidNuban,
-  getBankByCode,
-  isSep24Success,
   isSep24Terminal,
-  type Sep24TransactionState,
 } from "@/lib/naira-ramp"
 import {
   startNairaDeposit,
   getNairaDepositStatus,
   startNairaWithdrawal,
   getNairaWithdrawalStatus,
-  type NairaDepositResponse,
-  type NairaWithdrawalResponse,
-  type NairaTransactionStatusResponse,
+  type InteractiveFlowResponse,
+  type AnchorTransactionStatus,
 } from "@/lib/api-client"
 
 export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "deposit" | "withdraw" }) {
-  const { stellarAddress, walletAddress } = useWallet()
-  const accountAddress = stellarAddress || walletAddress || ""
-
   const [activeTab, setActiveTab] = useState<"deposit" | "withdraw">(defaultTab)
 
   // Deposit state
-  const [depositAmount, setDepositAmount] = useState("50.00")
-  const [depositAsset, setDepositAsset] = useState("USDC")
+  const [depositAmount, setDepositAmount] = useState("10000")
   const [isStartingDeposit, setIsStartingDeposit] = useState(false)
-  const [depositTx, setDepositTx] = useState<NairaDepositResponse | null>(null)
-  const [depositStatus, setDepositStatus] = useState<NairaTransactionStatusResponse | null>(null)
+  const [depositTx, setDepositTx] = useState<InteractiveFlowResponse | null>(null)
+  const [depositStatus, setDepositStatus] = useState<AnchorTransactionStatus | null>(null)
 
   // Withdrawal state
   const [withdrawAmount, setWithdrawAmount] = useState("25.00")
-  const [withdrawAsset, setWithdrawAsset] = useState("USDC")
   const [bankCode, setBankCode] = useState("058") // GTBank default
   const [accountNumber, setAccountNumber] = useState("")
   const [accountName, setAccountName] = useState("")
   const [isStartingWithdrawal, setIsStartingWithdrawal] = useState(false)
-  const [withdrawTx, setWithdrawTx] = useState<NairaWithdrawalResponse | null>(null)
-  const [withdrawStatus, setWithdrawStatus] = useState<NairaTransactionStatusResponse | null>(null)
+  const [withdrawTx, setWithdrawTx] = useState<InteractiveFlowResponse | null>(null)
+  const [withdrawStatus, setWithdrawStatus] = useState<AnchorTransactionStatus | null>(null)
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
@@ -76,7 +66,7 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
     if (!depositTx) return
     const interval = setInterval(async () => {
       try {
-        const status = await getNairaDepositStatus(depositTx.id)
+        const status = await getNairaDepositStatus(depositTx.transaction_id)
         setDepositStatus(status)
         if (isSep24Terminal(status.status)) {
           clearInterval(interval)
@@ -93,7 +83,7 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
     if (!withdrawTx) return
     const interval = setInterval(async () => {
       try {
-        const status = await getNairaWithdrawalStatus(withdrawTx.id)
+        const status = await getNairaWithdrawalStatus(withdrawTx.transaction_id)
         setWithdrawStatus(status)
         if (isSep24Terminal(status.status)) {
           clearInterval(interval)
@@ -116,11 +106,7 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
     setSuccessMsg(null)
 
     try {
-      const res = await startNairaDeposit({
-        asset_code: depositAsset,
-        amount: depositAmount,
-        stellar_account: accountAddress || undefined,
-      })
+      const res = await startNairaDeposit({ amount: depositAmount })
       setDepositTx(res)
       setSuccessMsg("Interactive SEP-24 deposit initiated. Complete the checkout window to receive funds.")
     } catch (err: unknown) {
@@ -151,12 +137,10 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
 
     try {
       const res = await startNairaWithdrawal({
-        asset_code: withdrawAsset,
         amount: withdrawAmount,
         bank_code: bankCode,
-        account_number: accountNumber.trim(),
+        bank_account: accountNumber.trim(),
         account_name: accountName.trim(),
-        stellar_account: accountAddress || undefined,
       })
       setWithdrawTx(res)
       setSuccessMsg("Withdrawal initiated. Cash will be disbursed to your Nigerian bank account.")
@@ -210,27 +194,24 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
               <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="deposit-amount">Amount</Label>
+                    <Label htmlFor="deposit-amount">Amount (NGN)</Label>
                     <Input
                       id="deposit-amount"
                       type="number"
                       step="any"
-                      placeholder="50.00"
+                      placeholder="10000"
                       value={depositAmount}
                       onChange={(e) => setDepositAmount(e.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="deposit-asset">Receive Asset</Label>
-                    <Select value={depositAsset} onValueChange={setDepositAsset}>
-                      <SelectTrigger id="deposit-asset">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="USDC">USDC (Stellar)</SelectItem>
-                        <SelectItem value="XLM">XLM (Native)</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <Label htmlFor="deposit-asset">You receive</Label>
+                    <p
+                      id="deposit-asset"
+                      className="flex h-10 items-center rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      USDC on Stellar
+                    </p>
                   </div>
                 </div>
 
@@ -260,11 +241,11 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
                     </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground font-mono">
-                    Transaction ID: {depositTx.id}
+                    Transaction ID: {depositTx.transaction_id}
                   </p>
 
                   <a
-                    href={depositTx.url}
+                    href={depositTx.interactive_url}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
@@ -297,7 +278,7 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
               <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="withdraw-amount">Amount</Label>
+                    <Label htmlFor="withdraw-amount">Amount (USDC)</Label>
                     <Input
                       id="withdraw-amount"
                       type="number"
@@ -308,16 +289,13 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="withdraw-asset">Sell Asset</Label>
-                    <Select value={withdrawAsset} onValueChange={setWithdrawAsset}>
-                      <SelectTrigger id="withdraw-asset">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="USDC">USDC (Stellar)</SelectItem>
-                        <SelectItem value="XLM">XLM (Native)</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <Label htmlFor="withdraw-asset">You sell</Label>
+                    <p
+                      id="withdraw-asset"
+                      className="flex h-10 items-center rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      USDC on Stellar
+                    </p>
                   </div>
                 </div>
 
@@ -328,7 +306,7 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {SUPPORTED_BANKS.map((b) => (
+                      {SUPPORTED_NIGERIAN_BANKS.map((b) => (
                         <SelectItem key={b.code} value={b.code}>
                           {b.name}
                         </SelectItem>
@@ -377,11 +355,11 @@ export function NairaAnchorRamp({ defaultTab = "deposit" }: { defaultTab?: "depo
                     </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground font-mono">
-                    Transaction ID: {withdrawTx.id}
+                    Transaction ID: {withdrawTx.transaction_id}
                   </p>
 
                   <a
-                    href={withdrawTx.url}
+                    href={withdrawTx.interactive_url}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"

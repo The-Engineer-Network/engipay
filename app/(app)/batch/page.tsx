@@ -32,8 +32,8 @@ import {
   getBatchPaymentRows,
   approveBatchPayment,
   executeBatchPayment,
-  type BatchPaymentStatusResponse,
-  type BatchPaymentRowResult,
+  type BatchPaymentStatus,
+  type RowResult,
 } from "@/lib/api-client"
 
 const SAMPLE_CSV = `destination,asset,amount,memo
@@ -47,8 +47,8 @@ export default function BatchPaymentsPage() {
   const [file, setFile] = useState<File | null>(null)
   const [summary, setSummary] = useState<BatchSummary | null>(null)
   const [batchId, setBatchId] = useState<string | null>(null)
-  const [batchStatus, setBatchStatus] = useState<BatchPaymentStatusResponse | null>(null)
-  const [rows, setRows] = useState<BatchPaymentRowResult[]>([])
+  const [batchStatus, setBatchStatus] = useState<BatchPaymentStatus | null>(null)
+  const [rows, setRows] = useState<RowResult[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [isExecuting, setIsExecuting] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
@@ -116,8 +116,8 @@ export default function BatchPaymentsPage() {
     setIsApproving(true)
     setErrorMessage(null)
     try {
-      const res = await approveBatchPayment(batchId)
-      setBatchStatus(res)
+      await approveBatchPayment(batchId)
+      setBatchStatus(await getBatchPaymentStatus(batchId))
       setSuccessMessage("Batch approved by second signer! Ready for execution.")
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to approve batch"

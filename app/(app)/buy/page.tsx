@@ -223,7 +223,7 @@ export default function BuyPage() {
               <div className="flex justify-between gap-4">
                 <dt className="text-muted-foreground">Rate</dt>
                 <dd className="text-muted-foreground">
-                  {liveQuote ? formatRate(liveQuote.rate_kobo, liveQuote.asset) : "—"}
+                  {liveQuote ? formatRate(liveQuote) : "—"}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">

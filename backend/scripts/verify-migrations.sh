@@ -31,9 +31,14 @@ apply_migrations() {
 
 capture_schema() {
   local target_db="$1"
+  # pg_dump brackets the dump with \restrict and \unrestrict lines carrying a
+  # random token, so the two passes never agree on them. They are not part of
+  # the schema, so they are filtered out along with the comments.
   docker compose exec -T postgres \
     pg_dump --schema-only -U "${POSTGRES_USER:-engipay}" "$target_db" 2>/dev/null \
     | grep -v '^--' \
+    | grep -v '^\\restrict' \
+    | grep -v '^\\unrestrict' \
     | grep -v '^$'
 }
 
