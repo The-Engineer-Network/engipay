@@ -4,6 +4,7 @@ use std::env;
 pub struct Config {
     pub bind_addr: String,
     pub database_url: Option<String>,
+    pub replica_database_url: Option<String>,
     pub db_max_connections: u32,
     pub allowed_origins: Vec<String>,
     pub json_logs: bool,
@@ -134,6 +135,9 @@ impl Config {
             database_url: env::var("DATABASE_URL")
                 .ok()
                 .filter(|url| !url.trim().is_empty()),
+            replica_database_url: env::var("REPLICA_DATABASE_URL")
+                .ok()
+                .filter(|url| !url.trim().is_empty()),
             db_max_connections,
             allowed_origins: env::var("ALLOWED_ORIGINS")
                 .unwrap_or_else(|_| "http://localhost:3000".to_owned())
@@ -175,6 +179,7 @@ impl Config {
         Self {
             bind_addr: "127.0.0.1:0".to_owned(),
             database_url: None,
+            replica_database_url: None,
             db_max_connections: 1,
             allowed_origins: vec!["http://localhost:3000".to_owned()],
             json_logs: false,
