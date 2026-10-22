@@ -1,0 +1,120 @@
+name: Testnet E2E
+
+# Runs nightly at 02:00 UTC so failures are visible before the working day.
+# Can also be triggered manually from the Actions tab for on-demand runs.
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+# Minimal permissions — only what the job actually needs.
+permissions:
+  contents: read
+
+# Only one testnet run at a time; if a manual trigger races the nightly job,
+# cancel the older one so they don't fight over the same custody account state.
+concurrency:
+  group: testnet-e2e
+  cancel-in-progress: true
+
+jobs:
+  testnet-e2e:
+    name: Stellar testnet deposit-to-withdrawal
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Non-secret configuration
+      STELLAR_NETWORK: testnet
+      API_BASE_URL: http://localhost:8080
+      POSTGRES_PASSWORD: ci-testnet-not-a-secret
+      POSTGRES_USER: engipay
+      POSTGRES_DB: engipay
+      JWT_SECRET: ci-testnet-jwt-not-a-secret
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # ── Rust build cache ──────────────────────────────────────────────────
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      # ── Build backend images ───────────────────────────────────────────────
+      - name: Build backend Docker images
+        working-directory: backend
+        run: |
+          echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" > .env
+          echo "JWT_SECRET=${JWT_SECRET}" >> .env
+          docker compose build api chain
+
+      # ── Start the full stack ───────────────────────────────────────────────
+      - name: Start postgres, api, and chain services
+        working-directory: backend
+        env:
+          STELLAR_CUSTODY_ACCOUNT: ${{ secrets.TESTNET_CUSTODY_ACCOUNT }}
+          STELLAR_SIGNING_KEY: ${{ secrets.TESTNET_SIGNING_KEY }}
+          STELLAR_TESTNET_SECRET: ${{ secrets.TESTNET_SECRET }}
+        run: |
+          # Write all secrets into .env so docker compose picks them up.
+          # The file is in backend/ which is git-ignored and never uploaded.
+          cat >> .env <<EOF
+          STELLAR_CUSTODY_ACCOUNT=${STELLAR_CUSTODY_ACCOUNT}
+          STELLAR_SIGNING_KEY=${STELLAR_SIGNING_KEY}
+          STELLAR_TESTNET_SECRET=${STELLAR_TESTNET_SECRET}
+          EOF
+
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e.yml \
+            up -d --wait postgres api chain
+
+      # ── Run database migrations ────────────────────────────────────────────
+      - name: Run migrations
+        working-directory: backend
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e.yml \
+            run --rm toolbox \
+            cargo run --bin engipay-api -- migrate
+        continue-on-error: false
+
+      # ── Install Python stellar-sdk for the harness script ──────────────────
+      - name: Install stellar-sdk (Python)
+        run: pip install stellar-sdk --quiet
+
+      # ── Run the testnet harness ────────────────────────────────────────────
+      - name: Run testnet e2e harness
+        env:
+          STELLAR_NETWORK: testnet
+          API_BASE_URL: ${{ env.API_BASE_URL }}
+          STELLAR_CUSTODY_ACCOUNT: ${{ secrets.TESTNET_CUSTODY_ACCOUNT }}
+          STELLAR_TESTNET_SECRET: ${{ secrets.TESTNET_SECRET }}
+        run: bash scripts/testnet-e2e.sh
+
+      # ── Collect logs on failure ────────────────────────────────────────────
+      - name: Dump service logs on failure
+        if: failure()
+        working-directory: backend
+        run: |
+          echo "=== postgres logs ===" && docker compose logs postgres || true
+          echo "=== api logs ===" && docker compose logs api || true
+          echo "=== chain logs ===" && docker compose logs chain || true
+
+      # ── Tear down ─────────────────────────────────────────────────────────
+      - name: Tear down stack
+        if: always()
+        working-directory: backend
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e.yml \
+            down -v --remove-orphans
