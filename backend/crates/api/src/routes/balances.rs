@@ -179,7 +179,8 @@ async fn get_balances(
         .read_with_fallback(|pool| async move {
             let store = PostgresLedgerStore::new(pool.clone());
             store.get_user_balances(user_id).await
-        })
+        },
+        true)
         .await
         .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?;
 
@@ -197,7 +198,8 @@ async fn get_balances(
         .read_with_fallback(|pool| async move {
             let store = PostgresLedgerStore::new(pool.clone());
             store.get_active_holds(user_id).await
-        })
+        },
+        true)
         .await
         .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?
         .into_iter()

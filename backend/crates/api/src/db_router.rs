@@ -91,8 +91,16 @@ impl DatabaseRouter {
     /// Check if we should use the replica for a read operation.
     /// 
     /// @param tolerance_seconds Maximum acceptable replica lag in seconds.
+    /// @param is_money_operation true if this is a balance check or money-moving path
+    ///   that must always read from the primary to prevent stale data.
     /// @return true if replica should be used, false if primary should be used.
-    pub fn should_use_replica(&self, tolerance_seconds: f64) -> bool {
+    pub fn should_use_replica(&self, tolerance_seconds: f64, is_money_operation: bool) -> bool {
+        // Money-moving paths must always read from the primary to prevent stale data
+        // that could lead to double-spending or incorrect balances.
+        if is_money_operation {
+            return false;
+        }
+        
         if !self.replica_status.available {
             return false;
         }
@@ -130,8 +138,7 @@ impl DatabaseRouter {
         F: FnOnce(&PgPool) -> impl Future<Output = Result<T, sqlx::Error>> + Send,
     {
         let status = self.check_replica_status().await;
-        let use_replica = self.should_use_replica(5.0); // 5 second tolerance
-        
+        let use_replica = self.should_use_replica(5.0, is_money_operation); // 5 second tolerance        
         let pool = self.get_pool_for_read(use_replica);
         
         if let Some(pool) = pool {
