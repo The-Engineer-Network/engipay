@@ -10,6 +10,7 @@ pub mod health;
 pub mod kyc;
 pub mod me;
 pub mod metrics;
+pub mod money_requests;
 pub mod naira;
 pub mod openapi;
 pub mod payment_requests;
@@ -42,6 +43,7 @@ pub fn v1() -> Router<AppState> {
         .merge(transactions::routes())
         .merge(requests::routes())
         .merge(payment_requests::routes())
+        .merge(money_requests::routes())
         .merge(receipts::router())
         .merge(transfers::routes())
         .merge(withdrawals::router())
