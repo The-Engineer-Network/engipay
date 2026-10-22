@@ -85,6 +85,18 @@ pub async fn create_payment_request(
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
+    // Check if user's account is frozen
+    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
+        .bind(user_id.as_uuid())
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
+        .unwrap_or(false);
+
+    if is_frozen {
+        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
+    }
+
     let asset_str = payload.asset.trim().to_uppercase();
     let asset: Asset = asset_str
         .parse()

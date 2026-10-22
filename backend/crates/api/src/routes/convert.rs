@@ -190,6 +190,18 @@ async fn execute_conversion(
         .as_ref()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
+    // Check if user's account is frozen
+    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&db)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
+        .unwrap_or(false);
+
+    if is_frozen {
+        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
+    }
+
     // ── 1. Lock the quote row ─────────────────────────────────────────────────
     let mut tx = db.begin().await.map_err(db_error)?;
 
