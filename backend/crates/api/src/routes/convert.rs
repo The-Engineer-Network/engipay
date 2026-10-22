@@ -69,6 +69,8 @@ pub struct QuoteResponse {
     pub fee: String,
     /// Rate as "numerator/denominator" (to_minor per from_minor).
     pub rate: String,
+    /// Price source identifiers used to calculate this quote.
+    pub price_sources: Vec<String>,
     /// RFC 3339 instant after which this quote can no longer be executed.
     pub expires_at: String,
 }
@@ -130,6 +132,7 @@ async fn create_quote(
             PriceError::NoPair(f, t) => {
                 ApiError::BadRequest(format!("No conversion rate available for {f}/{t}."))
             }
+            _ => ApiError::Unavailable("A reliable conversion price is not available.".to_string()),
         })?;
 
     let (amount_out, fee) = apply_price(amount_in, &price).ok_or_else(|| {
@@ -143,10 +146,10 @@ async fn create_quote(
     let row = sqlx::query(
         r#"INSERT INTO conversions
                (id, user_id, asset_in, asset_out, amount_in, amount_out,
-                rate, fee, route, status, expires_at)
+                rate, fee, route, status, expires_at, price_sources)
            VALUES (gen_random_uuid(), $1, $2, $3,
                    $4::numeric, $5::numeric, $6::numeric, $7::numeric,
-                   'internal', 'quoted', now() + $8::interval)
+                   'internal', 'quoted', now() + $8::interval, $9::text[])
            RETURNING id,
                      to_char(expires_at AT TIME ZONE 'UTC',
                              'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS expires_at"#,
@@ -159,6 +162,7 @@ async fn create_quote(
     .bind(rate_str.clone())
     .bind(fee.to_string())
     .bind(QUOTE_LIFETIME_SQL)
+    .bind(&price.source_ids)
     .fetch_one(db)
     .await
     .map_err(db_error)?;
@@ -173,6 +177,7 @@ async fn create_quote(
             amount_out: amount_out.to_string(),
             fee: fee.to_string(),
             rate: rate_str,
+            price_sources: price.source_ids,
             expires_at: row.try_get("expires_at").map_err(db_error)?,
         }),
     ))
