@@ -1,0 +1,42 @@
+# docker-compose override for the full-stack testnet e2e harness.
+#
+# Usage (from backend/):
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --wait postgres api chain
+#
+# This file:
+#   - Forces STELLAR_NETWORK=testnet on the chain service.
+#   - Injects the secrets needed to sign testnet transactions; these come from
+#     GitHub Actions secrets and are never committed.
+#   - Adds a dedicated healthcheck on the api and chain services so
+#     `--wait` blocks until both are actually ready.
+
+name: engipay
+
+services:
+  api:
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-engipay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-engipay}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET}
+      BIND_ADDR: 0.0.0.0:8080
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  chain:
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-engipay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-engipay}
+      STELLAR_NETWORK: testnet
+      STELLAR_CUSTODY_ACCOUNT: ${STELLAR_CUSTODY_ACCOUNT}
+      STELLAR_SIGNING_KEY: ${STELLAR_SIGNING_KEY}
+      STELLAR_TESTNET_SECRET: ${STELLAR_TESTNET_SECRET}
+      BIND_ADDR: 0.0.0.0:8081
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
