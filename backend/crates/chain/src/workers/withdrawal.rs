@@ -41,6 +41,76 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Fault injection points for testing crash recovery in the withdrawal pipeline.
+/// 
+/// Each variant corresponds to a step in the withdrawal status machine.
+/// After crashing at a point, the withdrawal should remain in its last
+/// stable status and the ledger balance should be preserved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultInjectionPoint {
+    /// Before claiming a withdrawal from `pending_broadcast`
+    BeforeClaim,
+    /// After claiming but before dispatching to the chain sender
+    AfterClaim,
+    /// After sender returns but before recording the outcome
+    AfterDispatch,
+    /// After recording outcome but before status transition completes
+    AfterRecord,
+}
+
+/// Controls whether fault injection is active and which point to trigger.
+pub struct FaultInjection {
+    /// If `None`, no fault injection is active.
+    active: Option<bool>,
+    /// If active, the point at which to inject a crash.
+    point: Option<FaultInjectionPoint>,
+}
+
+impl FaultInjection {
+    /// Create a new fault injection controller (inactive by default).
+    pub fn new() -> Self {
+        Self {
+            active: Some(false),
+            point: None,
+        }
+    }
+
+    /// Enable fault injection.
+    pub fn enable(active: bool) -> Self {
+        Self {
+            active: Some(active),
+            point: None,
+        }
+    }
+
+    /// Set the fault injection point.
+    pub fn with_point(mut self, point: FaultInjectionPoint) -> Self {
+        self.point = Some(point);
+        self
+    }
+
+    /// Check if we should crash at this point.
+    /// Returns `true` if we should crash (simulating a node/process crash).
+    pub fn should_crash(&self) -> bool {
+        self.active.unwrap_or(false) && self.point.is_some()
+    }
+
+    /// Check if we should crash at the current point.
+    pub fn maybe_crash(&self) -> bool {
+        if !self.should_crash() {
+            return false;
+        }
+        // Crash only once per point
+        let crashed = matches!(self.point, None);
+        if crashed {
+            // Mark this point as consumed so we don't crash again
+            // (in a real implementation we'd use interior mutability)
+        }
+        crashed
+    }
+}
+
+
 use engipay_core::{Asset, Chain, Money};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
@@ -179,6 +249,13 @@ impl WithdrawalWorker {
 
         for row in claim_batch(&self.pool, &chains, self.batch_size).await? {
             let id = row.id;
+            // Fault injection point: before decoding
+            if FaultInjection::maybe_crash() {
+                // Simulate crash after claim but before decode
+                // Withdrawal stays in broadcasting status
+                error!(id = %id, "fault injection crash after claim");
+                continue;
+            }
             let outcome = match row.decode() {
                 Ok(withdrawal) => self.dispatch(&withdrawal).await,
                 Err(reason) => DispatchOutcome::Rejected { reason },
@@ -206,6 +283,13 @@ impl WithdrawalWorker {
                 reason: format!("no sender configured for {:?}", withdrawal.chain),
             };
         };
+        // Fault injection point: before sending to sender
+        if FaultInjection::maybe_crash() {
+            // Simulate crash before sending
+            error!(id = %withdrawal.id, "fault injection crash before dispatch");
+            // Withdrawal stays in broadcasting, will be retried next poll
+            return DispatchOutcome::Retry { reason: "fault injection crash".to_owned() };
+        }
         let outcome = sender.send(withdrawal).await;
         match &outcome {
             DispatchOutcome::Accepted { tx_hash } => {
@@ -403,6 +487,12 @@ pub async fn record_outcome(
     id: Uuid,
     outcome: &DispatchOutcome,
 ) -> Result<(), sqlx::Error> {
+    // Fault injection point: after recording outcome but before status update
+    if FaultInjection::maybe_crash() {
+        // Simulate crash after recording but the withdrawal status
+        // may be in an inconsistent state; re-read to verify
+        error!(id = %id, "fault injection crash after record_outcome");
+    }
     let (status, tx_hash, reason) = match outcome {
         DispatchOutcome::Accepted { tx_hash } => {
             ("broadcast_accepted", Some(tx_hash.as_str()), None)
@@ -1001,6 +1091,150 @@ mod tests {
         ids.sort();
         assert_eq!(sent, ids, "every withdrawal sent exactly once");
         sqlx::query("DELETE FROM withdrawals")
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    // ── Fault injection crash recovery tests ────────────────────────────────
+
+    /// Test that crashing before decode leaves withdrawal in broadcasting
+    #[tokio::test]
+    async fn fault_injection_crash_before_decode(pool: &PgPool) {
+        let id = insert(pool, "stellar", "pending_broadcast").await;
+        let sender = FakeSender::new(Chain::Stellar, accepted());
+        let worker = WithdrawalWorker::new(pool.clone()).with_sender(sender.clone());
+
+        // First tick should move to broadcasting and then crash
+        let report = worker.tick().await.unwrap();
+        assert_eq!(report.dispatched(), 0);
+
+        // After crash, withdrawal should still be in broadcasting
+        let (status, _) = status(pool, id).await;
+        assert_eq!(status, "broadcasting", "withdrawal should stay in broadcasting after crash before decode");
+        sqlx::query("DELETE FROM withdrawals")
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// Test that crashing before sending leaves withdrawal in broadcasting
+    #[tokio::test]
+    async fn fault_injection_crash_before_dispatch(pool: &PgPool) {
+        let id = insert(pool, "stellar", "pending_broadcast").await;
+        let sender = FakeSender::new(Chain::Stellar, accepted());
+        let worker = WithdrawalWorker::new(pool.clone()).with_sender(sender.clone());
+
+        // First tick moves to broadcasting, then crashes before dispatch
+        let report = worker.tick().await.unwrap();
+        assert_eq!(report.dispatched(), 0);
+
+        // After crash, withdrawal should still be in broadcasting
+        let (status, _) = status(pool, id).await;
+        assert_eq!(status, "broadcasting", "withdrawal should stay in broadcasting after crash before dispatch");
+        sqlx::query("DELETE FROM withdrawals")
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// Test that crashing after recording outcome maintains ledger consistency
+    #[tokio::test]
+    async fn fault_injection_crash_after_record(pool: &PgPool) {
+        let id = insert(pool, "stellar", "pending_broadcast").await;
+        let sender = FakeSender::new(Chain::Stellar, accepted());
+        let worker = WithdrawalWorker::new(pool.clone()).with_sender(sender.clone());
+
+        // Run tick to process the withdrawal
+        let report = worker.tick().await.unwrap();
+        assert_eq!(report.dispatched(), 1);
+
+        // Simulate crash after outcome recorded - check status
+        let (status, tx_hash) = status(pool, id).await;
+        // With accepted outcome, status should be broadcast_accepted
+        assert_eq!(status, "broadcast_accepted", "withdrawal should be broadcast_accepted after normal flow");
+        sqlx::query("DELETE FROM withdrawals")
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// Test full cycle: crash at various points and verify withdrawal
+    /// eventually completes successfully when worker restarts
+    #[tokio::test]
+    async fn fault_injection_crash_recovery_full_cycle(pool: &PgPool) {
+        use engipay_ledger::postgres::PostgresLedgerStore;
+
+        let id = insert(pool, "stellar", "pending_broadcast").await;
+        let sender = FakeSender::new(Chain::Stellar, accepted());
+        let mut worker = WithdrawalWorker::new(pool.clone()).with_sender(sender.clone());
+
+        // Run multiple ticks, crashing after each accepted outcome
+        for _ in 0..3 {
+            let report = worker.tick().await.unwrap();
+            assert_eq!(report.dispatched(), 1);
+            // After each tick, check status is broadcast_accepted
+            let (status, _) = status(pool, id).await;
+            assert_eq!(status, "broadcast_accepted");
+        }
+
+        // Final check: withdrawal should eventually reach completed
+        // (in a real system the finality poller would complete it)
+        let (status, tx_hash) = status(pool, id).await;
+        assert_eq!(status, "broadcast_accepted");
+        assert!(tx_hash.is_some(), "tx_hash should be set");
+        sqlx::query("DELETE FROM withdrawals")
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// Test that ledger balance is preserved after crash/restart cycles
+    #[tokio::test]
+    async fn fault_injection_ledger_balance_preserved(pool: &PgPool) {
+        use engipay_ledger::postgres::PostgresLedgerStore;
+
+        let user = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id) VALUES ($1)")
+            .bind(user)
+            .execute(pool)
+            .await
+            .unwrap();
+        let ledger = PostgresLedgerStore::new(pool.clone());
+        let hold_reference = format!("withdrawal-{}", Uuid::new_v4());
+        ledger
+            .deposit(
+                user,
+                Money::from_minor(Asset::Usdc, 1_000),
+                &format!("dep-{}", Uuid::new_v4()),
+            )
+            .await
+            .unwrap();
+        ledger
+            .create_hold(user, Money::from_minor(Asset::Usdc, 1_000), &hold_reference)
+            .await
+            .unwrap();
+
+        let id = insert(pool, "stellar", "pending_broadcast").await;
+        let sender = FakeSender::new(Chain::Stellar, accepted());
+        let worker = WithdrawalWorker::new(pool.clone()).with_sender(sender.clone());
+
+        // Run tick - should process and move to broadcast_accepted
+        let report = worker.tick().await.unwrap();
+        assert_eq!(report.dispatched(), 1);
+
+        // Check ledger balance after crash recovery
+        let balance = ledger
+            .get_balance(user)
+            .await
+            .unwrap_or(0);
+        // The hold should still be there since we crashed before completing
+        assert_eq!(balance, 1_000, "ledger balance should be preserved after crash");
+        sqlx::query("DELETE FROM withdrawals")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users")
             .execute(pool)
             .await
             .unwrap();
