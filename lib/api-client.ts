@@ -166,7 +166,68 @@ export interface RowResult {
   error?: string | null
 }
 
-// ── Naira SEP-24 Anchor (#514) ────────────────────────────────────────────────
+// ── P2P Money Requests (#510) ─────────────────────────────────────────────────
+
+export interface MoneyRequestRow {
+  id: string
+  requester_tag: string | null
+  recipient_tag: string | null
+  asset: string
+  amount: string
+  note: string | null
+  status: "pending" | "accepted" | "declined" | "expired"
+  expires_at: string
+  created_at: string
+}
+
+export interface CreateMoneyRequestInput {
+  recipient_tag: string
+  asset: string
+  amount: string
+  note?: string
+  expiry_hours?: number
+}
+
+export interface CreateMoneyRequestResponse {
+  id: string
+  expires_at: string
+}
+
+/** POST /v1/money-requests — ask another EngiPay user to pay you. */
+export async function createMoneyRequest(
+  req: CreateMoneyRequestInput
+): Promise<CreateMoneyRequestResponse> {
+  const result = await apiRequest<CreateMoneyRequestResponse>("/v1/money-requests", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a money request.")
+  return result
+}
+
+/** GET /v1/money-requests — inbox + outbox for the signed-in user. */
+export async function listMoneyRequests(): Promise<MoneyRequestRow[]> {
+  const result = await apiRequest<MoneyRequestRow[]>("/v1/money-requests")
+  return result ?? []
+}
+
+/** POST /v1/money-requests/:id/accept — accept and pay a money request (once). */
+export async function acceptMoneyRequest(
+  id: string,
+  idempotencyKey: string
+): Promise<void> {
+  await apiRequest<void>(`/v1/money-requests/${id}/accept`, {
+    method: "POST",
+    body: JSON.stringify({ idempotency_key: idempotencyKey }),
+  })
+}
+
+/** POST /v1/money-requests/:id/decline — decline a money request. */
+export async function declineMoneyRequest(id: string): Promise<void> {
+  await apiRequest<void>(`/v1/money-requests/${id}/decline`, {
+    method: "POST",
+  })
+}
 
 export interface InteractiveFlowResponse {
   transaction_id: string
