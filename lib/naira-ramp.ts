@@ -7,6 +7,21 @@ export interface NigerianBank {
   code: string
 }
 
+/**
+ * The states a SEP-24 transaction can be in. These are the values of the
+ * `anchor_status` enum the api crate stores.
+ */
+export type Sep24TransactionState =
+  | "incomplete"
+  | "pending_user_transfer_start"
+  | "pending_anchor"
+  | "pending_stellar"
+  | "pending_external"
+  | "pending_user"
+  | "completed"
+  | "expired"
+  | "error"
+
 export const SUPPORTED_NIGERIAN_BANKS: NigerianBank[] = [
   { name: "Access Bank", code: "044" },
   { name: "Guaranty Trust Bank (GTBank)", code: "058" },
@@ -35,6 +50,29 @@ export function isValidNuban(accountNumber: string): boolean {
 export function isValidBankCode(code: string): boolean {
   const trimmed = code.trim()
   return SUPPORTED_NIGERIAN_BANKS.some((b) => b.code === trimmed)
+}
+
+/**
+ * The bank with this code, or undefined when the code is not one we support.
+ */
+export function getBankByCode(code: string): NigerianBank | undefined {
+  const trimmed = code.trim()
+  return SUPPORTED_NIGERIAN_BANKS.find((b) => b.code === trimmed)
+}
+
+/**
+ * A transaction in a terminal state will not change again, so the caller can
+ * stop polling it.
+ */
+export function isSep24Terminal(status: string): boolean {
+  return getSep24StatusLabel(status).isTerminal
+}
+
+/**
+ * A transaction in a successful state has settled.
+ */
+export function isSep24Success(status: string): boolean {
+  return getSep24StatusLabel(status).isSuccess
 }
 
 /**

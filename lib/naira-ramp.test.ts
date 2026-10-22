@@ -7,7 +7,10 @@ import assert from "node:assert/strict"
 import {
   isValidNuban,
   isValidBankCode,
+  getBankByCode,
   getSep24StatusLabel,
+  isSep24Terminal,
+  isSep24Success,
   SUPPORTED_NIGERIAN_BANKS,
 } from "./naira-ramp.ts"
 
@@ -36,6 +39,12 @@ describe("Naira Anchor Ramp - Bank Validation", () => {
   it("has a non-empty supported banks list", () => {
     assert.ok(SUPPORTED_NIGERIAN_BANKS.length >= 8)
   })
+
+  it("looks a bank up by its code", () => {
+    assert.equal(getBankByCode("058")?.name, "Guaranty Trust Bank (GTBank)")
+    assert.equal(getBankByCode("999999"), undefined)
+    assert.equal(getBankByCode(""), undefined)
+  })
 })
 
 describe("Naira Anchor Ramp - SEP-24 Status Mapping", () => {
@@ -55,5 +64,20 @@ describe("Naira Anchor Ramp - SEP-24 Status Mapping", () => {
     const pending = getSep24StatusLabel("pending_external")
     assert.equal(pending.isTerminal, false)
     assert.equal(pending.isSuccess, false)
+  })
+
+  it("reports terminal states the same way the label does", () => {
+    assert.equal(isSep24Terminal("completed"), true)
+    assert.equal(isSep24Terminal("expired"), true)
+    assert.equal(isSep24Terminal("error"), true)
+    assert.equal(isSep24Terminal("pending_anchor"), false)
+    assert.equal(isSep24Terminal("incomplete"), false)
+  })
+
+  it("reports success only for a settled transaction", () => {
+    assert.equal(isSep24Success("completed"), true)
+    assert.equal(isSep24Success("expired"), false)
+    assert.equal(isSep24Success("error"), false)
+    assert.equal(isSep24Success("pending_anchor"), false)
   })
 })
