@@ -5,6 +5,7 @@ pub mod bank_accounts;
 pub mod batch_payments;
 pub mod buy;
 pub mod convert;
+pub mod deletion;
 pub mod deposits;
 pub mod health;
 pub mod kyc;
@@ -35,6 +36,7 @@ pub fn v1() -> Router<AppState> {
         .merge(auth::routes())
         .merge(balances::routes())
         .merge(convert::routes())
+        .merge(deletion::routes())
         .merge(deposits::routes())
         .merge(kyc::routes())
         .merge(me::routes())
