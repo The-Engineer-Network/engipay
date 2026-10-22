@@ -105,6 +105,22 @@ pub async fn start_deposit(
 ) -> Result<impl IntoResponse, ApiError> {
     let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
 
+    // Check if user's account is frozen
+    let pool = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
+        .bind(user_id.as_uuid())
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
+        .unwrap_or(false);
+
+    if is_frozen {
+        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
+    }
+
     // Validate amount
     let amt: f64 = request
         .amount
@@ -214,6 +230,22 @@ pub async fn start_withdrawal(
     Json(request): Json<StartWithdrawalRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
+
+    // Check if user's account is frozen
+    let pool = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
+        .bind(user_id.as_uuid())
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
+        .unwrap_or(false);
+
+    if is_frozen {
+        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
+    }
 
     // Validate bank account: 10 digits NUBAN
     let account = request.bank_account.trim();
