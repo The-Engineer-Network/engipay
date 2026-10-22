@@ -12,9 +12,13 @@ serde.workspace = true
 stellar-strkey.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+sha2 = "0.10"
+rand = "0.8"
+aes-gcm = "0.8"
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+chrono = "0.4"
 
 [lints]
 workspace = true
