@@ -11,6 +11,7 @@ pub mod health;
 pub mod kyc;
 pub mod me;
 pub mod metrics;
+pub mod money_request_cancel;
 pub mod money_request_status;
 pub mod money_requests;
 pub mod naira;

@@ -9,6 +9,7 @@ import {
   listMoneyRequests,
   acceptMoneyRequest,
   declineMoneyRequest,
+  cancelMoneyRequest,
   type MoneyRequestRow,
 } from "@/lib/api-client"
 import { HandCoins, Inbox, Clock } from "lucide-react"
@@ -24,6 +25,7 @@ function statusVariant(
     case "declined":
       return "destructive"
     case "expired":
+    case "cancelled":
       return "outline"
   }
 }
@@ -82,6 +84,18 @@ export default function MoneyRequestInboxPage() {
       await load()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Decline failed.")
+    } finally {
+      setActing(null)
+    }
+  }
+
+  async function handleCancel(row: MoneyRequestRow) {
+    setActing(row.id)
+    try {
+      await cancelMoneyRequest(row.id)
+      await load()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Cancel failed.")
     } finally {
       setActing(null)
     }
@@ -172,7 +186,21 @@ export default function MoneyRequestInboxPage() {
                     </div>
 
                     {/* Action buttons — only for incoming pending requests */}
-                    {isIncoming && isPending && (
+                    {row.sent_by_me && isPending && (
+                      <div className="mt-3">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={isActing}
+                          onClick={() => handleCancel(row)}
+                          aria-label={`Cancel request to ${row.recipient_tag}`}
+                        >
+                          {isActing ? "Cancelling…" : "Cancel request"}
+                        </Button>
+                      </div>
+                    )}
+
+                    {!row.sent_by_me && isIncoming && isPending && (
                       <div className="mt-3 flex gap-2">
                         <Button
                           size="sm"

@@ -175,9 +175,11 @@ export interface MoneyRequestRow {
   asset: string
   amount: string
   note: string | null
-  status: "pending" | "accepted" | "declined" | "expired"
+  status: "pending" | "accepted" | "declined" | "expired" | "cancelled"
   expires_at: string
   created_at: string
+  /** True when the signed-in user created this request. */
+  sent_by_me?: boolean
 }
 
 export interface CreateMoneyRequestInput {
@@ -225,6 +227,13 @@ export async function acceptMoneyRequest(
 /** POST /v1/money-requests/:id/decline — decline a money request. */
 export async function declineMoneyRequest(id: string): Promise<void> {
   await apiRequest<void>(`/v1/money-requests/${id}/decline`, {
+    method: "POST",
+  })
+}
+
+/** POST /v1/money-requests/:id/cancel — requester cancels a pending request. */
+export async function cancelMoneyRequest(id: string): Promise<void> {
+  await apiRequest<void>(`/v1/money-requests/${id}/cancel`, {
     method: "POST",
   })
 }
