@@ -100,3 +100,16 @@ mod tests {
         assert!(matches!(err, ApiError::LimitExceeded(_)));
     }
 }
+
+#[cfg(test)]
+mod convert_tests {
+    use super::*;
+
+    #[test]
+    fn source_amount_over_remaining_limit_is_refused() {
+        // 450 already used of 500; a 60 conversion must be refused.
+        let unit = 10_000_000_i128;
+        assert!(exceeds_limit(450 * unit, 60 * unit, 500 * unit));
+        assert!(!exceeds_limit(450 * unit, 50 * unit, 500 * unit));
+    }
+}
