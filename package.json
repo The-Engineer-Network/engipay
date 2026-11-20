@@ -17,7 +17,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --no-warnings --test \"lib/**/*.test.ts\""
+    "test": "node --experimental-strip-types --no-warnings --import ./lib/test-alias-register.mjs --test \"lib/**/*.test.ts\""
   },
   "dependencies": {
     "@radix-ui/react-accordion": "1.2.2",
