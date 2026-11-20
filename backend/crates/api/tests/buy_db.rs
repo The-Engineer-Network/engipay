@@ -72,6 +72,27 @@ async fn post(app: &axum::Router, path: &str, token: &str, body: Value) -> (Stat
     )
 }
 
+async fn get(app: &axum::Router, path: &str, token: &str) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(path)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
 async fn quote(app: &axum::Router, token: &str, naira: &str) -> (StatusCode, Value) {
     post(
         app,
@@ -139,6 +160,60 @@ async fn an_expired_quote_cannot_become_an_order() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{order}");
     assert_eq!(order["error"]["code"], "conflict");
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn an_owner_can_read_their_order_status_and_expiry() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+
+    let (_, quote_body) = quote(&app, &token, "5000").await;
+    let quote_id = quote_body["id"].as_str().unwrap().to_string();
+    let (_, order) = post(
+        &app,
+        "/v1/buy/orders",
+        &token,
+        json!({ "quote_id": quote_id }),
+    )
+    .await;
+    let order_id = order["id"].as_str().unwrap().to_string();
+
+    let (status, body) = get(&app, &format!("/v1/buy/orders/{order_id}"), &token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["id"], order_id);
+    assert_eq!(body["quote_id"], quote_id);
+    // The status is the one stored on the order, not a client guess.
+    assert_eq!(body["status"], "awaiting_partner");
+    // The expiry is the quote's, so the screen can show how long the rate holds.
+    assert_eq!(body["expires_at"], quote_body["expires_at"]);
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn another_users_order_is_not_found() {
+    let (app, pool) = setup().await;
+    let (_, owner) = user(&pool).await;
+    let (_, stranger) = user(&pool).await;
+
+    let (_, quote_body) = quote(&app, &owner, "5000").await;
+    let quote_id = quote_body["id"].as_str().unwrap();
+    let (_, order) = post(
+        &app,
+        "/v1/buy/orders",
+        &owner,
+        json!({ "quote_id": quote_id }),
+    )
+    .await;
+    let order_id = order["id"].as_str().unwrap();
+
+    let (status, body) = get(&app, &format!("/v1/buy/orders/{order_id}"), &stranger).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "not_found");
+
+    // An order that was never created is equally not found.
+    let (status, _) = get(&app, &format!("/v1/buy/orders/{}", Uuid::new_v4()), &owner).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

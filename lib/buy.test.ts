@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { formatNaira, formatRate, isQuoteLive, secondsLeft, type BuyQuote } from "./buy.ts"
+import { expiryLabel, formatNaira, formatRate, isQuoteLive, secondsLeft, type BuyQuote } from "./buy.ts"
 
 const expiresAt = "2026-10-18T20:02:00Z"
 const expiresMs = Date.parse(expiresAt)
@@ -34,5 +34,20 @@ describe("quote expiry", () => {
 
   it("treats an unreadable expiry as lapsed rather than live", () => {
     assert.equal(isQuoteLive("not a date", expiresMs), false)
+  })
+})
+
+describe("expiryLabel", () => {
+  it("counts the seconds left in words under a minute", () => {
+    assert.equal(expiryLabel(expiresAt, expiresMs - 45_000), "Expires in 45s")
+  })
+
+  it("rolls over to whole minutes once a minute is left", () => {
+    assert.equal(expiryLabel(expiresAt, expiresMs - 90_000), "Expires in 2 min")
+  })
+
+  it("says expired once the instant has passed", () => {
+    assert.equal(expiryLabel(expiresAt, expiresMs), "Expired")
+    assert.equal(expiryLabel("not a date", expiresMs), "Expired")
   })
 })

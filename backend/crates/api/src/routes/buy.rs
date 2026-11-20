@@ -5,9 +5,9 @@
 //! `awaiting_partner` because no Naira partner is connected yet: no payment is
 //! taken, no payment instructions are issued and the ledger is not touched.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use engipay_core::Asset;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/buy/quotes", post(create_quote))
         .route("/buy/orders", post(create_order))
+        .route("/buy/orders/{id}", get(get_order))
 }
 
 const NOT_CONFIGURED: &str = "Buying with Naira is not available yet: pricing has not been set up.";
@@ -72,6 +73,16 @@ pub struct OrderResponse {
     pub message: &'static str,
     /// Signed receipt so the order can be verified outside the app.
     pub receipt: SignedReceipt,
+}
+
+/// `GET /v1/buy/orders/{id}` response.
+#[derive(Debug, Serialize)]
+pub struct OrderStatusResponse {
+    pub id: Uuid,
+    pub quote_id: Uuid,
+    pub status: String,
+    /// RFC 3339 instant after which the order's quote price no longer holds.
+    pub expires_at: String,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -230,6 +241,43 @@ async fn create_order(
             receipt,
         }),
     ))
+}
+
+/// Returns one of the caller's orders. Anyone else's order is not found, so
+/// order existence is never revealed to another user.
+async fn get_order(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<OrderStatusResponse>, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?.as_uuid();
+    let db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    let row = sqlx::query(
+        r#"SELECT o.id AS id,
+                  o.quote_id AS quote_id,
+                  o.status AS status,
+                  to_char(q.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS expires_at
+           FROM buy_orders o
+           JOIN buy_quotes q ON q.id = o.quote_id
+           WHERE o.id = $1 AND o.user_id = $2"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .map_err(db_error)?
+    .ok_or(ApiError::NotFound)?;
+
+    Ok(Json(OrderStatusResponse {
+        id: row.try_get("id").map_err(db_error)?,
+        quote_id: row.try_get("quote_id").map_err(db_error)?,
+        status: row.try_get("status").map_err(db_error)?,
+        expires_at: row.try_get("expires_at").map_err(db_error)?,
+    }))
 }
 
 fn db_error(error: sqlx::Error) -> ApiError {
