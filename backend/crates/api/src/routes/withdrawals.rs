@@ -152,6 +152,15 @@ pub async fn create_withdrawal(
         _ => ("pending_broadcast".to_owned(), None),
     };
 
+    // Daily velocity limit: refuse before the withdrawal (and its hold) is created.
+    crate::services::flow_limits::check_outflow_velocity(
+        &pool,
+        engipay_core::UserId::from_uuid(payload.user_id),
+        engipay_core::Money::from_minor(engipay_core::Asset::Usdc, i128::from(payload.amount)),
+        state.config.tier_0_daily_limit_minor,
+    )
+    .await?;
+
     let withdrawal_id = Uuid::new_v4();
     let hold_ref = withdrawal_hold_reference(withdrawal_id);
 
