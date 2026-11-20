@@ -19,7 +19,15 @@ import {
 import { DISPLAY_ASSETS } from "@/lib/assets"
 import { isPositiveAmount } from "@/lib/amountInput"
 import { ApiRequestError, apiRequest } from "@/lib/api"
-import { type BuyQuote, formatNaira, formatRate, isQuoteLive, secondsLeft } from "@/lib/buy"
+import {
+  type BuyOrder,
+  type BuyQuote,
+  expiryLabel,
+  formatNaira,
+  formatRate,
+  isQuoteLive,
+  secondsLeft,
+} from "@/lib/buy"
 import { NairaAnchorRamp } from "@/components/naira/NairaAnchorRamp"
 import { Landmark, Zap } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -103,6 +111,17 @@ export default function BuyPage() {
       })) as OrderResponse,
   })
 
+  // The POST only confirms the order was recorded. The status and expiry shown
+  // below are read back from the API, so they never drift from it.
+  const orderId = createOrder.data?.id
+  const order = useQuery({
+    queryKey: ["buy-order", orderId],
+    queryFn: async () =>
+      (await apiRequest<BuyOrder>(`/v1/buy/orders/${orderId}`)) as BuyOrder,
+    enabled: orderId !== undefined,
+    retry: false,
+  })
+
   const canContinue = liveQuote !== undefined && !createOrder.isPending
 
   const handleContinue = () => {
@@ -112,6 +131,7 @@ export default function BuyPage() {
 
   const quoteError = quote.error ? describeError(quote.error) : null
   const orderError = createOrder.error ? describeError(createOrder.error) : null
+  const orderStatusError = order.error ? describeError(order.error) : null
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
@@ -269,12 +289,33 @@ export default function BuyPage() {
             {createOrder.data && (
               <div role="status" className="rounded-md border border-border p-4 text-sm">
                 <p className="font-medium">Order created</p>
-                <p className="mt-1 text-muted-foreground">{createOrder.data.message}</p>
+                {order.data ? (
+                  <dl className="mt-2 space-y-1">
+                    <div className="flex justify-between gap-4">
+                      <dt className="text-muted-foreground">Status</dt>
+                      <dd className="font-medium">{order.data.status}</dd>
+                    </div>
+                    <div className="flex justify-between gap-4">
+                      <dt className="text-muted-foreground">Expiry</dt>
+                      <dd>{expiryLabel(order.data.expires_at, now)}</dd>
+                    </div>
+                  </dl>
+                ) : order.isFetching ? (
+                  <p className="mt-1 text-muted-foreground" aria-live="polite">
+                    Checking your order…
+                  </p>
+                ) : null}
+                <p className="mt-2 text-muted-foreground">{createOrder.data.message}</p>
               </div>
             )}
             {orderError && (
               <p role="alert" className="text-xs text-destructive">
                 {orderError}
+              </p>
+            )}
+            {orderStatusError && (
+              <p role="alert" className="text-xs text-destructive">
+                {orderStatusError}
               </p>
             )}
 

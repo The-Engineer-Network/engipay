@@ -37,3 +37,21 @@ export function secondsLeft(expiresAt: string, nowMs: number): number {
 export function isQuoteLive(expiresAt: string, nowMs: number): boolean {
   return secondsLeft(expiresAt, nowMs) > 0
 }
+
+/** A buy order, as GET /v1/buy/orders/{id} returns it. */
+export interface BuyOrder {
+  id: string
+  quote_id: string
+  /** The order's status, exactly as the API reports it. */
+  status: string
+  /** RFC 3339 instant after which the order's quote price no longer holds. */
+  expires_at: string
+}
+
+/** How long the order's quote still holds at `nowMs`, in words. */
+export function expiryLabel(expiresAt: string, nowMs: number): string {
+  const seconds = secondsLeft(expiresAt, nowMs)
+  if (seconds === 0) return "Expired"
+  if (seconds < 60) return `Expires in ${seconds}s`
+  return `Expires in ${Math.ceil(seconds / 60)} min`
+}
