@@ -270,6 +270,10 @@ pub async fn accept(
         return Ok(StatusCode::OK.into_response());
     }
 
+    // Daily velocity limit: the payer (the accepting recipient) is the one
+    // whose money moves, so refuse before anything is booked.
+    enforce_accept_velocity_limit(&state, &pool, user_id, &req.asset, &req.amount).await?;
+
     // Book the transfer.  The transfer_id UNIQUE constraint means a second
     // attempt with a *different* idempotency key (or no key) cannot create a
     // second transfer for the same request.
@@ -357,6 +361,42 @@ pub async fn decline(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/// Parses a stored request amount into integer minor units (never floats).
+fn request_money(asset: &str, amount: &str) -> Result<Money, ApiError> {
+    let asset: Asset = asset
+        .parse()
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("stored request has invalid asset")))?;
+    Money::parse(asset, amount.trim())
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("stored request has invalid amount")))
+}
+
+/// Refuses an accept that would push the payer over their tier's rolling
+/// 24h limit (HTTP 403 via `ApiError::LimitExceeded`).
+async fn enforce_accept_velocity_limit(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    payer: engipay_core::UserId,
+    asset: &str,
+    amount: &str,
+) -> Result<(), ApiError> {
+    let money = request_money(asset, amount)?;
+    let tier: i32 = sqlx::query_scalar("SELECT COALESCE(tier, 0) FROM user_profiles WHERE id = $1")
+        .bind(payer.as_uuid())
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch user tier: {}", e)))?
+        .unwrap_or(0);
+    crate::services::limits::check_velocity_limits(
+        pool,
+        payer,
+        tier,
+        money,
+        state.config.tier_0_daily_limit_minor,
+    )
+    .await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow)]
 struct MoneyRequestRecord {
     id: Uuid,
@@ -393,11 +433,13 @@ struct MoneyRequestFull {
     recipient_id: Uuid,
     status: String,
     expires_at: DateTime<Utc>,
+    asset: String,
+    amount: String,
 }
 
 async fn load_request(pool: &sqlx::PgPool, id: Uuid) -> Result<MoneyRequestFull, ApiError> {
     sqlx::query_as::<_, MoneyRequestFull>(
-        "SELECT id, recipient_id, status, expires_at
+        "SELECT id, recipient_id, status, expires_at, asset, amount::text AS amount
          FROM p2p_money_requests WHERE id = $1",
     )
     .bind(id)
@@ -413,6 +455,27 @@ async fn load_request(pool: &sqlx::PgPool, id: Uuid) -> Result<MoneyRequestFull,
 mod tests {
     use super::*;
     use engipay_core::Asset;
+
+    #[test]
+    fn stored_request_amount_parses_to_minor_units() {
+        let money = request_money("USDC", "12.50").unwrap();
+        assert_eq!(money.minor, Money::parse(Asset::Usdc, "12.50").unwrap().minor);
+        assert!(request_money("NOPE", "1").is_err());
+        assert!(request_money("USDC", "abc").is_err());
+    }
+
+    #[test]
+    fn accept_over_the_limit_maps_to_limit_exceeded() {
+        use crate::services::limits::LimitError;
+        let err: ApiError = LimitError::Exceeded {
+            tier: 0,
+            current: 10,
+            requested: 5,
+            limit: 12,
+        }
+        .into();
+        assert!(matches!(err, ApiError::LimitExceeded(_)));
+    }
 
     #[test]
     fn default_expiry_is_48_hours() {
