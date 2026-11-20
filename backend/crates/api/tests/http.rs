@@ -221,3 +221,215 @@ async fn buy_quotes_report_no_database_instead_of_pretending() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// Database-backed tests for the withdrawal endpoints.
+///
+/// These only run when `DATABASE_URL` points at a reachable test database, so
+/// the plain `cargo test` job keeps working without one. The CI database job
+/// sets `DATABASE_URL` and runs them.
+mod withdrawals {
+    #![allow(clippy::unwrap_used)]
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use engipay_api::middleware::rate_limit::RateLimiter;
+    use engipay_api::{AppState, config::Config, router};
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    /// Returns a pool when a test database is configured, otherwise `None`.
+    async fn test_pool() -> Option<PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        if url.trim().is_empty() {
+            return None;
+        }
+        match PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+        {
+            Ok(pool) => Some(pool),
+            Err(error) => {
+                eprintln!("skipping withdrawal tests: cannot reach DATABASE_URL: {error}");
+                None
+            }
+        }
+    }
+
+    fn app_with(pool: PgPool) -> axum::Router {
+        let config = Config::for_tests();
+        router(
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
+            &config,
+        )
+    }
+
+    fn token_for(user_id: Uuid) -> String {
+        let config = Config::for_tests();
+        engipay_api::auth::jwt::create_token(user_id, String::new(), config.jwt_secret.as_bytes())
+            .unwrap()
+    }
+
+    /// Inserts a user and returns its id.
+    async fn insert_user(pool: &PgPool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, created_at, updated_at) VALUES ($1, now(), now())")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        id
+    }
+
+    /// Credits `amount` of `asset` to `user_id`'s available balance.
+    async fn credit(pool: &PgPool, user_id: Uuid, asset: &str, amount: &str) {
+        sqlx::query(
+            "INSERT INTO balances (user_id, asset, available, held, created_at, updated_at) \
+             VALUES ($1, $2, $3::numeric, 0, now(), now()) \
+             ON CONFLICT (user_id, asset) DO UPDATE \
+             SET available = balances.available + EXCLUDED.available, updated_at = now()",
+        )
+        .bind(user_id)
+        .bind(asset)
+        .bind(amount)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn withdrawal_count(pool: &PgPool, user_id: Uuid) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM withdrawals WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn post_withdrawal(
+        app: axum::Router,
+        token: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/v1/withdrawals")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = app
+            .oneshot(request.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    async fn get_withdrawal(app: axum::Router, token: &str, id: Uuid) -> StatusCode {
+        app.oneshot(
+            Request::builder()
+                .uri(format!("/v1/withdrawals/{id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    }
+
+    fn withdrawal_body(asset: &str, amount: &str) -> Value {
+        json!({
+            "asset": asset,
+            "amount": amount,
+            "network": "base",
+            "address": "0x4200000000000000000000000000000000000006",
+        })
+    }
+
+    #[tokio::test]
+    async fn withdrawal_requires_a_bearer_token() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let (status, _) =
+            post_withdrawal(app_with(pool), None, withdrawal_body("USDC", "1")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn insufficient_balance_creates_no_withdrawal_row() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let user_id = insert_user(&pool).await;
+        let token = token_for(user_id);
+
+        let (status, _) = post_withdrawal(
+            app_with(pool.clone()),
+            Some(&token),
+            withdrawal_body("USDC", "1000"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(withdrawal_count(&pool, user_id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn successful_withdrawal_places_a_hold() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let user_id = insert_user(&pool).await;
+        credit(&pool, user_id, "USDC", "10").await;
+        let token = token_for(user_id);
+
+        let (status, body) = post_withdrawal(
+            app_with(pool.clone()),
+            Some(&token),
+            withdrawal_body("USDC", "4"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert!(body["hold_reference"].as_str().is_some_and(|r| !r.is_empty()));
+
+        let held: rust_decimal::Decimal =
+            sqlx::query_scalar("SELECT held FROM balances WHERE user_id = $1 AND asset = 'USDC'")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(held, rust_decimal::Decimal::new(4, 0));
+        assert_eq!(withdrawal_count(&pool, user_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn another_users_withdrawal_is_not_found() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let owner = insert_user(&pool).await;
+        credit(&pool, owner, "USDC", "10").await;
+        let owner_token = token_for(owner);
+
+        let (status, body) = post_withdrawal(
+            app_with(pool.clone()),
+            Some(&owner_token),
+            withdrawal_body("USDC", "2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+
+        let stranger = insert_user(&pool).await;
+        let stranger_token = token_for(stranger);
+        let status = get_withdrawal(app_with(pool), &stranger_token, id).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+}

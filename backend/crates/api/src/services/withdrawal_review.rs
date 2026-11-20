@@ -63,33 +63,31 @@ impl ReviewConfig {
         }
     }
 
-    /// Reads the threshold from the `WITHDRAWAL_REVIEW_THRESHOLD_USDC`
-    /// environment variable (whole USDC, no decimals), falling back to
-    /// [`DEFAULT_REVIEW_THRESHOLD_MINOR`].
+    /// Parses a whole-number USDC amount (no decimals) into a config.
     ///
-    /// Returns an error string if the variable is set but cannot be parsed.
-    pub fn from_env() -> Result<Self, String> {
-        match std::env::var("WITHDRAWAL_REVIEW_THRESHOLD_USDC") {
-            Err(_) => Ok(Self::default()),
-            Ok(raw) => {
-                let whole: i128 = raw.trim().parse().map_err(|_| {
-                    format!(
-                        "WITHDRAWAL_REVIEW_THRESHOLD_USDC must be a whole-number USDC amount, got {:?}",
-                        raw
-                    )
-                })?;
-                if whole < 0 {
-                    return Err(format!(
-                        "WITHDRAWAL_REVIEW_THRESHOLD_USDC must not be negative, got {whole}"
-                    ));
-                }
-                // Convert whole USDC to minor units (7 decimal places).
-                let minor = whole
-                    .checked_mul(10_000_000)
-                    .ok_or_else(|| "WITHDRAWAL_REVIEW_THRESHOLD_USDC is too large".to_owned())?;
-                Ok(Self::new(minor))
-            }
+    /// This is the single place where the `WITHDRAWAL_REVIEW_THRESHOLD_USDC`
+    /// value is interpreted.  It is called once at startup from
+    /// `Config::from_env`, so an invalid value fails startup rather than the
+    /// first withdrawal request.
+    ///
+    /// Returns an error string if `raw` cannot be parsed or is out of range.
+    pub fn from_whole_usdc(raw: &str) -> Result<Self, String> {
+        let whole: i128 = raw.trim().parse().map_err(|_| {
+            format!(
+                "WITHDRAWAL_REVIEW_THRESHOLD_USDC must be a whole-number USDC amount, got {:?}",
+                raw
+            )
+        })?;
+        if whole < 0 {
+            return Err(format!(
+                "WITHDRAWAL_REVIEW_THRESHOLD_USDC must not be negative, got {whole}"
+            ));
         }
+        // Convert whole USDC to minor units (7 decimal places).
+        let minor = whole
+            .checked_mul(10_000_000)
+            .ok_or_else(|| "WITHDRAWAL_REVIEW_THRESHOLD_USDC is too large".to_owned())?;
+        Ok(Self::new(minor))
     }
 }
 
@@ -346,43 +344,37 @@ mod tests {
         assert!(check_withdrawal(usdc(50_001), &config).requires_review());
     }
 
-    // ── from_env ──────────────────────────────────────────────────────────────
+    // ── from_whole_usdc ───────────────────────────────────────────────────────
 
     #[test]
-    fn from_env_falls_back_to_default_when_unset() {
-        // Remove the variable if it happens to be set, then check the default.
-        // SAFETY: test-only, single-threaded context; no other threads read this var.
-        unsafe { std::env::remove_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC") };
-        let config = ReviewConfig::from_env().unwrap();
-        assert_eq!(config.threshold.minor, DEFAULT_REVIEW_THRESHOLD_MINOR);
-    }
-
-    #[test]
-    fn from_env_parses_whole_usdc_correctly() {
-        // SAFETY: test-only, single-threaded context; no other threads read this var.
-        unsafe { std::env::set_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC", "5000") };
-        let config = ReviewConfig::from_env().unwrap();
+    fn from_whole_usdc_parses_whole_usdc_correctly() {
+        let config = ReviewConfig::from_whole_usdc("5000").unwrap();
         // 5000 USDC × 10_000_000 minor/USDC.
         assert_eq!(config.threshold.minor, 5_000 * 10_000_000);
-        unsafe { std::env::remove_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC") };
     }
 
     #[test]
-    fn from_env_rejects_non_numeric_value() {
-        // SAFETY: test-only, single-threaded context; no other threads read this var.
-        unsafe { std::env::set_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC", "notanumber") };
-        let result = ReviewConfig::from_env();
+    fn from_whole_usdc_trims_whitespace() {
+        let config = ReviewConfig::from_whole_usdc(" 5000 ").unwrap();
+        assert_eq!(config.threshold.minor, 5_000 * 10_000_000);
+    }
+
+    #[test]
+    fn from_whole_usdc_rejects_non_numeric_value() {
+        let result = ReviewConfig::from_whole_usdc("notanumber");
         assert!(result.is_err(), "non-numeric value must be rejected");
-        unsafe { std::env::remove_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC") };
     }
 
     #[test]
-    fn from_env_rejects_negative_value() {
-        // SAFETY: test-only, single-threaded context; no other threads read this var.
-        unsafe { std::env::set_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC", "-100") };
-        let result = ReviewConfig::from_env();
+    fn from_whole_usdc_rejects_negative_value() {
+        let result = ReviewConfig::from_whole_usdc("-100");
         assert!(result.is_err(), "negative threshold must be rejected");
-        unsafe { std::env::remove_var("WITHDRAWAL_REVIEW_THRESHOLD_USDC") };
+    }
+
+    #[test]
+    fn from_whole_usdc_rejects_overflowing_value() {
+        let result = ReviewConfig::from_whole_usdc("170141183460469231731687303715884105728");
+        assert!(result.is_err(), "overflowing value must be rejected");
     }
 
     // ── no floating-point money ───────────────────────────────────────────────
