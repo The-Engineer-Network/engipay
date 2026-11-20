@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod auth;
 pub mod balances;
+pub mod bank_account_cap;
 pub mod bank_accounts;
 pub mod batch_payments;
 pub mod buy;

@@ -123,6 +123,10 @@ async fn add_account(
     validate_bank_code(&req.bank_code)?;
     validate_account_number(&req.account_number)?;
 
+    // Cap accounts per user before the paid name check (#697).
+    crate::routes::bank_account_cap::enforce_cap(db, user_id, &req.bank_code, &req.account_number)
+        .await?;
+
     // Name enquiry with the configured provider. Logs only the last 4 digits.
     let account_name = state
         .bank_name_check
