@@ -377,7 +377,11 @@ impl From<MoneyRequestRecord> for MoneyRequestRow {
             asset: r.asset,
             amount: r.amount,
             note: r.note,
-            status: r.status,
+            status: crate::routes::money_request_status::effective_status(
+                &r.status,
+                r.expires_at,
+                Utc::now(),
+            ),
             expires_at: r.expires_at,
             created_at: r.created_at,
         }
