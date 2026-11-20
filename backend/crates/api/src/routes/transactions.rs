@@ -1,9 +1,9 @@
 use axum::extract::{Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 use crate::AppState;
 use crate::error::ApiError;
@@ -43,6 +43,12 @@ pub struct TransactionsQuery {
     pub cursor: Option<String>,
     pub asset: Option<String>,
     pub r#type: Option<String>,
+    /// Filter by transaction kind (e.g., 'transfer', 'conversion', 'ramp_order')
+    pub kind: Option<String>,
+    /// Filter transactions from this date (RFC 3339 format, e.g., 2026-01-15)
+    pub from_date: Option<String>,
+    /// Filter transactions until this date (RFC 3339 format, e.g., 2026-01-31)
+    pub to_date: Option<String>,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -104,6 +110,18 @@ async fn get_transactions(
         param_count += 1;
         query_with_filters.push_str(&format!(" AND direction = ${}", param_count));
     }
+    if params.kind.is_some() {
+        param_count += 1;
+        query_with_filters.push_str(&format!(" AND direction = ${}", param_count));
+    }
+    if params.from_date.is_some() {
+        param_count += 1;
+        query_with_filters.push_str(&format!(" AND created_at >= ${}::TIMESTAMPTZ", param_count));
+    }
+    if params.to_date.is_some() {
+        param_count += 1;
+        query_with_filters.push_str(&format!(" AND created_at < ${}::TIMESTAMPTZ", param_count));
+    }
 
     if !cursor_created_at.is_empty() {
         param_count += 1;
@@ -114,19 +132,39 @@ async fn get_transactions(
         param_count += 1;
     }
 
-    query_with_filters.push_str(&format!(" ORDER BY created_at DESC, id DESC LIMIT ${}", param_count + 1));
+    query_with_filters.push_str(&format!(
+        " ORDER BY created_at DESC, id DESC LIMIT ${}",
+        param_count + 1
+    ));
 
     // Build query with dynamic parameters
-    let mut query = sqlx::query_as::<_, (Uuid, String, String, i64, sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>, String)>(
-        &query_with_filters
-    )
-    .bind(user_id);
+    let mut query = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            i64,
+            sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>,
+            String,
+        ),
+    >(&query_with_filters)
+    .bind(user_id.as_uuid());
 
     if let Some(asset) = params.asset {
         query = query.bind(asset);
     }
     if let Some(tx_type) = params.r#type {
         query = query.bind(tx_type);
+    }
+    if let Some(kind) = params.kind {
+        query = query.bind(kind);
+    }
+    if let Some(from_date) = params.from_date {
+        query = query.bind(from_date);
+    }
+    if let Some(to_date) = params.to_date {
+        query = query.bind(to_date);
     }
     if !cursor_created_at.is_empty() {
         query = query.bind(&cursor_created_at).bind(&cursor_tx_id);
@@ -143,10 +181,10 @@ async fn get_transactions(
     let mut transactions: Vec<Transaction> = Vec::new();
 
     for (id, direction, asset, amount, created_at, _status) in ramp_orders {
-        let (final_direction, _counterparty) = match direction.as_str() {
-            "on_ramp" => ("inflow".to_string(), None),
-            "off_ramp" => ("outflow".to_string(), None),
-            _ => (direction.clone(), None),
+        let final_direction: String = match direction.as_str() {
+            "on_ramp" => "inflow".to_string(),
+            "off_ramp" => "outflow".to_string(),
+            _ => direction.clone(),
         };
 
         transactions.push(Transaction {
@@ -177,46 +215,31 @@ async fn get_transactions(
         transactions,
         cursor,
         has_more,
-    // Query ramp orders
-    let ramp_orders = sqlx::query!(
-        r#"
-        SELECT id, direction, asset, crypto_amount, created_at, status
-        FROM ramp_orders
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2
-        "#,
-        user_id,
-        limit
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
-
-    // Build transaction list
-    let mut transactions: Vec<Transaction> = Vec::new();
-
-    for order in ramp_orders {
-        transactions.push(Transaction {
-            id: order.id,
-            kind: order.direction.unwrap_or_default(),
-            asset: order.asset,
-            amount: order.crypto_amount.unwrap_or_default().to_string(),
-            timestamp: order.created_at.to_rfc3339(),
-            description: order.status,
-        });
-    }
-
-    Ok(Json(TransactionsResponse {
-        transactions,
-        cursor: None,
-        has_more: false,
     }))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Tests skipped as per user request
+    #[test]
+    fn cursor_round_trips_through_base64() {
+        let cursor = encode_cursor("2026-09-30T12:00:00Z", "tx-123");
+
+        let decoded = decode_cursor(&cursor).expect("cursor decodes");
+        assert_eq!(decoded.0, "2026-09-30T12:00:00Z");
+        assert_eq!(decoded.1, "tx-123");
+    }
+
+    #[test]
+    fn cursor_that_is_not_base64_is_rejected() {
+        let error = decode_cursor("not base64!!").expect_err("must fail");
+        assert!(matches!(error, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn cursor_without_two_parts_is_rejected() {
+        let cursor = BASE64.encode("only-one-part");
+        let error = decode_cursor(&cursor).expect_err("must fail");
+        assert!(matches!(error, ApiError::BadRequest(_)));
+    }
 }

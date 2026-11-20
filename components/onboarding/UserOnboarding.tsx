@@ -46,7 +46,7 @@ export function UserOnboarding() {
     {
       id: "welcome",
       title: "Welcome to EngiPay",
-      description: "Crypto payments and Naira cash-out in one app. Let's get you started with a quick tour.",
+      description: "Pay and get paid in crypto, from one app. Let's start with a quick tour of what works today.",
       icon: <Zap className="w-8 h-8" />,
       completed: true,
     },
@@ -69,7 +69,7 @@ export function UserOnboarding() {
     {
       id: "features",
       title: "Explore Features",
-      description: "Send and receive, scan to pay, send Bitcoin, and convert to Naira - all in one app.",
+      description: "Send and receive crypto on Base, and pay by scanning a code. Bitcoin, token swaps and Naira conversion are still being built.",
       icon: <Coins className="w-8 h-8" />,
       completed: false,
     },
@@ -162,13 +162,13 @@ export function UserOnboarding() {
                     <div className="w-12 h-12 bg-success/15 rounded-full flex items-center justify-center mx-auto mb-2">
                       <Coins className="w-6 h-6 text-success" />
                     </div>
-                    <p className="text-sm">Convert</p>
+                    <p className="text-sm">Scan to pay</p>
                   </div>
                   <div className="text-center">
                     <div className="w-12 h-12 bg-primary/15 rounded-full flex items-center justify-center mx-auto mb-2">
                       <TrendingUp className="w-6 h-6 text-primary" />
                     </div>
-                    <p className="text-sm">Naira</p>
+                    <p className="text-sm">Naira (coming soon)</p>
                   </div>
                 </div>
               </div>
@@ -247,7 +247,7 @@ export function UserOnboarding() {
                       <Zap className="w-4 h-4 text-blue-400" />
                       <h4 className="font-medium text-sm">Instant Payments</h4>
                     </div>
-                    <p className="text-xs text-muted-foreground">Send money to friends or pay merchants instantly</p>
+                    <p className="text-xs text-muted-foreground">Send ETH and USDC on Base</p>
                   </div>
                   <div className="p-3 border border-border rounded-lg text-left">
                     <div className="flex items-center gap-2 mb-1">
@@ -259,9 +259,9 @@ export function UserOnboarding() {
                   <div className="p-3 border border-border rounded-lg text-left">
                     <div className="flex items-center gap-2 mb-1">
                       <TrendingUp className="w-4 h-4 text-primary" />
-                      <h4 className="font-medium text-sm">Naira in and out</h4>
+                      <h4 className="font-medium text-sm">Naira (coming soon)</h4>
                     </div>
-                    <p className="text-xs text-muted-foreground">Buy with Naira and cash out to your bank</p>
+                    <p className="text-xs text-muted-foreground">Not live yet. The Naira partner is still being connected</p>
                   </div>
                 </div>
               </div>

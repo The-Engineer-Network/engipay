@@ -1,15 +1,13 @@
 use axum::extract::{Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use engipay_ledger::postgres::PostgresLedgerStore;
-use engipay_ledger::{Balance, HoldItem};
-use serde::{Deserialize, Serialize};
 use engipay_core::Asset;
-use engipay_ledger::Balance;
 use engipay_ledger::postgres::PostgresLedgerStore;
-use serde::Serialize;
+use engipay_ledger::{ActiveHold, Balance};
+use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::db_router::DatabaseRouter;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 
@@ -17,29 +15,62 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/balances", get(get_balances))
 }
 
+// ── Request / response types ──────────────────────────────────────────────────
+
 /// Query parameters accepted by `GET /v1/balances`.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Default, Deserialize)]
 pub struct BalancesQuery {
-    /// When `true`, the response includes a `holds` array listing every active
-    /// (open) hold with its reference ID, asset, locked amount, and creation
-    /// timestamp.  Defaults to `false`.
+    /// When `true`, include a per-hold breakdown in each balance entry.
     #[serde(default)]
     pub include_holds: bool,
 }
 
-/// Response body for `GET /v1/balances`.
+/// One active (open) hold, included when `?include_holds=true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HoldItem {
+    /// The idempotency reference that created this hold.
+    pub reference: String,
+    pub asset: Asset,
+    /// Raw integer in the asset's smallest unit.
+    pub amount_minor: i128,
+    /// Fixed-decimal string with exactly `asset.decimals()` fractional digits.
+    pub amount: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: String,
+}
+
+/// Response body for `GET /v1/balances?include_holds=true`.
+///
+/// Without `include_holds` the handler returns a plain array of balances
+/// (unchanged shape for existing callers); with it, the array is wrapped so
+/// callers can read the caller's open holds in one round trip.
 #[derive(Debug, Serialize)]
-pub struct BalancesResponse {
-    pub balances: Vec<Balance>,
-    /// Present only when `include_holds=true` was requested.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub holds: Option<Vec<HoldItem>>,
+pub struct BalancesWithHolds {
+    pub balances: Vec<BalanceResponse>,
+    /// Open holds in creation order. Only present when `include_holds=true`.
+    pub active_holds: Vec<HoldItem>,
+}
+
+impl HoldItem {
+    pub fn from_active_hold(hold: ActiveHold) -> Self {
+        let amount = format_minor(hold.asset, hold.amount);
+        Self {
+            reference: hold.reference,
+            asset: hold.asset,
+            amount_minor: hold.amount,
+            amount,
+            // The ledger hands back an RFC 3339 string; the API contract matches.
+            created_at: hold.created_at,
+        }
+    }
+}
+
 /// API response shape for a single asset balance.
 ///
-/// Both raw minor-unit integers and fixed-decimal strings are returned so
-/// frontend clients can display amounts without floating-point arithmetic.
+/// Both raw minor-unit integers and exact fixed-decimal strings are returned
+/// so frontend clients can display amounts without floating-point arithmetic.
 ///
-/// Example for 1.5 USDC (7 decimals):
+/// Example for 1.5 USDC (7 decimals) without holds; `holds` is left out:
 /// ```json
 /// {
 ///   "asset": "USDC",
@@ -47,6 +78,26 @@ pub struct BalancesResponse {
 ///   "available": "1.5000000",
 ///   "held_minor": 0,
 ///   "held": "0.0000000"
+/// }
+/// ```
+///
+/// With `?include_holds=true`, `holds` is an array (possibly empty):
+/// ```json
+/// {
+///   "asset": "USDC",
+///   "available_minor": 15000000,
+///   "available": "1.5000000",
+///   "held_minor": 5000000,
+///   "held": "0.5000000",
+///   "holds": [
+///     {
+///       "reference": "wd-abc123",
+///       "asset": "USDC",
+///       "amount_minor": 5000000,
+///       "amount": "0.5000000",
+///       "created_at": "2026-09-30T11:00:00Z"
+///     }
+///   ]
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -60,6 +111,10 @@ pub struct BalanceResponse {
     pub held_minor: i128,
     /// Fixed-decimal string with exactly `asset.decimals()` fractional digits.
     pub held: String,
+    /// Per-hold breakdown. `None` unless `?include_holds=true` was requested.
+    /// An empty array means the user has no open holds for this asset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holds: Option<Vec<HoldItem>>,
 }
 
 impl BalanceResponse {
@@ -72,7 +127,13 @@ impl BalanceResponse {
             available,
             held_minor: balance.held,
             held,
+            holds: None,
         }
+    }
+
+    pub fn with_holds(mut self, holds: Vec<HoldItem>) -> Self {
+        self.holds = Some(holds);
+        self
     }
 }
 
@@ -101,52 +162,83 @@ pub fn format_minor(asset: Asset, minor: i128) -> String {
 /// Live custodial balances for the authenticated caller, across every asset
 /// EngiPay supports (`ETH`, `USDC`, `BTC`, `XLM`), read from the ledger.
 ///
-/// Pass `?include_holds=true` to also receive a breakdown of every active hold
-/// (funds locked in an in-flight withdrawal, conversion, or off-ramp).
+/// Without `?include_holds` this returns a plain array of balances, the shape
+/// existing callers already parse. With `?include_holds=true` the array is
+/// wrapped in [`BalancesWithHolds`], and every balance also carries the open
+/// holds for that asset under `holds`, so a caller can render both from one
+/// round trip.
 async fn get_balances(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<BalancesQuery>,
-) -> Result<Json<BalancesResponse>, ApiError> {
-) -> Result<Json<Vec<BalanceResponse>>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
-    let pool = state
-        .database
-        .clone()
-        .ok_or(ApiError::DatabaseUnavailable)?;
+    let db_router = DatabaseRouter::new(state.database.clone(), state.replica_database.clone());
 
-    let store = PostgresLedgerStore::new(pool);
-    let balances = store
-        .get_user_balances(user_id)
+    let balances = db_router
+        .read_with_fallback(|pool| async move {
+            let store = PostgresLedgerStore::new(pool.clone());
+            store.get_user_balances(user_id).await
+        },
+        true)
         .await
         .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?;
 
-    let holds = if params.include_holds {
-        let items = store
-            .get_active_holds(user_id)
-            .await
-            .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?;
-        Some(items)
-    } else {
-        None
-    };
+    if !params.include_holds {
+        let response: Vec<BalanceResponse> = balances
+            .into_iter()
+            .map(BalanceResponse::from_balance)
+            .collect();
+        return Ok(Json(serde_json::to_value(response).map_err(|err| {
+            ApiError::Internal(anyhow::anyhow!(err.to_string()))
+        })?));
+    }
 
-    Ok(Json(BalancesResponse { balances, holds }))
-    let response: Vec<BalanceResponse> = balances
+    let active_holds = db_router
+        .read_with_fallback(|pool| async move {
+            let store = PostgresLedgerStore::new(pool.clone());
+            store.get_active_holds(user_id).await
+        },
+        true)
+        .await
+        .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?
         .into_iter()
-        .map(BalanceResponse::from_balance)
+        .map(HoldItem::from_active_hold)
         .collect();
 
-    Ok(Json(response))
+    // Each balance carries only the holds for its own asset, so a caller never
+    // has to filter the list themselves.
+    let balances: Vec<BalanceResponse> = balances
+        .into_iter()
+        .map(|balance| {
+            let holds = active_holds
+                .iter()
+                .filter(|hold| hold.asset == balance.asset)
+                .cloned()
+                .collect();
+            BalanceResponse::from_balance(balance).with_holds(holds)
+        })
+        .collect();
+
+    Ok(Json(
+        serde_json::to_value(BalancesWithHolds {
+            balances,
+            active_holds,
+        })
+        .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?,
+    ))
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod tests {
     use engipay_core::Asset;
     use engipay_ledger::Balance;
+    use engipay_ledger::postgres::ActiveHold;
 
-    use super::{BalanceResponse, format_minor};
+    use super::{BalanceResponse, HoldItem, format_minor};
 
     // ── format_minor unit tests ──────────────────────────────────────────────
 
@@ -183,14 +275,10 @@ mod tests {
             format_minor(Asset::Eth, 1_000_000_000_000_000_000),
             "1.000000000000000000"
         );
-        assert_eq!(
-            format_minor(Asset::Eth, 0),
-            "0.000000000000000000"
-        );
-        assert_eq!(
-            format_minor(Asset::Eth, 1),
-            "0.000000000000000001"
-        );
+        assert_eq!(format_minor(Asset::Eth, 0), "0.000000000000000000");
+        assert_eq!(format_minor(Asset::Eth, 1), "0.000000000000000001");
+        assert_eq!(format_minor(Asset::Eth, 0), "0.000000000000000000");
+        assert_eq!(format_minor(Asset::Eth, 1), "0.000000000000000001");
         // 1.5 ETH
         assert_eq!(
             format_minor(Asset::Eth, 1_500_000_000_000_000_000),
@@ -202,7 +290,14 @@ mod tests {
     fn formats_negative_amounts() {
         assert_eq!(format_minor(Asset::Usdc, -15_000_000), "-1.5000000");
         assert_eq!(format_minor(Asset::Btc, -1), "-0.00000001");
-        assert_eq!(format_minor(Asset::Eth, -1_000_000_000_000_000_000), "-1.000000000000000000");
+        assert_eq!(
+            format_minor(Asset::Eth, -1_000_000_000_000_000_000),
+            "-1.000000000000000000"
+        );
+        assert_eq!(
+            format_minor(Asset::Eth, -1_000_000_000_000_000_000),
+            "-1.000000000000000000"
+        );
     }
 
     #[test]
@@ -219,7 +314,7 @@ mod tests {
         }
     }
 
-    // ── BalanceResponse serialization tests ─────────────────────────────────
+    // ── BalanceResponse (without holds) tests ─────────────────────────────────
 
     #[test]
     fn balance_response_fields_match_issue_example() {
@@ -236,7 +331,11 @@ mod tests {
         assert_eq!(resp.available, "1.5000000");
         assert_eq!(resp.held_minor, 0);
         assert_eq!(resp.held, "0.0000000");
+        assert!(resp.holds.is_none(), "holds absent when not requested");
     }
+
+    #[test]
+    fn balance_response_serializes_without_holds_field_when_none() {}
 
     #[test]
     fn balance_response_serializes_to_expected_json() {
@@ -253,7 +352,15 @@ mod tests {
         assert_eq!(json["available"], "1.5000000");
         assert_eq!(json["held_minor"], 5_000_000_i64);
         assert_eq!(json["held"], "0.5000000");
+        // holds field should be absent entirely (skip_serializing_if = None)
+        assert!(
+            json.get("holds").is_none(),
+            "holds key must be absent when None"
+        );
     }
+
+    #[test]
+    fn balance_response_for_all_assets_without_holds() {}
 
     #[test]
     fn balance_response_for_all_assets() {
@@ -280,7 +387,153 @@ mod tests {
             assert_eq!(resp.available, avail_str, "{asset}");
             assert_eq!(resp.held_minor, held, "{asset}");
             assert_eq!(resp.held, held_str, "{asset}");
+            assert!(resp.holds.is_none(), "{asset} holds should be None");
         }
+    }
+
+    // ── HoldItem tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn hold_item_from_active_hold_formats_amount() {
+        let hold = ActiveHold {
+            reference: "wd-abc123".to_string(),
+            asset: Asset::Usdc,
+            amount: 5_000_000,
+            created_at: "2026-09-30T11:00:00+00:00".to_string(),
+        };
+        let item = HoldItem::from_active_hold(hold);
+
+        assert_eq!(item.reference, "wd-abc123");
+        assert_eq!(item.asset, Asset::Usdc);
+        assert_eq!(item.amount_minor, 5_000_000);
+        assert_eq!(item.amount, "0.5000000");
+        assert_eq!(item.created_at, "2026-09-30T11:00:00+00:00");
+    }
+
+    #[test]
+    fn hold_item_serializes_to_expected_json() {
+        let hold = ActiveHold {
+            reference: "wd-xyz".to_string(),
+            asset: Asset::Btc,
+            amount: 100_000_000,
+            created_at: "2026-09-30T12:00:00+00:00".to_string(),
+        };
+        let item = HoldItem::from_active_hold(hold);
+        let json = serde_json::to_value(&item).unwrap();
+
+        assert_eq!(json["reference"], "wd-xyz");
+        assert_eq!(json["asset"], "BTC");
+        assert_eq!(json["amount_minor"], 100_000_000_i64);
+        assert_eq!(json["amount"], "1.00000000");
+        assert_eq!(json["created_at"], "2026-09-30T12:00:00+00:00");
+    }
+
+    // ── BalanceResponse with holds tests ─────────────────────────────────────
+
+    #[test]
+    fn balance_response_with_holds_includes_holds_array() {
+        let balance = Balance {
+            asset: Asset::Usdc,
+            available: 10_000_000,
+            held: 5_000_000,
+        };
+        let hold_item = HoldItem::from_active_hold(ActiveHold {
+            reference: "wd-hold1".to_string(),
+            asset: Asset::Usdc,
+            amount: 5_000_000,
+            created_at: "2026-09-30T10:00:00+00:00".to_string(),
+        });
+        let resp = BalanceResponse::from_balance(balance).with_holds(vec![hold_item]);
+
+        assert_eq!(resp.holds.as_ref().unwrap().len(), 1);
+        let h = &resp.holds.as_ref().unwrap()[0];
+        assert_eq!(h.reference, "wd-hold1");
+        assert_eq!(h.amount_minor, 5_000_000);
+        assert_eq!(h.amount, "0.5000000");
+    }
+
+    #[test]
+    fn balance_response_with_empty_holds_array_serializes_correctly() {
+        let balance = Balance {
+            asset: Asset::Usdc,
+            available: 10_000_000,
+            held: 0,
+        };
+        let resp = BalanceResponse::from_balance(balance).with_holds(vec![]);
+        let json = serde_json::to_value(&resp).unwrap();
+
+        // holds key is present with an empty array
+        assert_eq!(json["holds"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn balance_response_holds_serializes_full_shape() {
+        let balance = Balance {
+            asset: Asset::Usdc,
+            available: 20_000_000,
+            held: 15_000_000,
+        };
+        let hold_items = vec![
+            HoldItem::from_active_hold(ActiveHold {
+                reference: "wd-1".to_string(),
+                asset: Asset::Usdc,
+                amount: 10_000_000,
+                created_at: "2026-09-30T09:00:00+00:00".to_string(),
+            }),
+            HoldItem::from_active_hold(ActiveHold {
+                reference: "wd-2".to_string(),
+                asset: Asset::Usdc,
+                amount: 5_000_000,
+                created_at: "2026-09-30T10:00:00+00:00".to_string(),
+            }),
+        ];
+        let resp = BalanceResponse::from_balance(balance).with_holds(hold_items);
+        let json = serde_json::to_value(&resp).unwrap();
+
+        let holds = json["holds"].as_array().unwrap();
+        assert_eq!(holds.len(), 2);
+        assert_eq!(holds[0]["reference"], "wd-1");
+        assert_eq!(holds[0]["amount_minor"], 10_000_000_i64);
+        assert_eq!(holds[0]["amount"], "1.0000000");
+        assert_eq!(holds[1]["reference"], "wd-2");
+        assert_eq!(holds[1]["amount_minor"], 5_000_000_i64);
+        assert_eq!(holds[1]["amount"], "0.5000000");
+    }
+
+    #[test]
+    fn holds_only_include_matching_asset() {
+        // Simulate two holds: one USDC, one XLM — only USDC should appear in
+        // the USDC balance's holds list.
+        let usdc_balance = Balance {
+            asset: Asset::Usdc,
+            available: 10_000_000,
+            held: 5_000_000,
+        };
+        let all_holds = vec![
+            ActiveHold {
+                reference: "wd-usdc".to_string(),
+                asset: Asset::Usdc,
+                amount: 5_000_000,
+                created_at: "2026-09-30T10:00:00+00:00".to_string(),
+            },
+            ActiveHold {
+                reference: "wd-xlm".to_string(),
+                asset: Asset::Xlm,
+                amount: 10_000_000,
+                created_at: "2026-09-30T10:01:00+00:00".to_string(),
+            },
+        ];
+
+        let asset = usdc_balance.asset;
+        let hold_items: Vec<HoldItem> = all_holds
+            .into_iter()
+            .filter(|h| h.asset == asset)
+            .map(HoldItem::from_active_hold)
+            .collect();
+        let resp = BalanceResponse::from_balance(usdc_balance).with_holds(hold_items);
+
+        assert_eq!(resp.holds.as_ref().unwrap().len(), 1);
+        assert_eq!(resp.holds.as_ref().unwrap()[0].reference, "wd-usdc");
     }
 
     #[test]
@@ -307,18 +560,18 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
     use crate::{AppState, router};
 
     fn app() -> axum::Router {
         let config = Config::for_tests();
         router(
-            AppState {
-                database: None,
-                config: config.clone(),
-            },
+            AppState::with_fakes(None, config.clone(), RateLimiter::new()),
             &config,
         )
     }
+
+    // ── No-database HTTP tests ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn rejects_a_request_without_a_bearer_token() {
@@ -336,7 +589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_without_bearer_token_when_include_holds_set() {
+    async fn rejects_include_holds_without_a_bearer_token() {
         let response = app()
             .oneshot(
                 Request::builder()
@@ -399,14 +652,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "database_unavailable");
     }
 
-    /// Requires `DATABASE_URL`: creates a ledger posting for a fresh user via
-    /// the real store, then asserts `GET /v1/balances` returns the new response
-    /// shape with minor-unit integers and fixed-decimal strings.
+    /// Requires `DATABASE_URL`: deposit + hold, then assert `?include_holds=true`
+    /// returns the hold in the response.
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
-    async fn returns_the_callers_live_balances() {
+    async fn include_holds_true_populates_holds_array() {
         use engipay_core::{Asset, Money, UserId};
         use engipay_ledger::postgres::PostgresLedgerStore;
 
@@ -425,16 +680,191 @@ mod tests {
 
         let store = PostgresLedgerStore::new(pool.clone());
         let deposit = Money::from_minor(Asset::Usdc, 25_000_000);
+        let ref_id = format!("holds-test-dep-{}", user.as_uuid());
+        store.deposit(user, deposit, &ref_id).await.unwrap();
+
+        let hold_ref = format!("holds-test-hold-{}", user.as_uuid());
+        let hold_amount = Money::from_minor(Asset::Usdc, 10_000_000);
+        store
+            .create_hold(user, hold_amount, &hold_ref)
+            .await
+            .unwrap();
+
+        let config = Config::for_tests();
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
+        let app = router(state, &config);
+
+        let token = crate::auth::jwt::create_token(
+            user.as_uuid(),
+            "test-wallet".to_string(),
+            config.jwt_secret.as_bytes(),
+        )
+        .unwrap();
+
+        // Without include_holds: holds field absent
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/balances")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let usdc = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["asset"] == "USDC")
+            .expect("USDC balance present");
+        assert!(usdc.get("holds").is_none(), "holds absent without param");
+
+        // With include_holds=true: holds array present and populated
+        let response_with_holds = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/balances?include_holds=true")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response_with_holds.status(), StatusCode::OK);
+        let bytes = response_with_holds
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let usdc = body["balances"]
+            .as_array()
+            .expect("balances array present")
+            .iter()
+            .find(|b| b["asset"] == "USDC")
+            .expect("USDC balance present");
+        let holds = usdc["holds"].as_array().expect("holds array present");
+        assert_eq!(holds.len(), 1, "the one open hold is listed under USDC");
+        assert_eq!(holds[0]["reference"], hold_ref);
+        assert_eq!(holds[0]["amount_minor"], 10_000_000_i64);
+        assert_eq!(holds[0]["amount"], "1.0000000");
+    }
+
+    // ── Database integration tests ────────────────────────────────────────────
+
+    async fn test_pool() -> Option<sqlx::PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        let pool = sqlx::PgPool::connect(&url).await.ok()?;
+        sqlx::migrate!("../../migrations").run(&pool).await.ok()?;
+        Some(pool)
+    }
+
+    async fn ensure_user(pool: &sqlx::PgPool, user_id: uuid::Uuid) {
+        sqlx::query("INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// Requires `DATABASE_URL`: no holds → holds is an empty array when
+    /// `?include_holds=true`.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn include_holds_true_with_no_holds_returns_empty_array() {
+        use engipay_core::{Asset, Money, UserId};
+        use engipay_ledger::postgres::PostgresLedgerStore;
+
+        let Ok(database_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+
+        let user = UserId::new();
+        sqlx::query("INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING")
+            .bind(user.as_uuid())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let store = PostgresLedgerStore::new(pool.clone());
+        store
+            .deposit(
+                user,
+                Money::from_minor(Asset::Usdc, 10_000_000),
+                &format!("no-holds-dep-{}", user.as_uuid()),
+            )
+            .await
+            .unwrap();
+
+        let config = Config::for_tests();
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
+        let app = router(state, &config);
+        let token = crate::auth::jwt::create_token(
+            user.as_uuid(),
+            "test-wallet".to_string(),
+            config.jwt_secret.as_bytes(),
+        )
+        .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/balances?include_holds=true")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let usdc = body["balances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["asset"] == "USDC")
+            .expect("USDC balance present");
+
+        let holds = usdc["holds"].as_array().expect("holds key present");
+        assert!(holds.is_empty(), "no active holds → empty array");
+    }
+
+    /// Requires `DATABASE_URL`: verifies the new response shape with minor-unit
+    /// integers and fixed-decimal strings (regression test from #116).
+    /// Requires `DATABASE_URL`: creates a ledger posting for a fresh user via
+    /// the real store, then asserts `GET /v1/balances` returns the new response
+    /// shape with minor-unit integers and fixed-decimal strings.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn returns_the_callers_live_balances() {
+        use engipay_core::{Asset, Money, UserId};
+        use engipay_ledger::postgres::PostgresLedgerStore;
+
+        let pool = test_pool().await.unwrap();
+        let user = UserId::new();
+        ensure_user(&pool, user.as_uuid()).await;
+
+        let store = PostgresLedgerStore::new(pool.clone());
+        let deposit = Money::from_minor(Asset::Usdc, 25_000_000);
         store
             .deposit(user, deposit, &format!("balances-test-{}", user.as_uuid()))
             .await
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -459,17 +889,18 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
 
-        // Response now uses { balances: [...], holds: null/absent }.
-        let balances = body["balances"].as_array().unwrap();
+        // Without include_holds the response is a plain array of balances.
+        let balances = body.as_array().unwrap();
         let usdc = balances
             .iter()
             .find(|b| b["asset"] == "USDC")
             .expect("usdc balance present");
-        assert_eq!(usdc["available"], 25_000_000);
-        assert_eq!(usdc["held"], 0);
+        assert_eq!(usdc["available_minor"], 25_000_000);
+        assert_eq!(usdc["available"], "2.5000000");
+        assert_eq!(usdc["held_minor"], 0);
 
-        // Without include_holds, the holds field is absent.
-        assert!(body.get("holds").is_none() || body["holds"].is_null());
+        // Without include_holds, no balance carries a holds field.
+        assert!(usdc.get("holds").is_none());
     }
 
     /// Requires `DATABASE_URL`: deposits, creates a hold, then calls
@@ -496,11 +927,7 @@ mod tests {
         let store = PostgresLedgerStore::new(pool.clone());
         let deposit = Money::from_minor(Asset::Usdc, 100_000_000);
         store
-            .deposit(
-                user,
-                deposit,
-                &format!("holds-test-dep-{}", user.as_uuid()),
-            )
+            .deposit(user, deposit, &format!("holds-test-dep-{}", user.as_uuid()))
             .await
             .unwrap();
 
@@ -511,10 +938,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -545,18 +969,21 @@ mod tests {
             .iter()
             .find(|b| b["asset"] == "USDC")
             .expect("usdc balance present");
-        assert_eq!(usdc["available"], 60_000_000);
-        assert_eq!(usdc["held"], 40_000_000);
+        assert_eq!(usdc["available_minor"], 60_000_000);
+        assert_eq!(usdc["held_minor"], 40_000_000);
 
         // Holds array must be present and contain the hold we just created.
-        let holds = body["holds"].as_array().expect("holds array present");
+        let holds = body["active_holds"]
+            .as_array()
+            .expect("holds array present");
         assert!(!holds.is_empty(), "holds array must not be empty");
         let hold = holds
             .iter()
             .find(|h| h["reference"] == hold_ref)
             .expect("our hold must appear in the holds array");
         assert_eq!(hold["asset"], "USDC");
-        assert_eq!(hold["amount"], 40_000_000);
+        assert_eq!(hold["amount_minor"], 40_000_000);
+        assert_eq!(hold["amount"], "4.0000000");
         assert!(
             hold["created_at"].as_str().is_some(),
             "created_at must be present"
@@ -587,18 +1014,18 @@ mod tests {
         let store = PostgresLedgerStore::new(pool.clone());
         let deposit = Money::from_minor(Asset::Usdc, 200_000_000);
         store
-            .deposit(
-                user,
-                deposit,
-                &format!("holds-excl-dep-{}", user.as_uuid()),
-            )
+            .deposit(user, deposit, &format!("holds-excl-dep-{}", user.as_uuid()))
             .await
             .unwrap();
 
         // Create and release one hold.
         let released_ref = format!("holds-excl-rel-{}", user.as_uuid());
         store
-            .create_hold(user, Money::from_minor(Asset::Usdc, 20_000_000), &released_ref)
+            .create_hold(
+                user,
+                Money::from_minor(Asset::Usdc, 20_000_000),
+                &released_ref,
+            )
             .await
             .unwrap();
         store.release_hold(&released_ref).await.unwrap();
@@ -611,10 +1038,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -639,7 +1063,9 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
 
-        let holds = body["holds"].as_array().expect("holds array present");
+        let holds = body["active_holds"]
+            .as_array()
+            .expect("holds array present");
 
         // Released hold must not appear.
         assert!(
@@ -654,73 +1080,125 @@ mod tests {
         );
     }
 
-    /// Requires `DATABASE_URL`: verifies that when no holds exist and
-    /// `include_holds=true`, the holds array is present but empty.
+    /// With `?include_holds=true` and no open holds the array is empty.
     #[tokio::test]
     #[ignore = "requires DATABASE_URL"]
     async fn include_holds_returns_empty_array_when_no_holds() {
         use engipay_core::{Asset, Money, UserId};
         use engipay_ledger::postgres::PostgresLedgerStore;
 
-        let Ok(database_url) = std::env::var("DATABASE_URL") else {
-            return;
-        };
-        let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
-
+        let pool = test_pool().await.unwrap();
         let user = UserId::new();
-        sqlx::query("INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING")
-            .bind(user.as_uuid())
-            .execute(&pool)
+        ensure_user(&pool, user.as_uuid()).await;
+
+        let store = PostgresLedgerStore::new(pool.clone());
+        store
+            .deposit(
+                user,
+                Money::from_minor(Asset::Usdc, 10_000_000),
+                "dep-no-holds",
+            )
             .await
             .unwrap();
+
+        let config = Config::for_tests();
+        let token = crate::auth::jwt::create_token(
+            user.as_uuid(),
+            "wallet".to_string(),
+            config.jwt_secret.as_bytes(),
+        )
+        .unwrap();
+
+        let response = router(
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
+            &config,
+        )
+        .oneshot(
+            Request::builder()
+                .uri("/v1/balances?include_holds=true")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["balances"].is_array());
+        assert_eq!(body["active_holds"].as_array().unwrap().len(), 0);
+    }
+
+    /// With `?include_holds=true` and one open hold the array contains it.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn include_holds_returns_open_holds() {
+        use engipay_core::{Asset, Money, UserId};
+        use engipay_ledger::postgres::PostgresLedgerStore;
+
+        let pool = test_pool().await.unwrap();
+        let user = UserId::new();
+        ensure_user(&pool, user.as_uuid()).await;
 
         let store = PostgresLedgerStore::new(pool.clone());
         store
             .deposit(
                 user,
                 Money::from_minor(Asset::Usdc, 50_000_000),
-                &format!("holds-empty-dep-{}", user.as_uuid()),
+                "dep-holds",
+            )
+            .await
+            .unwrap();
+        store
+            .create_hold(
+                user,
+                Money::from_minor(Asset::Usdc, 20_000_000),
+                "hold-ref-1",
             )
             .await
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-        };
-        let app = router(state, &config);
-
         let token = crate::auth::jwt::create_token(
             user.as_uuid(),
-            "test-wallet".to_string(),
+            "wallet".to_string(),
             config.jwt_secret.as_bytes(),
         )
         .unwrap();
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/balances?include_holds=true")
-                    .header("Authorization", format!("Bearer {token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = router(
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
+            &config,
+        )
+        .oneshot(
+            Request::builder()
+                .uri("/v1/balances?include_holds=true")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
 
-        let holds = body["holds"].as_array().expect("holds must be an array");
-        assert!(holds.is_empty(), "holds array must be empty when no holds exist");
+        // Balances are present.
+        let balances = body["balances"].as_array().unwrap();
+        let usdc = balances.iter().find(|b| b["asset"] == "USDC").unwrap();
+        assert_eq!(usdc["available_minor"], 30_000_000);
+        assert_eq!(usdc["held_minor"], 20_000_000);
 
-        // Verify the new response shape: minor-unit integers and decimal strings.
-        assert_eq!(usdc["available_minor"], 25_000_000);
-        assert_eq!(usdc["available"], "2.5000000");
-        assert_eq!(usdc["held_minor"], 0);
-        assert_eq!(usdc["held"], "0.0000000");
+        // The active hold is listed.
+        let holds = body["active_holds"].as_array().unwrap();
+        assert_eq!(holds.len(), 1);
+        let hold = &holds[0];
+        assert_eq!(hold["reference"], "hold-ref-1");
+        assert_eq!(hold["asset"], "USDC");
+        assert_eq!(hold["amount_minor"], 20_000_000);
+        assert_eq!(hold["amount"], "2.0000000");
+        assert!(hold["created_at"].as_str().unwrap().contains('T'));
     }
 }

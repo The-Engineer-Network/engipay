@@ -15,6 +15,8 @@ import {
   WALLETCONNECT_PROJECT_ID,
   type StellarWcSession,
 } from "@/lib/stellar-walletconnect"
+import { buildSignInMessage } from "@/lib/siwe"
+import { apiPublicRequest, writeSessionToken, clearSessionToken } from "@/lib/api"
 
 /** Remembers that the user connected the Freighter extension, so a reload reconnects quietly. */
 const CONNECTED_KEY = "engipay-stellar-connected"
@@ -52,6 +54,13 @@ interface StellarWalletContextType {
    * is blocked until it matches: a testnet payment signed for mainnet is invalid.
    */
   networkMismatch: string | null
+  /** True when a backend session has been established after the last connect. */
+  isSignedIn: boolean
+  /**
+   * Non-null when the user declined the sign-in signature.  Show this as a
+   * non-alarming toast or banner rather than an error.
+   */
+  signInDeclinedMessage: string | null
   balances: StellarBalances | undefined
   isLoadingBalances: boolean
   /** Connects the Freighter browser extension. */
@@ -89,6 +98,35 @@ function mismatchMessage(walletNetwork: string) {
   return `Your wallet is set to ${walletNetwork}. Switch it to ${stellarNetwork.label} to send.`
 }
 
+interface NonceResponse { nonce: string }
+interface VerifyResponse { token: string; user_id: string }
+
+/**
+ * Requests a nonce, has the wallet sign a message, and exchanges the
+ * signature for a session token.  Returns true on success and false if the
+ * user declines — so callers can show a friendly message without throwing.
+ */
+async function signInWithStellar(
+  address: string,
+  signMessage: (msg: string) => Promise<string>
+): Promise<boolean> {
+  try {
+    const nonce = await apiPublicRequest<NonceResponse>("/v1/auth/nonce", { method: "POST" })
+    if (!nonce) return false
+    const message = buildSignInMessage({ address, nonce: nonce.nonce, issuedAt: new Date() })
+    const signature = await signMessage(message)
+    const session = await apiPublicRequest<VerifyResponse>("/v1/auth/verify-stellar", {
+      method: "POST",
+      body: JSON.stringify({ address, message, signature }),
+    })
+    if (!session) return false
+    writeSessionToken(session.token)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * The Stellar side of the wallet. On desktop, the Freighter extension. On
  * phones, and for LOBSTR and other wallets, WalletConnect. Either way the key
@@ -100,6 +138,10 @@ export function StellarWalletProvider({ children }: { children: ReactNode }) {
   const [connection, setConnection] = useState<StellarConnection | null>(null)
   const [hasFreighter, setHasFreighter] = useState(false)
   const [networkMismatch, setNetworkMismatch] = useState<string | null>(null)
+  /** Whether the backend session was established after the last connect. */
+  const [signedIn, setSignedIn] = useState(false)
+  /** Non-blocking message shown when the user declines the sign-in signature. */
+  const [signInDeclinedMessage, setSignInDeclinedMessage] = useState<string | null>(null)
 
   const checkExtensionNetwork = useCallback(async () => {
     const api = await freighter()
@@ -191,6 +233,37 @@ export function StellarWalletProvider({ children }: { children: ReactNode }) {
     setConnection({ kind: "extension" })
     remember(true)
     await checkExtensionNetwork()
+
+    // Attempt backend sign-in.  The wallet signs a short human-readable message
+    // that explains what is being signed.  Declining the signature is fine:
+    // the user stays connected but the session features are unavailable.
+    const signMessage = async (msg: string) => {
+      const result = await api.signMessage(msg, { address })
+      if (result.error || !result.signedMessage) {
+        const m = result.error?.message ?? ""
+        if (/declin|reject|cancel|denied/i.test(m)) throw new DOMException("User declined", "AbortError")
+        throw new Error("Freighter could not sign the message.")
+      }
+      // signedMessage may be a Buffer (Freighter v3) or a string (v4).
+      const signed = result.signedMessage
+      return typeof signed === "string" ? signed : signed.toString("hex")
+    }
+    const ok = await signInWithStellar(address, signMessage).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err)
+      return /declin|reject|cancel|abort/i.test(message) ? "declined" : false
+    })
+    if (ok === "declined" || ok === false) {
+      setSignedIn(false)
+      setSignInDeclinedMessage(
+        ok === "declined"
+          ? "You declined the sign-in request. You're connected but some features need a signature."
+          : null
+      )
+    } else {
+      setSignedIn(true)
+      setSignInDeclinedMessage(null)
+    }
+
     return "connected"
   }, [checkExtensionNetwork])
 
@@ -199,9 +272,26 @@ export function StellarWalletProvider({ children }: { children: ReactNode }) {
     const { uri, approval } = await startStellarConnection()
     return {
       uri,
-      approval: approval.then((session) => {
+      approval: approval.then(async (session) => {
         remember(false)
         adoptSession(session)
+
+        // After the WalletConnect session is established, sign in to the
+        // backend so the session token is available immediately.
+        const signMessage = async (msg: string) => {
+          const { signWithWalletConnect } = await walletConnect()
+          return signWithWalletConnect(session, msg)
+        }
+        const ok = await signInWithStellar(session.address, signMessage).catch(() => false)
+        if (ok) {
+          setSignedIn(true)
+          setSignInDeclinedMessage(null)
+        } else {
+          setSignedIn(false)
+          setSignInDeclinedMessage(
+            "You declined the sign-in request. You're connected but some features need a signature."
+          )
+        }
       }),
     }
   }, [adoptSession])
@@ -215,6 +305,9 @@ export function StellarWalletProvider({ children }: { children: ReactNode }) {
     setStellarAddress(null)
     setConnection(null)
     setNetworkMismatch(null)
+    setSignedIn(false)
+    setSignInDeclinedMessage(null)
+    clearSessionToken()
     remember(false)
   }, [connection])
 
@@ -297,6 +390,8 @@ export function StellarWalletProvider({ children }: { children: ReactNode }) {
       hasFreighter,
       walletConnectAvailable: Boolean(WALLETCONNECT_PROJECT_ID),
       networkMismatch,
+      isSignedIn: signedIn,
+      signInDeclinedMessage,
       balances: balancesQuery.data,
       isLoadingBalances: balancesQuery.isLoading,
       connectStellar,
@@ -310,6 +405,8 @@ export function StellarWalletProvider({ children }: { children: ReactNode }) {
       connection,
       hasFreighter,
       networkMismatch,
+      signedIn,
+      signInDeclinedMessage,
       balancesQuery.data,
       balancesQuery.isLoading,
       connectStellar,

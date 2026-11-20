@@ -25,11 +25,51 @@ pub struct Root {
     pub history_latest_ledger: u64,
 }
 
+/// `GET /fee_stats` — the fee distribution from the last ledger Horizon saw.
+///
+/// All fee values are in stroops per operation as strings (Horizon returns them
+/// as JSON strings to avoid precision loss in some parsers).
+#[derive(Debug, Deserialize)]
+pub struct FeeStats {
+    /// The distribution of fees actually charged in the last ledger.
+    pub fee_charged: FeeDistribution,
+}
+
+/// Sub-object under [`FeeStats`] for the `fee_charged` distribution.
+#[derive(Debug, Deserialize)]
+pub struct FeeDistribution {
+    /// Median fee charged in the last ledger, in stroops (as a decimal string).
+    pub p50: String,
+    /// 90th-percentile fee charged in the last ledger, in stroops (string).
+    pub p90: String,
+}
+
 /// `GET /accounts/{id}`.
 #[derive(Debug, Deserialize)]
 pub struct Account {
     /// Returned as a string because it can exceed JavaScript's safe integers.
     pub sequence: String,
+    /// The assets the account currently holds, including native XLM.
+    #[serde(default)]
+    pub balances: Vec<AccountBalance>,
+}
+
+/// One entry in the `balances` array of `GET /accounts/{id}`.
+///
+/// Horizon reports amounts as 7-decimal strings (e.g. `"12.3400000"`).
+/// Use [`parse_stroops`] to convert to a stroop integer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountBalance {
+    /// Always present. `"12.3400000"` — 7-decimal Stellar amount.
+    pub balance: String,
+    /// `"native"` for XLM, `"credit_alphanum4"` or `"credit_alphanum12"` otherwise.
+    pub asset_type: String,
+    /// Present for non-native assets.
+    #[serde(default)]
+    pub asset_code: Option<String>,
+    /// Present for non-native assets.
+    #[serde(default)]
+    pub asset_issuer: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,12 +131,12 @@ pub struct JoinedTransaction {
 /// `PaymentRecord` per operation, all sharing the same `transaction_hash`.
 /// Without a cache each operation would trigger a separate
 /// `GET /transactions/{hash}` call; with the cache only the first does.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TransactionCache {
     entries: HashMap<String, CacheEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CacheEntry {
     transaction: JoinedTransaction,
     inserted_at: Instant,
@@ -140,8 +180,15 @@ impl TransactionCache {
     /// Number of entries currently in the cache (including possibly-stale ones
     /// that have not been read since they expired).
     #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Whether the cache holds no entries at all.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
@@ -159,10 +206,41 @@ pub struct SubmitExtras {
 }
 
 /// `200` from `POST /transactions`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Submitted {
     pub hash: String,
     pub ledger: u64,
+}
+
+/// Parses Horizon's `200` body from `POST /transactions`.
+///
+/// The transaction was accepted, so a body that cannot be read is reported as
+/// [`ChainError::Unavailable`] (outcome unknown), never as a rejection.
+pub fn parse_submitted(body: &[u8]) -> Result<Submitted, crate::ChainError> {
+    let submitted: Submitted = serde_json::from_slice(body).map_err(|error| {
+        crate::ChainError::Unavailable(format!("unreadable Horizon submission response: {error}"))
+    })?;
+    let is_hash =
+        submitted.hash.len() == 64 && submitted.hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !is_hash || submitted.ledger == 0 {
+        return Err(crate::ChainError::Unavailable(format!(
+            "Horizon accepted the transaction but reported hash {:?} in ledger {}",
+            submitted.hash, submitted.ledger
+        )));
+    }
+    Ok(submitted)
+}
+
+/// A readable reason for a failed `POST /transactions`, including Horizon's
+/// result codes (e.g. `tx_bad_seq`, `op_underfunded`) when it sent them.
+pub fn submit_problem_detail(status: u16, body: &[u8]) -> String {
+    match serde_json::from_slice::<SubmitProblem>(body) {
+        Ok(problem) => match problem.extras.and_then(|extras| extras.result_codes) {
+            Some(codes) => format!("{}: {codes}", problem.title),
+            None => problem.title,
+        },
+        Err(_) => format!("Horizon returned {status}"),
+    }
 }
 
 /// Why a payment into the custody account was not turned into a deposit. Each
@@ -220,9 +298,14 @@ pub fn deposit_from_record(
     let asset = match record.asset_type.as_deref() {
         Some("native") => Asset::Xlm,
         Some("credit_alphanum4") | Some("credit_alphanum12") => {
+            let asset_type = record.asset_type.as_deref().unwrap_or_default();
             let code = record.asset_code.clone().unwrap_or_default();
             let issuer = record.asset_issuer.clone().unwrap_or_default();
-            if code == "USDC" && issuer == network.usdc_issuer() {
+            // Circle issues USDC as alphanum4 only. A 12-character asset named
+            // "USDC" is a different token that borrows the ticker, so it is
+            // counterfeit even when it names Circle's issuer.
+            let usdc_shape_ok = asset_type == "credit_alphanum4";
+            if code == "USDC" && issuer == network.usdc_issuer() && usdc_shape_ok {
                 Asset::Usdc
             } else {
                 // Flag tokens named "USDC" from the wrong issuer separately so
@@ -313,6 +396,80 @@ pub fn extract_muxed_id(destination: &str) -> Option<u64> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    const HASH: &str = "3389e9f0f1a65f19736cacf544c2e825313e8447f569233bb8db39aa607c8889";
+
+    #[test]
+    fn a_submission_response_yields_hash_and_ledger() {
+        let body = serde_json::json!({
+            "hash": HASH,
+            "ledger": 47_123_456,
+            "envelope_xdr": "AAAA",
+            "successful": true
+        });
+        let submitted = parse_submitted(body.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            submitted,
+            Submitted {
+                hash: HASH.to_owned(),
+                ledger: 47_123_456
+            }
+        );
+    }
+
+    #[test]
+    fn an_unreadable_submission_response_is_unknown_not_rejected() {
+        let cases = [
+            b"not json".to_vec(),
+            serde_json::json!({ "ledger": 5 }).to_string().into_bytes(),
+            serde_json::json!({ "hash": "zz", "ledger": 5 })
+                .to_string()
+                .into_bytes(),
+            serde_json::json!({ "hash": HASH, "ledger": 0 })
+                .to_string()
+                .into_bytes(),
+        ];
+        for body in cases {
+            assert!(
+                matches!(
+                    parse_submitted(&body),
+                    Err(crate::ChainError::Unavailable(_))
+                ),
+                "{}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+    }
+
+    #[test]
+    fn rejection_details_carry_horizon_result_codes() {
+        let body = serde_json::json!({
+            "type": "https://stellar.org/horizon-errors/transaction_failed",
+            "title": "Transaction Failed",
+            "status": 400,
+            "extras": {
+                "envelope_xdr": "AAAA",
+                "result_codes": { "transaction": "tx_failed", "operations": ["op_no_destination"] }
+            }
+        });
+        let detail = submit_problem_detail(400, body.to_string().as_bytes());
+        assert!(detail.starts_with("Transaction Failed"), "{detail}");
+        assert!(detail.contains("tx_failed"), "{detail}");
+        assert!(detail.contains("op_no_destination"), "{detail}");
+    }
+
+    #[test]
+    fn rejection_details_fall_back_to_title_or_status() {
+        let titled = serde_json::json!({ "title": "Transaction Malformed" });
+        assert_eq!(
+            submit_problem_detail(400, titled.to_string().as_bytes()),
+            "Transaction Malformed"
+        );
+        assert_eq!(
+            submit_problem_detail(400, b"<html>"),
+            "Horizon returned 400"
+        );
+    }
 
     fn account(seed: u8) -> String {
         stellar_strkey::ed25519::PublicKey([seed; 32])
@@ -623,6 +780,7 @@ mod tests {
         let unsupported = Skipped::UnsupportedAsset {
             code: "FAKE".to_owned(),
             issuer: "GXXXX".to_owned(),
+            counterfeit_usdc: false,
         };
         assert!(unsupported.is_security_sensitive());
 
@@ -735,7 +893,10 @@ mod tests {
             },
         );
 
-        assert!(cache.get("stale").is_none(), "expired entry must not be returned");
+        assert!(
+            cache.get("stale").is_none(),
+            "expired entry must not be returned"
+        );
     }
 
     #[test]

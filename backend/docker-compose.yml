@@ -1,6 +1,6 @@
 # Local development stack.
 #
-#   docker compose up -d postgres api      start the database and the API
+#   docker compose up -d postgres api chain    start database, API and chain service
 #   docker compose run --rm toolbox cargo test
 #
 # Ports are bound to 127.0.0.1 only, so nothing is reachable from your network.
@@ -39,7 +39,26 @@ services:
       postgres:
         condition: service_healthy
 
-  # Rust tooling in a container: build, test, lint. Nothing is installed on the host.
+  # Chain service: Stellar deposit watching and payment signing.
+  # The only process that holds signing keys; kept separate from the API so
+  # compromising the API does not give access to keys.
+  chain:
+    build:
+      context: .
+      args:
+        BIN: engipay-chain
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-engipay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-engipay}
+      STELLAR_CUSTODY_ACCOUNT: ${STELLAR_CUSTODY_ACCOUNT:-}
+      STELLAR_SIGNING_KEY: ${STELLAR_SIGNING_KEY:-}
+      BIND_ADDR: 0.0.0.0:8081
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Rust tooling for development: build, test, lint. Nothing is installed on the host.
   toolbox:
     build:
       context: .

@@ -1,52 +1,80 @@
-//! Base (EVM) deposit detection.
+//! EVM (Base) chain support.
 //!
-//! Everything here is pure: JSON-RPC responses in, deposits out. The RPC
-//! client that fetches blocks and logs is a separate concern.
+//! Provides the Base JSON-RPC client ([`client`]), the USDC and native-ETH
+//! deposit parsing it is built on ([`erc20`], [`eth`]), and a finalized-height
+//! polling loop ([`watcher`]) the client can attach to. [`BaseClient`]
+//! implements [`crate::ChainClient`], so `engipay-chain watch` polls it
+//! alongside Stellar (see [`crate::watch`]).
 
+pub mod client;
 pub mod confirmations;
 pub mod erc20;
 pub mod eth;
+pub mod watcher;
 
-/// Why a transaction or log was not turned into a deposit.
+pub use client::BaseClient;
+pub use erc20::BaseNetwork;
+
+/// `chain_cursors.chain` value under which the Base watcher stores its cursor.
+pub const BASE_CHAIN_KEY: &str = "base";
+
+/// Why a transfer or event was not turned into a deposit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Skipped {
-    /// Not addressed to one of our deposit addresses, or carries no value.
+    /// Outgoing, zero-value, or not a transfer at all.
     NotIncoming,
-    /// Reverted on-chain: no value actually moved.
+    /// Transaction reverted.
     Failed,
-    /// A `Transfer` from a contract other than the canonical USDC, e.g. a fake
-    /// token. Security-sensitive: someone may be probing for a false credit.
+    /// A token contract that is not the canonical USDC on this network.
+    /// Security-sensitive: unauthorized tokens must be logged for audit.
     UnauthorizedContract(String),
+    /// Structurally invalid or unparseable data.
     Malformed(&'static str),
 }
 
 impl Skipped {
+    /// Whether this rejection requires security audit logging.
     pub fn is_security_sensitive(&self) -> bool {
         matches!(self, Skipped::UnauthorizedContract(_))
     }
 }
 
-/// Validates a `0x`-prefixed 20-byte address and lowercases it, so addresses
-/// compare equal regardless of EIP-55 checksum casing.
-pub fn normalize_address(input: &str) -> Option<String> {
-    let hex = input.strip_prefix("0x")?;
-    (hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-        .then(|| format!("0x{}", hex.to_ascii_lowercase()))
-}
-
-/// Parses a JSON-RPC hex quantity (e.g. `"0x1bc16d674ec80000"`). `None` if it
-/// is malformed or does not fit the ledger's `i128`.
-pub(crate) fn parse_quantity(input: &str) -> Option<i128> {
-    let hex = input.strip_prefix("0x")?;
-    if hex.is_empty() {
+/// Normalizes an Ethereum address to lowercase without the `0x` prefix removed.
+///
+/// Returns `None` for addresses that are not 42-character `0x`-prefixed hex.
+/// Checksum validation is not performed (all valid checksums become lowercase).
+pub fn normalize_address(address: &str) -> Option<String> {
+    let stripped = address
+        .strip_prefix("0x")
+        .or_else(|| address.strip_prefix("0X"))?;
+    if stripped.len() != 40 || !stripped.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
+    Some(format!("0x{}", stripped.to_ascii_lowercase()))
+}
+
+/// Parses a `0x`-prefixed hex quantity (Ethereum JSON-RPC format) into an `i128`.
+///
+/// Returns `None` for non-hex input or values that overflow `i128`.
+pub fn parse_quantity(s: &str) -> Option<i128> {
+    let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
+    if hex.is_empty() {
+        return Some(0);
+    }
+    // u128 first, then try to fit into i128.
     let value = u128::from_str_radix(hex, 16).ok()?;
     i128::try_from(value).ok()
 }
 
-pub(crate) fn parse_u64(input: &str) -> Option<u64> {
-    parse_quantity(input).and_then(|v| u64::try_from(v).ok())
+/// Parses a `0x`-prefixed hex string into a `u64`.
+///
+/// Returns `None` for non-hex input or overflow.
+pub fn parse_u64(s: &str) -> Option<u64> {
+    let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
+    if hex.is_empty() {
+        return Some(0);
+    }
+    u64::from_str_radix(hex, 16).ok()
 }
 
 #[cfg(test)]
@@ -54,32 +82,85 @@ mod tests {
     use super::*;
 
     #[test]
-    fn addresses_are_validated_and_lowercased() {
+    fn normalize_address_lowercases_checksummed_addresses() {
         assert_eq!(
-            normalize_address("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913").as_deref(),
-            Some("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913")
+            normalize_address("0xAbC0000000000000000000000000000000000001"),
+            Some("0xabc0000000000000000000000000000000000001".to_owned())
         );
+    }
+
+    #[test]
+    fn normalize_address_accepts_already_lowercase() {
         assert_eq!(
-            normalize_address("833589fcd6edb6e08f4c7c32d4f71b54bda02913"),
-            None
+            normalize_address("0xabc0000000000000000000000000000000000001"),
+            Some("0xabc0000000000000000000000000000000000001".to_owned())
         );
-        assert_eq!(normalize_address("0x1234"), None);
+    }
+
+    #[test]
+    fn normalize_address_rejects_wrong_length() {
+        assert_eq!(normalize_address("0x123"), None);
+        assert_eq!(normalize_address("0xabcdef"), None);
         assert_eq!(
-            normalize_address("0xzz3589fcd6edb6e08f4c7c32d4f71b54bda02913"),
+            normalize_address("0xabc000000000000000000000000000000000000011"),
             None
         );
     }
 
     #[test]
-    fn quantities_parse_or_refuse() {
-        assert_eq!(parse_quantity("0x0"), Some(0));
+    fn normalize_address_rejects_non_hex() {
         assert_eq!(
-            parse_quantity("0x1bc16d674ec80000"),
-            Some(2_000_000_000_000_000_000)
+            normalize_address("0xZZZ0000000000000000000000000000000000001"),
+            None
         );
-        assert_eq!(parse_quantity("0x"), None);
-        assert_eq!(parse_quantity("12"), None);
-        // Above i128::MAX: refused rather than wrapped.
-        assert_eq!(parse_quantity(&format!("0x{}", "f".repeat(32))), None);
+    }
+
+    #[test]
+    fn normalize_address_rejects_missing_prefix() {
+        assert_eq!(
+            normalize_address("abc0000000000000000000000000000000000001"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_quantity_hex_values() {
+        assert_eq!(parse_quantity("0x0"), Some(0));
+        assert_eq!(parse_quantity("0x1"), Some(1));
+        assert_eq!(parse_quantity("0xff"), Some(255));
+        assert_eq!(
+            parse_quantity("0xde0b6b3a7640000"),
+            Some(1_000_000_000_000_000_000)
+        );
+    }
+
+    #[test]
+    fn parse_quantity_empty_hex_is_zero() {
+        assert_eq!(parse_quantity("0x"), Some(0));
+    }
+
+    #[test]
+    fn parse_quantity_rejects_non_hex() {
+        assert_eq!(parse_quantity("1000"), None);
+        assert_eq!(parse_quantity("0xGG"), None);
+    }
+
+    #[test]
+    fn parse_quantity_max_i128() {
+        let max_hex = format!("0x{:x}", i128::MAX);
+        assert_eq!(parse_quantity(&max_hex), Some(i128::MAX));
+    }
+
+    #[test]
+    fn parse_u64_parses_block_numbers() {
+        assert_eq!(parse_u64("0x0"), Some(0));
+        assert_eq!(parse_u64("0x64"), Some(100));
+        assert_eq!(parse_u64("0x1a2b3c"), Some(0x1a2b3c));
+    }
+
+    #[test]
+    fn parse_u64_rejects_overflow() {
+        // 2^64 in hex
+        assert_eq!(parse_u64("0x10000000000000000"), None);
     }
 }

@@ -17,6 +17,7 @@ import {
   type StellarMemo,
 } from "@/lib/payment-uri"
 import { type StellarAssetCode, stellarNetwork, stellarTransactionUrl } from "@/lib/stellar"
+import { broadcastPosPayment } from "@/lib/pos"
 import { cn } from "@/lib/utils"
 
 const ASSETS: { code: StellarAssetCode; icon: string }[] = [
@@ -80,6 +81,14 @@ export function StellarSendPayment({
         memo: memo ? { type: memoType, value: memo } : undefined,
       })
       setSent(result)
+      broadcastPosPayment({
+        type: "payment_received",
+        recipient,
+        amount,
+        asset,
+        txHash: result.hash,
+        chain: "stellar",
+      })
     } catch (error) {
       toast({
         title: "Payment not sent",
