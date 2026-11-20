@@ -20,6 +20,7 @@ use crate::routes::auth::AuthUser;
 
 /// Request to start a Naira deposit (NGN -> USDC).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartDepositRequest {
     /// Amount in Naira (e.g., "10000").
     pub amount: String,
@@ -62,6 +63,7 @@ pub struct AnchorTransactionStatus {
 
 /// Request to start a Naira withdrawal (USDC -> NGN).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartWithdrawalRequest {
     /// Amount in USDC to withdraw (e.g. "50.00").
     pub amount: String,

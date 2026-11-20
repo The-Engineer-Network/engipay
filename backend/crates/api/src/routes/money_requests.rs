@@ -41,6 +41,7 @@ use crate::services::recipient::resolve_recipient;
 
 /// Body for `POST /v1/money-requests`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateMoneyRequest {
     /// EngiPay tag of the person being asked to pay.
     pub recipient_tag: String,
@@ -60,6 +61,7 @@ fn default_expiry_hours() -> i64 {
 
 /// Body for `POST /v1/money-requests/:id/accept`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcceptMoneyRequest {
     /// Client-generated UUID. Re-send the same key on every retry so the
     /// transfer is only booked once.
