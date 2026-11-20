@@ -1,0 +1,90 @@
+#!/usr/bin/env sh
+# pre-commit — block commits that introduce supply-chain attack patterns.
+#
+# Install: git config core.hooksPath scripts/hooks
+#
+# Checks staged versions of tracked config files for:
+#   1. Lines over 1 000 characters (hidden payload padding)
+#   2. JS obfuscation markers: global.i = and _0x identifiers
+#
+# Works on macOS, Linux and Git Bash on Windows.
+
+set -eu
+
+FAILED=0
+RED='\033[0;31m'
+NC='\033[0m'
+
+# Config files checked for long lines
+CONFIG_PATTERNS="postcss.config.* next.config.* tailwind.config.* \
+  .eslintrc.* babel.config.* vite.config.* jest.config.* webpack.config.*"
+
+# Obfuscation patterns (ERE)
+OBFUS_PATTERNS="global\.i[[:space:]]*= _0x[0-9a-fA-F]{4,}"
+
+# Get list of staged files
+STAGED=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+[ -z "$STAGED" ] && exit 0
+
+for file in $STAGED; do
+  # ----------------------------------------------------------------
+  # 1. Long lines in config files
+  # ----------------------------------------------------------------
+  MATCH=0
+  for pat in $CONFIG_PATTERNS; do
+    case "$file" in
+      $pat) MATCH=1; break ;;
+      */$pat) MATCH=1; break ;;
+    esac
+  done
+
+  if [ "$MATCH" -eq 1 ]; then
+    # Read staged content (not working tree)
+    git show ":$file" 2>/dev/null | while IFS= read -r line; do
+      len=${#line}
+      if [ "$len" -gt 1000 ]; then
+        printf "${RED}BLOCKED${NC}: $file has a line of $len characters (max 1000).\n" >&2
+        printf "         This matches the supply-chain attack pattern from 2026.\n" >&2
+        exit 1
+      fi
+    done || { FAILED=1; }
+  fi
+
+  # ----------------------------------------------------------------
+  # 2. Obfuscation markers in JS/TS source files
+  # ----------------------------------------------------------------
+  case "$file" in
+    *.js|*.mjs|*.cjs|*.ts|*.tsx)
+      for pat in $OBFUS_PATTERNS; do
+        if git show ":$file" 2>/dev/null | grep -qE "$pat"; then
+          printf "${RED}BLOCKED${NC}: $file contains obfuscation marker: $pat\n" >&2
+          FAILED=1
+        fi
+      done
+      ;;
+  esac
+
+  # ----------------------------------------------------------------
+  # 3. Source files saved as UTF-16
+  # ----------------------------------------------------------------
+  # Cargo, rustc and Postgres all require UTF-8. A file saved as UTF-16
+  # by an editor breaks the build in ways that are easy to miss.
+  case "$file" in
+    *.rs|*.toml|*.sql|*.ts|*.tsx|*.js|*.mjs|*.cjs|*.json|*.md|*.sh|*.yml|*.yaml)
+      bom=$(git show ":$file" 2>/dev/null | head -c 2 | od -An -tx1 | tr -d ' \n')
+      case "$bom" in
+        fffe|feff)
+          printf "${RED}BLOCKED${NC}: $file is UTF-16 encoded.\n" >&2
+          printf "         Cargo, rustc and Postgres all need UTF-8. Save it as UTF-8.\n" >&2
+          FAILED=1
+          ;;
+      esac
+      ;;
+  esac
+done
+
+if [ "$FAILED" -ne 0 ]; then
+  printf "\npre-commit: commit blocked due to security checks above.\n" >&2
+  printf "If this is a false positive, discuss in the pull request before bypassing.\n" >&2
+  exit 1
+fi

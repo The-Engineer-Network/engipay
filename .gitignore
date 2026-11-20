@@ -45,6 +45,11 @@ starkli.zip
 # verification builds run alongside the dev server
 /.next-verify/
 
+# Playwright browser test output
+/test-results/
+/playwright-report/
+/blob-report/
+
 # Templates contain no secrets and should be committed
 !**/.env.example
 

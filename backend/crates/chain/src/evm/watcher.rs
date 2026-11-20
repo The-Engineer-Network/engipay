@@ -17,8 +17,8 @@
 //! `serde_json` (already in the workspace) to make raw JSON-RPC 2.0 calls.
 //! This avoids a large dependency for what is currently a single RPC method.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -62,10 +62,29 @@ impl<'a> RpcRequest<'a> {
 #[derive(Debug, Deserialize)]
 pub struct RpcResponse {
     pub id: u64,
-    #[serde(default)]
+    /// `Some(Value::Null)` when the node returned `"result": null` (no finalized block yet).
+    /// `None` when the `result` field was absent entirely (malformed response).
+    #[serde(default, deserialize_with = "deserialize_result_field")]
     pub result: Option<serde_json::Value>,
     #[serde(default)]
     pub error: Option<RpcError>,
+}
+
+/// Deserializer that distinguishes a JSON `null` value from a missing field.
+///
+/// Serde's default `Option<T>` deserializer maps both absent fields and `null`
+/// values to `None`. For JSON-RPC, `"result": null` means "no block yet" while
+/// an absent `result` field means a malformed response. We need to tell these
+/// apart, so `null` → `Some(Value::Null)` and absent → `None`.
+fn deserialize_result_field<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Deserialise whatever JSON value is present (including null). This is
+    // called only when the field *exists* in the input (because `#[serde(default)]`
+    // handles the absent-field case and returns `None` without calling us).
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(Some(value))
 }
 
 /// A JSON-RPC error object.
@@ -110,10 +129,7 @@ pub enum ParsedBlock {
 /// [`ParsedBlock::Invalid`] for any other error condition.
 pub fn parse_block_response(response: &RpcResponse) -> ParsedBlock {
     if let Some(error) = &response.error {
-        return ParsedBlock::Invalid(format!(
-            "JSON-RPC error {}: {}",
-            error.code, error.message
-        ));
+        return ParsedBlock::Invalid(format!("JSON-RPC error {}: {}", error.code, error.message));
     }
 
     let result = match &response.result {
@@ -608,7 +624,11 @@ mod tests {
 
         watcher.poll_once(2).await.unwrap();
         // Height must still be 500, not 499
-        assert_eq!(height.get(), 500, "height must not decrease on delayed block");
+        assert_eq!(
+            height.get(),
+            500,
+            "height must not decrease on delayed block"
+        );
     }
 
     /// When the node returns `null` (block production delayed), the stored
