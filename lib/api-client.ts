@@ -422,9 +422,29 @@ export async function createPaymentRequest(
 }
 
 /** GET /v1/payment-requests — list the signed-in merchant's payment requests. */
-export async function listPaymentRequests(): Promise<PaymentRequestSummary[]> {
-  const result = await apiRequest<PaymentRequestSummary[]>("/v1/payment-requests")
-  return result ?? []
+export async function listPaymentRequests(
+  opts: { limit?: number; cursor?: string } = {}
+): Promise<PaymentRequestSummary[]> {
+  const page = await listPaymentRequestsPage(opts)
+  return page.requests
+}
+
+export interface PaymentRequestsPage {
+  requests: PaymentRequestSummary[]
+  cursor: string | null
+  has_more: boolean
+}
+
+/** GET /v1/payment-requests with `limit` and `cursor` pagination. */
+export async function listPaymentRequestsPage(
+  opts: { limit?: number; cursor?: string } = {}
+): Promise<PaymentRequestsPage> {
+  const qs = new URLSearchParams()
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit))
+  if (opts.cursor) qs.set("cursor", opts.cursor)
+  const suffix = qs.toString() ? `?${qs.toString()}` : ""
+  const result = await apiRequest<PaymentRequestsPage>(`/v1/payment-requests${suffix}`)
+  return result ?? { requests: [], cursor: null, has_more: false }
 }
 
 // ── Batch Payments Functions (#512) ──────────────────────────────────────────
