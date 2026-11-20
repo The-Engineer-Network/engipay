@@ -21,3 +21,9 @@ describe("payment request view helpers", () => {
     assert.equal(buildRequestUri("abc", "USDC", "100"), "engipay:abc?asset=USDC&amount=100")
   })
 })
+
+describe("cancelled requests", () => {
+  it("cannot be shown as open", () => {
+    assert.equal(resolveRequestView("cancelled", "2099-01-01T00:00:00Z"), "cancelled")
+  })
+})

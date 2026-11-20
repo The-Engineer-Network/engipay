@@ -78,6 +78,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/payment-requests/{id}", get(get_payment_request))
         .route("/payment-requests/{id}/pay", post(record_payment))
+        .route(
+            "/payment-requests/{id}/cancel",
+            post(crate::routes::payment_request_cancel::cancel_payment_request),
+        )
         .route("/payment-requests", get(list_payment_requests))
 }
 

@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import { listPaymentRequests, type PaymentRequestSummary } from "@/lib/api-client"
+import { cancelPaymentRequest, listPaymentRequests, type PaymentRequestSummary } from "@/lib/api-client"
 import { formatRequestAmount, resolveRequestView } from "@/lib/payment-request-view"
 
 const LABELS: Record<string, string> = {
@@ -26,6 +27,16 @@ export function MyPaymentRequests() {
       setError(e instanceof Error ? e.message : "Could not load your payment requests.")
     }
   }, [])
+
+  async function handleCancel(id: string) {
+    if (!window.confirm("Cancel this payment request? It can no longer be paid.")) return
+    try {
+      await cancelPaymentRequest(id)
+      await load()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Could not cancel the request.")
+    }
+  }
 
   useEffect(() => {
     void load()
@@ -61,9 +72,16 @@ export function MyPaymentRequests() {
                     Paid {formatRequestAmount(r.amount_paid, r.asset)} {r.asset}
                   </p>
                 </div>
-                <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold">
-                  {LABELS[view]}
-                </span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold">
+                    {LABELS[view]}
+                  </span>
+                  {view === "open" && r.status === "pending" && (
+                    <Button variant="outline" size="sm" onClick={() => void handleCancel(r.id)}>
+                      Cancel
+                    </Button>
+                  )}
+                </div>
               </div>
             )
           })}

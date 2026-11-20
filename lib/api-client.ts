@@ -429,6 +429,16 @@ export async function listPaymentRequests(
   return page.requests
 }
 
+/** POST /v1/payment-requests/{id}/cancel — owner cancels a pending request. */
+export async function cancelPaymentRequest(id: string): Promise<{ id: string; status: string }> {
+  const result = await apiRequest<{ id: string; status: string }>(
+    `/v1/payment-requests/${id}/cancel`,
+    { method: "POST" }
+  )
+  if (!result) throw new Error("API did not confirm the cancellation.")
+  return result
+}
+
 export interface PaymentRequestsPage {
   requests: PaymentRequestSummary[]
   cursor: string | null
