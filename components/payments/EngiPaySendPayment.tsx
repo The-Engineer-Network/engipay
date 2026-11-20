@@ -48,6 +48,16 @@ export function EngiPaySendPayment({
     asset: string
   } | null>(null)
 
+  // The live region stays mounted while the form switches to its receipt view,
+  // so each status change is announced rather than treated as new content.
+  const sendStatus = receipt
+    ? `Payment sent. ${receipt.amount} ${receipt.asset} to ${receipt.recipient}.`
+    : isSubmitting
+      ? "Sending payment…"
+      : errorMessage
+        ? `Payment not sent. ${errorMessage}`
+        : ""
+
   // Find user's available balance for this asset
   const assetBalance = balances.find((b) => b.asset.toUpperCase() === asset.toUpperCase())
   const availableAmount = assetBalance?.available ?? "0"
@@ -144,116 +154,119 @@ export function EngiPaySendPayment({
     }
   }
 
-  if (receipt) {
-    return (
-      <div className="flex flex-col items-center gap-4 rounded-xl border border-success/30 bg-success/10 p-6 text-center">
-        <span className="flex h-12 w-12 items-center justify-center rounded-full bg-success text-success-foreground">
-          <CheckCircle2 className="h-6 w-6" />
-        </span>
-        <div>
-          <h3 className="text-lg font-semibold text-foreground">Payment Sent!</h3>
-          <p className="text-sm text-muted-foreground mt-1">
-            Sent <span className="font-medium text-foreground">{receipt.amount} {receipt.asset}</span> to{" "}
-            <span className="font-medium text-foreground">{receipt.recipient}</span>
-          </p>
-          <p className="mt-2 text-xs font-mono text-muted-foreground">
-            Transaction ID: {receipt.txId.slice(0, 16)}...
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          className="mt-2 rounded-full"
-          onClick={() => {
-            setReceipt(null)
-            setAmount("")
-            setTag("")
-          }}
-        >
-          Send another payment
-        </Button>
-      </div>
-    )
-  }
-
   return (
-    <form onSubmit={handleSend} className="space-y-4">
-      {errorMessage && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 p-3.5 text-xs text-destructive">
-          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-          <span>{errorMessage}</span>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        <Label htmlFor="engipay-recipient">Recipient (@tag or user ID)</Label>
-        <Input
-          id="engipay-recipient"
-          placeholder="@alice"
-          value={tag}
-          onChange={(e) => setTag(e.target.value)}
-          disabled={isSubmitting}
-        />
-        <p className="text-[11px] text-muted-foreground">
-          Internal EngiPay transfers settle immediately with zero network fees.
-        </p>
+    <>
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {sendStatus}
       </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-2">
-          <Label htmlFor="engipay-asset">Asset</Label>
-          <Select
-            value={asset}
-            onValueChange={(val) => setAsset(val as CustodialAsset)}
-            disabled={isSubmitting}
-          >
-            <SelectTrigger id="engipay-asset">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {CUSTODIAL_ASSETS.map((symbol) => (
-                <SelectItem key={symbol} value={symbol}>
-                  {symbol}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="engipay-amount">Amount</Label>
-            <span className="text-[11px] text-muted-foreground tabular-nums">
-              Avail: {availableAmount}
-            </span>
+      {receipt ? (
+        <div className="flex flex-col items-center gap-4 rounded-xl border border-success/30 bg-success/10 p-6 text-center">
+          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-success text-success-foreground">
+            <CheckCircle2 className="h-6 w-6" />
+          </span>
+          <div>
+            <h3 className="text-lg font-semibold text-foreground">Payment Sent!</h3>
+            <p className="text-sm text-muted-foreground mt-1">
+              Sent <span className="font-medium text-foreground">{receipt.amount} {receipt.asset}</span> to{" "}
+              <span className="font-medium text-foreground">{receipt.recipient}</span>
+            </p>
+            <p className="mt-2 text-xs font-mono text-muted-foreground">
+              Transaction ID: {receipt.txId.slice(0, 16)}...
+            </p>
           </div>
-          <Input
-            id="engipay-amount"
-            inputMode="decimal"
-            placeholder="0.00"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value.trim())}
-            disabled={isSubmitting}
-          />
+          <Button
+            variant="outline"
+            className="mt-2 rounded-full"
+            onClick={() => {
+              setReceipt(null)
+              setAmount("")
+              setTag("")
+            }}
+          >
+            Send another payment
+          </Button>
         </div>
-      </div>
+      ) : (
+        <form onSubmit={handleSend} className="space-y-4">
+          {errorMessage && (
+            <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 p-3.5 text-xs text-destructive">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
 
-      <Button
-        type="submit"
-        disabled={isSubmitting || !tag.trim() || !amount.trim()}
-        className="w-full rounded-full"
-      >
-        {isSubmitting ? (
-          <>
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Sending...
-          </>
-        ) : (
-          <>
-            <ArrowUpRight className="mr-1.5 h-4 w-4" />
-            Send {amount ? `${amount} ${asset}` : "Payment"}
-          </>
-        )}
-      </Button>
-    </form>
+          <div className="space-y-2">
+            <Label htmlFor="engipay-recipient">Recipient (@tag or user ID)</Label>
+            <Input
+              id="engipay-recipient"
+              placeholder="@alice"
+              value={tag}
+              onChange={(e) => setTag(e.target.value)}
+              disabled={isSubmitting}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Internal EngiPay transfers settle immediately with zero network fees.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="engipay-asset">Asset</Label>
+              <Select
+                value={asset}
+                onValueChange={(val) => setAsset(val as CustodialAsset)}
+                disabled={isSubmitting}
+              >
+                <SelectTrigger id="engipay-asset">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CUSTODIAL_ASSETS.map((symbol) => (
+                    <SelectItem key={symbol} value={symbol}>
+                      {symbol}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="engipay-amount">Amount</Label>
+                <span className="text-[11px] text-muted-foreground tabular-nums">
+                  Avail: {availableAmount}
+                </span>
+              </div>
+              <Input
+                id="engipay-amount"
+                inputMode="decimal"
+                placeholder="0.00"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value.trim())}
+                disabled={isSubmitting}
+              />
+            </div>
+          </div>
+
+          <Button
+            type="submit"
+            disabled={isSubmitting || !tag.trim() || !amount.trim()}
+            className="w-full rounded-full"
+          >
+            {isSubmitting ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Sending...
+              </>
+            ) : (
+              <>
+                <ArrowUpRight className="mr-1.5 h-4 w-4" />
+                Send {amount ? `${amount} ${asset}` : "Payment"}
+              </>
+            )}
+          </Button>
+        </form>
+      )}
+    </>
   )
 }
