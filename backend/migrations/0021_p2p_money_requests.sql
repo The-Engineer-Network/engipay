@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS p2p_money_requests (
 
     -- The ledger transfer that settled this request (set on accept).
     -- Unique so accepting twice (double-tap) cannot create two transfers.
-    transfer_id     UUID        UNIQUE REFERENCES ledger_entries (id),
+    transfer_id     UUID        UNIQUE REFERENCES ledger_transactions (id),
 
     -- Idempotency key supplied by the acceptor. The accept handler
     -- inserts with ON CONFLICT DO NOTHING on this column so a retry
