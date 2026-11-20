@@ -27,6 +27,9 @@ pub struct TransferRequest {
     pub asset: Asset,
     pub amount: String,
     pub reference: String,
+    /// Optional note shown to the receiver, at most 140 characters.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// Validation failures for a [`TransferRequest`].
@@ -37,6 +40,7 @@ pub enum TransferRequestError {
     NonPositiveAmount,
     OverPreciseAmount,
     InvalidReference,
+    InvalidNote,
 }
 
 impl TransferRequest {
@@ -51,6 +55,9 @@ impl TransferRequest {
         if reference_len == 0 || reference_len > 64 {
             return Err(TransferRequestError::InvalidReference);
         }
+
+        crate::routes::transfer_note::validate_note(self.note.as_deref())
+            .map_err(|_| TransferRequestError::InvalidNote)?;
 
         Ok(())
     }
@@ -133,6 +140,9 @@ pub struct TransferReceipt {
     pub amount: String,
     pub created_at: String,
     pub status: TransferStatus,
+    /// The sender's optional note, when one was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Terminal status of a successfully executed transfer.
@@ -161,6 +171,7 @@ impl TransferReceipt {
             amount: amount_minor_units.to_string(),
             created_at,
             status: TransferStatus::Completed,
+            note: crate::routes::transfer_note::normalize_note(request.note.as_deref()),
         }
     }
 }
@@ -263,6 +274,16 @@ async fn create_transfer(
     let created_at = now_iso8601();
     let sender_tag = sender.as_uuid().to_string();
 
+    // Store the optional note against the ledger transaction (#696).
+    if let Some(note) = crate::routes::transfer_note::normalize_note(request.note.as_deref()) {
+        sqlx::query("UPDATE ledger_transactions SET note = $2 WHERE id = $1")
+            .bind(receipt.transaction_id)
+            .bind(note)
+            .execute(&pool)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to store note: {}", e)))?;
+    }
+
     // Build a canonical, minimal receipt (only the two parties' tags, the
     // amount, asset and timestamp) and sign it so it can be verified outside
     // the app without exposing any other user's data.
@@ -293,6 +314,7 @@ async fn create_transfer(
                 amount: money.minor.to_string(),
                 created_at,
                 status: TransferStatus::Completed,
+                note: crate::routes::transfer_note::normalize_note(request.note.as_deref()),
             },
             signed_receipt: signed,
         }),
@@ -374,6 +396,7 @@ mod tests {
             asset: Asset::Usdc,
             amount: amount.to_string(),
             reference: reference.to_string(),
+            note: None,
         }
     }
 

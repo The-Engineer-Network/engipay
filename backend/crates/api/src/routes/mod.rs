@@ -14,6 +14,7 @@ pub mod metrics;
 pub mod money_request_cancel;
 pub mod money_request_status;
 pub mod money_requests;
+pub mod transfer_note;
 pub mod naira;
 pub mod openapi;
 pub mod payment_requests;

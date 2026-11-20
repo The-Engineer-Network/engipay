@@ -34,6 +34,7 @@ export function EngiPaySendPayment({
 
   const [tag, setTag] = useState(initialRecipient)
   const [amount, setAmount] = useState(initialAmount)
+  const [note, setNote] = useState("")
   const [asset, setAsset] = useState<CustodialAsset>(
     CUSTODIAL_ASSETS.includes(initialAsset as CustodialAsset)
       ? (initialAsset as CustodialAsset)
@@ -103,6 +104,7 @@ export function EngiPaySendPayment({
           asset: asset.toUpperCase(),
           amount: amount.trim(),
           reference: idempotencyRef,
+          ...(note.trim() ? { note: note.trim() } : {}),
         }),
       })
 
@@ -235,6 +237,23 @@ export function EngiPaySendPayment({
             disabled={isSubmitting}
           />
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label htmlFor="engipay-note">Note (optional)</Label>
+          <span className="text-[11px] text-muted-foreground tabular-nums">
+            {note.length}/140
+          </span>
+        </div>
+        <Input
+          id="engipay-note"
+          maxLength={140}
+          placeholder="What is this for?"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          disabled={isSubmitting}
+        />
       </div>
 
       <Button
