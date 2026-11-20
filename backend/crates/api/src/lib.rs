@@ -105,9 +105,23 @@ async fn track_request_metrics(
     use std::sync::atomic::Ordering;
 
     let is_v1 = request.uri().path().starts_with("/v1/");
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map_or_else(|| "unmatched".to_owned(), |path| path.as_str().to_owned());
+    let method: &'static str = match request.method().as_str() {
+        "GET" => "GET",
+        "POST" => "POST",
+        "PUT" => "PUT",
+        "PATCH" => "PATCH",
+        "DELETE" => "DELETE",
+        _ => "OTHER",
+    };
     let start = std::time::Instant::now();
     let response = next.run(request).await;
     let elapsed_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+    metrics::record_route(&route, method, response.status().as_u16(), elapsed_us);
 
     if is_v1 {
         metrics::REQUESTS_V1.fetch_add(1, Ordering::Relaxed);
