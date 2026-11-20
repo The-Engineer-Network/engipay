@@ -9,11 +9,34 @@
 
 export {
   ApiRequestError,
+  ACCOUNT_FROZEN_ERROR_CODE,
+  ACCOUNT_FROZEN_EVENT,
   readSessionToken,
   writeSessionToken,
   clearSessionToken,
 } from "./api.ts"
-import { apiRequest, apiPublicRequest } from "./api.ts"
+import {
+  ApiRequestError,
+  ACCOUNT_FROZEN_ERROR_CODE,
+  apiRequest,
+  apiPublicRequest,
+} from "./api.ts"
+
+/** Returns true only for the API's account-frozen error. */
+export function isAccountFrozenError(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.code === ACCOUNT_FROZEN_ERROR_CODE
+}
+
+/** Returns true only for an API response body containing account_frozen. */
+export function isAccountFrozenResponse(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false
+  const error = (body as { error?: unknown }).error
+  return (
+    !!error &&
+    typeof error === "object" &&
+    (error as { code?: unknown }).code === ACCOUNT_FROZEN_ERROR_CODE
+  )
+}
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
