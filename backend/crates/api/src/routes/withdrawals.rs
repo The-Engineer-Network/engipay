@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
+    auth::AuthUser,
     error::{ApiError, LedgerError},
     services::cooling_off,
     services::destination_screen::ScreenResult,
@@ -25,7 +26,6 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateWithdrawalRequest {
-    pub user_id: Uuid,
     pub amount: i64,
     pub estimated_network_fee: i64,
     pub destination: String,
@@ -80,8 +80,10 @@ fn is_custody_address(destination: &str, state: &AppState) -> bool {
 
 pub async fn create_withdrawal(
     State(state): State<AppState>,
+    user: AuthUser,
     Json(payload): Json<CreateWithdrawalRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let user_id = user.user_id;
     if payload.amount <= 0 {
         return Err(ApiError::from(LedgerError::InvalidAmount));
     }
@@ -106,8 +108,8 @@ pub async fn create_withdrawal(
         return Err(ApiError::from(LedgerError::InvalidDestination));
     }
 
-    // Overflow guard only: the balance check that uses this sum is not wired in yet.
-    payload
+    // Total that must be locked: principal plus the estimated network fee.
+    let required_total = payload
         .amount
         .checked_add(payload.estimated_network_fee)
         .ok_or(LedgerError::InvalidAmount)?;
@@ -119,7 +121,7 @@ pub async fn create_withdrawal(
 
     // Check if sender's account is frozen
     let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
-        .bind(payload.user_id)
+        .bind(user_id)
         .fetch_optional(&pool)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
@@ -131,7 +133,7 @@ pub async fn create_withdrawal(
 
     // Check if withdrawal destination is in cooling-off period
     let cooling_off_decision =
-        cooling_off::check_address_cooling_off(&pool, payload.user_id, &payload.destination)
+        cooling_off::check_address_cooling_off(&pool, user_id, &payload.destination)
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("cooling off check failed: {}", e)))?;
 
@@ -155,21 +157,48 @@ pub async fn create_withdrawal(
     let withdrawal_id = Uuid::new_v4();
     let hold_ref = withdrawal_hold_reference(withdrawal_id);
 
+    // Place the hold and insert the withdrawal row atomically: if the hold
+    // fails (e.g. insufficient funds) no withdrawal row is created.
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to begin transaction: {}", e)))?;
+
+    let ledger = engipay_ledger::PostgresLedgerStore::new(pool.clone());
+    ledger
+        .create_hold(&mut tx, user_id, required_total, &hold_ref)
+        .await
+        .map_err(|e| match e {
+            engipay_ledger::LedgerError::InsufficientFunds { available } => {
+                ApiError::from(LedgerError::InsufficientFunds {
+                    required: required_total,
+                    available,
+                    amount: payload.amount,
+                    network_fee: payload.estimated_network_fee,
+                })
+            }
+            other => ApiError::Internal(anyhow::anyhow!("failed to create hold: {}", other)),
+        })?;
+
     // Store the withdrawal with its hold reference
     sqlx::query(
         "INSERT INTO withdrawals (id, user_id, amount, estimated_network_fee, destination, hold_reference, status, cooling_off_until)          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
     )
     .bind(withdrawal_id)
-    .bind(payload.user_id)
+    .bind(user_id)
     .bind(payload.amount)
     .bind(payload.estimated_network_fee)
     .bind(&payload.destination)
     .bind(&hold_ref)
     .bind(&status)
     .bind(cooling_off_until)
-    .execute(&pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to create withdrawal: {}", e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to commit withdrawal: {}", e)))?;
 
     // Build a canonical receipt for the withdrawal and sign it with the
     // server key so the user can share a verifiable proof of the operation.
@@ -191,7 +220,7 @@ pub async fn create_withdrawal(
         StatusCode::CREATED,
         Json(WithdrawalResponse {
             id: withdrawal_id,
-            user_id: payload.user_id,
+            user_id,
             amount: payload.amount,
             estimated_network_fee: payload.estimated_network_fee,
             status,
@@ -475,5 +504,85 @@ mod tests {
                 .screen(&lower.to_uppercase())
                 .is_blocked()
         );
+    }
+
+    // ── Authentication ────────────────────────────────────────────────────────
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn test_app() -> Router {
+        router().with_state(AppState::with_fakes(
+            None,
+            Config::for_tests(),
+            RateLimiter::new(),
+        ))
+    }
+
+    fn withdrawal_body() -> Body {
+        Body::from(
+            serde_json::json!({
+                "amount": 1_000,
+                "estimated_network_fee": 25,
+                "destination": "0xSomeOtherUserAddress",
+            })
+            .to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_withdrawal_without_token_returns_401() {
+        let response = test_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/withdrawals")
+                    .header("content-type", "application/json")
+                    .body(withdrawal_body())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn create_withdrawal_ignores_user_id_in_body() {
+        // A body-supplied `user_id` must not be accepted as the account
+        // selector: the request is still unauthenticated and rejected.
+        let response = test_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/withdrawals")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "user_id": Uuid::new_v4(),
+                            "amount": 1_000,
+                            "estimated_network_fee": 25,
+                            "destination": "0xSomeOtherUserAddress",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn create_withdrawal_request_has_no_user_id_field() {
+        let payload: CreateWithdrawalRequest = serde_json::from_value(serde_json::json!({
+            "amount": 1_000,
+            "estimated_network_fee": 25,
+            "destination": "0xSomeOtherUserAddress",
+        }))
+        .expect("valid request");
+        assert_eq!(payload.amount, 1_000);
+        assert_eq!(payload.estimated_network_fee, 25);
+        assert_eq!(payload.destination, "0xSomeOtherUserAddress");
     }
 }
