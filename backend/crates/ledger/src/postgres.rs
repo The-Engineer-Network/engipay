@@ -14,9 +14,12 @@ use uuid::Uuid;
 
 use engipay_core::{Asset, Money, UserId};
 
-use crate::{ActiveHold, Balance, HoldState, LedgerError, Receipt};
+use crate::{Balance, HoldState, LedgerError, Receipt};
 
-/// One active (open) hold belonging to a user, returned by [`PostgresLedgerStore::get_active_holds`].
+// ── Public row types ──────────────────────────────────────────────────
+
+/// A single open (in-flight) hold on a user's funds, as returned by
+/// [`PostgresLedgerStore::get_active_holds`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveHold {
     pub reference: String,
@@ -96,9 +99,6 @@ impl PostgresLedgerStore {
             .collect())
     }
 
-    /// Returns all open (in-flight) holds for `user`, ordered by creation
-    /// time ascending.  Only holds in the `open` state are returned; released
-    /// and settled holds are not included.
     /// All open (active) holds for `user`, ordered by creation time ascending.
     ///
     /// Returns an empty `Vec` when the user has no open holds.  Each entry
@@ -117,31 +117,6 @@ impl PostgresLedgerStore {
         .await
         .map_err(db_err)?;
 
-        rows.into_iter()
-            .map(|row| {
-                let reference: String = row.get("reference");
-                let asset_str: String = row.get("asset");
-                let amount_str: String = row.get("amount");
-                let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
-
-                let asset = asset_str
-                    .parse::<Asset>()
-                    .map_err(|_| LedgerError::Database {
-                        code: None,
-                        message: format!("unknown asset in hold: {asset_str}"),
-                    })?;
-                let amount = amount_str
-                    .parse::<i128>()
-                    .map_err(|_| LedgerError::Overflow)?;
-
-                Ok(ActiveHold {
-                    reference,
-                    asset,
-                    amount,
-                    created_at,
-                })
-            })
-            .collect()
         let mut holds = Vec::with_capacity(rows.len());
         for row in rows {
             let reference: String = row.get("reference");
@@ -150,11 +125,15 @@ impl PostgresLedgerStore {
             let created_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
                 row.get("created_at");
 
-            let asset = asset_str.parse::<Asset>().map_err(|_| LedgerError::Database {
-                code: None,
-                message: format!("unknown asset in ledger_holds: {asset_str}"),
-            })?;
-            let amount = amount_str.parse::<i128>().map_err(|_| LedgerError::Overflow)?;
+            let asset = asset_str
+                .parse::<Asset>()
+                .map_err(|_| LedgerError::Database {
+                    code: None,
+                    message: format!("unknown asset in ledger_holds: {asset_str}"),
+                })?;
+            let amount = amount_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
 
             holds.push(ActiveHold {
                 reference,
@@ -167,7 +146,62 @@ impl PostgresLedgerStore {
         Ok(holds)
     }
 
-    /// Credits a user with money that arrived from outside EngiPay.
+    /// Sum of all user-owned balances (available + held) for every asset.
+    ///
+    /// This is the total that the ledger says EngiPay owes its users. It is
+    /// compared against the on-chain custody balance during reconciliation.
+    ///
+    /// Returns one `(Asset, total)` pair per asset that has at least one user
+    /// posting. Assets with no postings are omitted; callers should treat them
+    /// as zero.
+    pub async fn total_liability_by_asset(&self) -> Result<Vec<(Asset, i128)>, LedgerError> {
+        let rows = sqlx::query(
+            "SELECT asset, SUM(amount)::text AS total \
+             FROM ledger_postings \
+             WHERE owner_kind = 'user' \
+             GROUP BY asset",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let symbol: String = row.get("asset");
+            let total_str: String = row.get("total");
+            let Ok(asset) = symbol.parse::<Asset>() else {
+                continue; // Unknown asset symbol — skip rather than failing the whole check.
+            };
+            let total = total_str
+                .parse::<i128>()
+                .map_err(|_| LedgerError::Overflow)?;
+            out.push((asset, total));
+        }
+        Ok(out)
+    }
+
+    /// Records the result of one reconciliation run in `reconciliation_runs`.
+    ///
+    /// `asset` is the asset symbol (e.g. `"XLM"`, `"USDC"`).
+    /// `ledger_liability` and `custody_balance` are in the asset's smallest unit.
+    pub async fn record_reconciliation_run(
+        &self,
+        asset: &str,
+        ledger_liability: i128,
+        custody_balance: i128,
+    ) -> Result<(), LedgerError> {
+        sqlx::query(
+            "INSERT INTO reconciliation_runs (asset, ledger_liability, custody_balance) \
+             VALUES ($1, $2::numeric, $3::numeric)",
+        )
+        .bind(asset)
+        .bind(ledger_liability.to_string())
+        .bind(custody_balance.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
     ///
     /// If `reference` was already used with identical parameters, returns
     /// the original [`Receipt`] with `replayed: true` and moves nothing.
@@ -203,6 +237,22 @@ impl PostgresLedgerStore {
         let neg = negate(money.minor)?;
         insert_posting_system(&mut tx, tx_id, "external_inflow", money.asset, neg).await?;
         insert_posting_user(&mut tx, tx_id, user, money.asset, "available", money.minor).await?;
+
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::FundsDeposited {
+            user_id: user,
+            asset: money.asset,
+            amount: money.minor,
+            reference: reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(reference),
+        )
+        .await?;
 
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
@@ -257,6 +307,22 @@ impl PostgresLedgerStore {
         insert_posting_user(&mut tx, tx_id, user, money.asset, "held", money.minor).await?;
 
         insert_hold(&mut tx, reference, user, money).await?;
+
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::HoldCreated {
+            user_id: user,
+            asset: money.asset,
+            amount: money.minor,
+            reference: reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(reference),
+        )
+        .await?;
 
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
@@ -315,6 +381,23 @@ impl PostgresLedgerStore {
         insert_posting_user(&mut tx, tx_id, from, money.asset, "available", neg).await?;
         insert_posting_user(&mut tx, tx_id, to, money.asset, "available", money.minor).await?;
 
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::TransferCompleted {
+            from_user_id: from,
+            to_user_id: to,
+            asset: money.asset,
+            amount: money.minor,
+            reference: reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(reference),
+        )
+        .await?;
+
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
             transaction_id: tx_id,
@@ -370,6 +453,135 @@ impl PostgresLedgerStore {
         .await?;
 
         update_hold_state(&mut tx, hold_reference, "released").await?;
+
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::HoldReleased {
+            user_id: hold.user,
+            asset: hold.asset,
+            amount: hold.amount,
+            reference: hold_reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(&reference),
+        )
+        .await?;
+
+        tx.commit().await.map_err(db_err)?;
+        Ok(Receipt {
+            transaction_id: tx_id,
+            replayed: false,
+        })
+    }
+
+    /// Settles a hold: the held money leaves EngiPay to an external destination,
+    /// and an optional platform fee is booked as revenue.
+    ///
+    /// Postings:
+    ///   - Debit  user held bucket      (held amount)
+    ///   - Credit ExternalOutflow       (held amount − fee, i.e. the principal)
+    ///   - Credit Fees                  (fee, when `fee` is `Some`)
+    ///
+    /// The fee, when provided, must be in the same asset as the hold and must
+    /// not exceed the held amount.  If the hold is not in the `open` state,
+    /// returns [`LedgerError::HoldClosed`].
+    ///
+    /// Idempotent: settling the same hold again with the same fee returns the
+    /// original receipt with `replayed: true` and moves nothing.
+    pub async fn settle_hold(
+        &self,
+        hold_reference: &str,
+        fee: Option<Money>,
+    ) -> Result<Receipt, LedgerError> {
+        require_non_empty(hold_reference)?;
+        if let Some(f) = fee {
+            crate::require_positive(f)?;
+        }
+
+        with_serializable_retry(|| self.settle_hold_inner(hold_reference, fee)).await
+    }
+
+    async fn settle_hold_inner(
+        &self,
+        hold_reference: &str,
+        fee: Option<Money>,
+    ) -> Result<Receipt, LedgerError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        set_serializable(&mut tx).await?;
+
+        // Idempotency: settle uses a distinct sub-reference so it can coexist
+        // with the hold's own reference in ledger_transactions.
+        let reference = format!("{hold_reference}:settle");
+        let fee_str = fee.map_or_else(|| "none".to_owned(), |f| format!("{}:{}", f.asset, f.minor));
+        let fingerprint = format!("settle|{fee_str}");
+
+        if let Some(receipt) = check_idempotency(&mut tx, &reference, &fingerprint).await? {
+            return Ok(receipt);
+        }
+
+        let hold = get_hold(&mut tx, hold_reference).await?;
+        if hold.state != "open" {
+            return Err(LedgerError::HoldClosed {
+                reference: hold_reference.to_owned(),
+                state: match hold.state.as_str() {
+                    "released" => HoldState::Released,
+                    "settled" => HoldState::Settled,
+                    _ => HoldState::Open,
+                },
+            });
+        }
+
+        // Validate fee constraints.
+        if let Some(f) = fee {
+            if f.asset != hold.asset || f.minor > hold.amount {
+                return Err(LedgerError::InvalidFee);
+            }
+        }
+
+        let tx_id = Uuid::new_v4();
+        insert_transaction(&mut tx, tx_id, "settle_hold", &reference, &fingerprint).await?;
+
+        // Debit the user's held bucket.
+        let neg_held = negate(hold.amount)?;
+        insert_posting_user(&mut tx, tx_id, hold.user, hold.asset, "held", neg_held).await?;
+
+        // Credit ExternalOutflow for the principal and Fees for the fee. A
+        // posting can never be zero, so a fee equal to the whole hold books
+        // nothing to ExternalOutflow.
+        let fee_minor = fee.map_or(0, |f| f.minor);
+        let principal = hold
+            .amount
+            .checked_sub(fee_minor)
+            .ok_or(LedgerError::Overflow)?;
+        if principal > 0 {
+            insert_posting_system(&mut tx, tx_id, "external_outflow", hold.asset, principal)
+                .await?;
+        }
+        if fee_minor > 0 {
+            insert_posting_system(&mut tx, tx_id, "fees", hold.asset, fee_minor).await?;
+        }
+
+        update_hold_state(&mut tx, hold_reference, "settled").await?;
+
+        // Outbox event written atomically with the ledger change.
+        let event = crate::outbox::DomainEvent::HoldSettled {
+            user_id: hold.user,
+            asset: hold.asset,
+            principal,
+            fee: fee_minor,
+            reference: hold_reference.to_owned(),
+        };
+        crate::outbox::pg::insert_outbox_event(
+            &mut tx,
+            Uuid::new_v4(),
+            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+            &event,
+            Some(&reference),
+        )
+        .await?;
 
         tx.commit().await.map_err(db_err)?;
         Ok(Receipt {
@@ -590,7 +802,9 @@ async fn get_hold(
     reference: &str,
 ) -> Result<Hold, LedgerError> {
     let row =
-        sqlx::query("SELECT user_id, asset, amount, state FROM ledger_holds WHERE reference = $1")
+        sqlx::query(
+            "SELECT user_id, asset, amount::text AS amount, state FROM ledger_holds WHERE reference = $1",
+        )
             .bind(reference)
             .fetch_optional(&mut **tx)
             .await
@@ -671,7 +885,7 @@ fn transfer_fingerprint(from: UserId, to: UserId, money: Money) -> String {
 /// the guarantees in `migrations/`: a violated check constraint means the
 /// ledger refused to go out of balance, and a unique violation means the same
 /// reference was posted twice.
-fn db_err(e: sqlx::Error) -> LedgerError {
+pub(crate) fn db_err(e: sqlx::Error) -> LedgerError {
     let code = match &e {
         sqlx::Error::Database(db_err) => db_err.code().map(|c| c.to_string()),
         _ => None,
@@ -1058,7 +1272,10 @@ mod tests {
         let alice = UserId::new();
         ensure_user(&pool, alice).await;
 
-        store.deposit(alice, usdc(300), "seed-ah-excl").await.unwrap();
+        store
+            .deposit(alice, usdc(300), "seed-ah-excl")
+            .await
+            .unwrap();
         store
             .create_hold(alice, usdc(100), "hold-excl-open")
             .await
@@ -1165,12 +1382,19 @@ mod tests {
             .create_hold(alice, usdc(60), "hold-closed")
             .await
             .unwrap();
-        store.release_hold("hold-closed").await.unwrap();
+        store.settle_hold("hold-closed", None).await.unwrap();
 
-        // Try to release again
+        // The money has left; it cannot be handed back to the user as well.
+        // (Releasing the same hold twice is a replay, covered above.)
         let result = store.release_hold("hold-closed").await;
 
-        assert!(matches!(result, Err(LedgerError::HoldClosed { .. })));
+        assert!(matches!(
+            result,
+            Err(LedgerError::HoldClosed {
+                state: HoldState::Settled,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
@@ -1254,6 +1478,170 @@ mod tests {
     }
 
     // Helper to read balance from the pool directly (outside the store).
+    // ── settle_hold tests ──────────────────────────────────────────────
+
+    /// The settlement transaction's postings to `system_account`, so the
+    /// assertion is not disturbed by other tests sharing the system accounts.
+    async fn system_posting(pool: &PgPool, transaction_id: Uuid, system_account: &str) -> i128 {
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(amount), 0)::text AS amount FROM ledger_postings \
+             WHERE transaction_id = $1 AND owner_kind = 'system' AND system_account = $2",
+        )
+        .bind(transaction_id)
+        .bind(system_account)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        row.get::<String, _>("amount").parse().unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn settle_hold_books_principal_to_outflow_and_fee_to_fees() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let hold_ref = format!("settle-hold-{}", Uuid::new_v4());
+
+        store
+            .deposit(
+                alice,
+                usdc(1_000),
+                &format!("settle-dep-{}", Uuid::new_v4()),
+            )
+            .await
+            .unwrap();
+        // Principal 900 + fee 100 locked by the withdrawal.
+        store
+            .create_hold(alice, usdc(1_000), &hold_ref)
+            .await
+            .unwrap();
+
+        let receipt = store.settle_hold(&hold_ref, Some(usdc(100))).await.unwrap();
+        assert!(!receipt.replayed);
+
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "held").await,
+            0
+        );
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "available").await,
+            0
+        );
+        assert_eq!(
+            system_posting(&pool, receipt.transaction_id, "external_outflow").await,
+            900
+        );
+        assert_eq!(
+            system_posting(&pool, receipt.transaction_id, "fees").await,
+            100
+        );
+        assert!(store.get_active_holds(alice).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn settle_hold_without_fee_sends_everything_to_outflow() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let hold_ref = format!("settle-hold-{}", Uuid::new_v4());
+
+        store
+            .deposit(alice, usdc(500), &format!("settle-dep-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+        store
+            .create_hold(alice, usdc(200), &hold_ref)
+            .await
+            .unwrap();
+
+        let receipt = store.settle_hold(&hold_ref, None).await.unwrap();
+
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "available").await,
+            300
+        );
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "held").await,
+            0
+        );
+        assert_eq!(
+            system_posting(&pool, receipt.transaction_id, "external_outflow").await,
+            200
+        );
+        assert_eq!(
+            system_posting(&pool, receipt.transaction_id, "fees").await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn settle_hold_replay_returns_same_receipt() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let hold_ref = format!("settle-hold-{}", Uuid::new_v4());
+
+        store
+            .deposit(alice, usdc(100), &format!("settle-dep-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+        store
+            .create_hold(alice, usdc(100), &hold_ref)
+            .await
+            .unwrap();
+
+        let first = store.settle_hold(&hold_ref, Some(usdc(5))).await.unwrap();
+        let second = store.settle_hold(&hold_ref, Some(usdc(5))).await.unwrap();
+        assert_eq!(first.transaction_id, second.transaction_id);
+        assert!(second.replayed);
+
+        // A different fee for the same settlement is a conflict, not a replay.
+        let conflict = store.settle_hold(&hold_ref, Some(usdc(6))).await;
+        assert!(matches!(
+            conflict,
+            Err(LedgerError::IdempotencyConflict { .. })
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn settle_hold_rejects_released_holds_and_oversized_fees() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let hold_ref = format!("settle-hold-{}", Uuid::new_v4());
+
+        store
+            .deposit(alice, usdc(100), &format!("settle-dep-{}", Uuid::new_v4()))
+            .await
+            .unwrap();
+        store.create_hold(alice, usdc(50), &hold_ref).await.unwrap();
+
+        let too_big = store.settle_hold(&hold_ref, Some(usdc(51))).await;
+        assert_eq!(too_big, Err(LedgerError::InvalidFee));
+
+        store.release_hold(&hold_ref).await.unwrap();
+        let closed = store.settle_hold(&hold_ref, None).await;
+        assert!(matches!(
+            closed,
+            Err(LedgerError::HoldClosed {
+                state: HoldState::Released,
+                ..
+            })
+        ));
+        assert_eq!(
+            get_user_balance_from_pool(&pool, alice, Asset::Usdc, "available").await,
+            100
+        );
+    }
+
     async fn get_user_balance_from_pool(
         pool: &PgPool,
         user: UserId,
@@ -1274,5 +1662,162 @@ mod tests {
 
         let s: String = row.get("balance");
         s.parse::<i128>().unwrap()
+    }
+
+    // ── Outbox integration tests ───────────────────────────────────────
+    //
+    // Done when (issue #496):
+    //   1. A rolled-back transaction emits nothing.
+    //   2. A committed transaction writes exactly one event; consumers can
+    //      deduplicate it via outbox_consumed.
+
+    /// Count outbox_events rows linked to a specific ledger_ref.
+    async fn count_outbox_events(pool: &PgPool, ledger_ref: &str) -> i64 {
+        let row =
+            sqlx::query("SELECT COUNT(*)::bigint AS cnt FROM outbox_events WHERE ledger_ref = $1")
+                .bind(ledger_ref)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        row.get::<i64, _>("cnt")
+    }
+
+    // Rolled-back transaction: a deposit that fails balance checks should not
+    // leave any outbox row behind.  We simulate this by attempting a deposit
+    // with a non-positive amount (rejected before touching the DB), then
+    // verifying no event row exists for that reference.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn rollback_emits_nothing() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let bad_ref = format!("rollback-test-{}", Uuid::new_v4());
+
+        // Non-positive amount is rejected before we open a DB transaction,
+        // so no ledger row and no outbox row should exist.
+        let result = store.deposit(alice, usdc(0), &bad_ref).await;
+        assert!(result.is_err(), "deposit of zero should fail");
+
+        let count = count_outbox_events(&pool, &bad_ref).await;
+        assert_eq!(count, 0, "failed transaction must leave no outbox event");
+    }
+
+    // A successful deposit writes exactly one outbox_events row inside the
+    // same transaction.  A replayed deposit (same reference) must NOT add a
+    // second event row — the idempotency guard fires before the outbox insert.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn committed_deposit_writes_one_outbox_event() {
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let dep_ref = format!("outbox-dep-{}", Uuid::new_v4());
+
+        store.deposit(alice, usdc(100), &dep_ref).await.unwrap();
+        let count = count_outbox_events(&pool, &dep_ref).await;
+        assert_eq!(count, 1, "committed deposit must write exactly one event");
+
+        // Replay: idempotency fires, outbox insert is skipped.
+        store.deposit(alice, usdc(100), &dep_ref).await.unwrap();
+        let count_after_replay = count_outbox_events(&pool, &dep_ref).await;
+        assert_eq!(
+            count_after_replay, 1,
+            "replay must not add a second outbox event"
+        );
+    }
+
+    // Consumer deduplication: the outbox_consumed table prevents double-processing.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn consumer_deduplication_via_outbox_consumed() {
+        use crate::outbox::OutboxStore as _;
+        use crate::outbox::pg::PostgresOutboxStore;
+
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let outbox = PostgresOutboxStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let dep_ref = format!("outbox-consumer-{}", Uuid::new_v4());
+
+        store.deposit(alice, usdc(50), &dep_ref).await.unwrap();
+
+        // Fetch the event id written by the deposit.
+        let row = sqlx::query("SELECT id FROM outbox_events WHERE ledger_ref = $1 LIMIT 1")
+            .bind(&dep_ref)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let event_id: Uuid = row.get("id");
+
+        // First consumption: returns true (newly inserted).
+        let first = outbox
+            .mark_consumed("notification-svc", event_id)
+            .await
+            .unwrap();
+        assert!(first, "first mark_consumed should return true");
+
+        // Second consumption of same event: returns false (already present).
+        let second = outbox
+            .mark_consumed("notification-svc", event_id)
+            .await
+            .unwrap();
+        assert!(!second, "duplicate mark_consumed should return false");
+
+        // is_consumed reflects the consumed state.
+        assert!(
+            outbox
+                .is_consumed("notification-svc", event_id)
+                .await
+                .unwrap()
+        );
+        // A different consumer has not consumed it yet.
+        assert!(!outbox.is_consumed("other-svc", event_id).await.unwrap());
+    }
+
+    // Relay cursor advances after a successful publish.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn relay_cursor_advances_after_publish() {
+        use crate::outbox::pg::PostgresOutboxStore;
+        use crate::outbox::{OutboxRelay, OutboxStore as _};
+
+        let pool = test_pool().await.unwrap();
+        let store = PostgresLedgerStore::new(pool.clone());
+        let outbox = PostgresOutboxStore::new(pool.clone());
+        let alice = UserId::new();
+        ensure_user(&pool, alice).await;
+        let relay_name = format!("relay-{}", Uuid::new_v4());
+
+        // Seed the cursor row for our named relay.
+        sqlx::query(
+            "INSERT INTO outbox_relay_cursor (relay_name, last_sequence) VALUES ($1, NULL) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&relay_name)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let dep_ref = format!("relay-cursor-dep-{}", Uuid::new_v4());
+        store.deposit(alice, usdc(10), &dep_ref).await.unwrap();
+
+        let relay = OutboxRelay::new(
+            PostgresOutboxStore::new(pool.clone()),
+            relay_name.clone(),
+            10,
+        );
+
+        let cursor_before = outbox.load_cursor(&relay_name).await.unwrap();
+        assert!(cursor_before.is_none(), "cursor should start at None");
+
+        let n = relay.run_once(|_e| async { Ok(()) }).await.unwrap();
+        assert!(n >= 1, "at least the deposit event should be published");
+
+        let cursor_after = outbox.load_cursor(&relay_name).await.unwrap();
+        assert!(cursor_after.is_some(), "cursor must advance after publish");
     }
 }

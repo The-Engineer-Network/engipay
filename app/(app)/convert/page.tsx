@@ -6,6 +6,7 @@ import { PendingServiceNote } from "@/components/app/PendingServiceNote"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { AmountInput } from "@/components/ui/AmountInput"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -16,13 +17,14 @@ import {
 } from "@/components/ui/select"
 import { ArrowDown } from "lucide-react"
 import { DISPLAY_ASSETS } from "@/lib/assets"
+import { decimalsForAsset, isPositiveAmount } from "@/lib/amountInput"
 
 export default function ConvertPage() {
   const [from, setFrom] = useState(DISPLAY_ASSETS[0]?.symbol ?? "ETH")
   const [to, setTo] = useState(DISPLAY_ASSETS[1]?.symbol ?? "USDC")
   const [amount, setAmount] = useState("")
 
-  const amountValid = amount === "" || Number(amount) > 0
+  const amountValid = amount === "" || isPositiveAmount(amount)
   const sameAsset = from === to
 
   const flip = () => {
@@ -40,19 +42,19 @@ export default function ConvertPage() {
       <Card>
         <CardContent className="space-y-4 p-6">
           <div className="space-y-2">
-            <Label htmlFor="convert-from">You pay</Label>
+            <Label htmlFor="convert-amount">You pay</Label>
             <div className="flex gap-2">
-              <Input
+              <AmountInput
                 id="convert-amount"
-                inputMode="decimal"
                 placeholder="0.00"
                 value={amount}
-                onChange={(event) => setAmount(event.target.value)}
+                onValueChange={setAmount}
+                decimals={decimalsForAsset(from)}
                 aria-invalid={!amountValid}
                 className="h-auto border-0 bg-transparent px-0 py-1 text-3xl font-semibold tabular-nums tracking-tight focus-visible:ring-0 flex-1"
               />
               <Select value={from} onValueChange={setFrom}>
-                <SelectTrigger id="convert-from" className="w-32 shrink-0">
+                <SelectTrigger id="convert-from" aria-label="Asset to pay with" className="w-32 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -82,17 +84,18 @@ export default function ConvertPage() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="convert-to">You receive</Label>
+            <Label htmlFor="convert-receive">You receive</Label>
             <div className="flex gap-2">
               <Input
                 id="convert-receive"
                 value=""
                 readOnly
+                aria-readonly="true"
                 placeholder="0.00"
                 className="h-auto border-0 bg-transparent px-0 py-1 text-3xl font-semibold tabular-nums tracking-tight text-muted-foreground focus-visible:ring-0 flex-1"
               />
               <Select value={to} onValueChange={setTo}>
-                <SelectTrigger id="convert-to" className="w-32 shrink-0">
+                <SelectTrigger id="convert-to" aria-label="Asset to receive" className="w-32 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

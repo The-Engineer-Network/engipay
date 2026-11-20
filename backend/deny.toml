@@ -1,0 +1,44 @@
+# cargo-deny configuration for supply-chain auditing.
+# CI runs `cargo deny check` in the backend job.
+#
+# Philosophy: no blanket ignores. Every exception is documented here.
+# To add an exception, open a pull request explaining why the vulnerable
+# version cannot be updated yet and what the real-world impact is.
+
+[advisories]
+# Deny everything by default. New advisories that affect the lockfile will
+# fail CI until they are resolved or documented here.
+version = 2
+deny = ["unmaintained", "unsound", "yanked", "vulnerability"]
+# ignore = [
+#   # Example: { id = "RUSTSEC-0000-0000", reason = "..." }
+# ]
+
+[licenses]
+# Acceptable OSI-approved licences.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "OpenSSL",
+  "Zlib",
+]
+# Crates in the engipay workspace are Apache-2.0.
+# Dependencies must be under one of the licences above.
+
+[bans]
+# Duplicate versions of the same crate increase attack surface and binary size.
+multiple-versions = "warn"
+# Deny crates that are entirely superseded.
+deny = []
+
+[sources]
+# Only crates.io; no git dependencies or private registries without review.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

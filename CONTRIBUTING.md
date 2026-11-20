@@ -42,33 +42,55 @@ docker compose build toolbox
 docker compose run --rm toolbox cargo test
 ```
 
+### Git hooks (required)
+
+EngiPay's repository was compromised three times in 2026 through malicious code appended to build config files. The hooks in `scripts/hooks/` run the same checks as CI, locally, before you commit or push.
+
+Enable them with one command:
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+This works on macOS, Linux and **Git Bash on Windows**. The hooks are plain POSIX shell and have no dependencies.
+
+What the hooks do:
+
+| Hook | When | What it blocks |
+| --- | --- | --- |
+| `pre-commit` | Before every commit | Lines > 1 000 chars in config files; JS obfuscation markers (`global.i =`, `_0x…`) |
+| `pre-push` | Before every push | Same checks across all commits in the push |
+| `post-merge` | After `git pull` or merge | Warns (does not block) if the merged code contains the same patterns |
+| `post-checkout` | After switching branches | Warns if the branch contains the same patterns |
+
+The hooks never run `npm install` or build steps, so they are safe to keep enabled permanently.
+
 ## 🌿 Branching & Pull Request Workflow
 
-### Development Branch: `drips`
-All active development happens on the **`drips`** branch. The `main` branch is reserved for stable production releases.
+### Development Branch: `main`
+`main` is the only long-lived branch. Fork the repository, branch from `main`, and open your pull request against `main`.
 
 ### How to Contribute
-1. **Fork or branch**:
+1. **Fork and branch**:
    ```bash
-   git checkout drips
-   git pull origin drips
+   git checkout main
+   git pull origin main
    git checkout -b feature/your-feature-name
    ```
 2. **Make your changes**: Write atomic commits using [Conventional Commits](https://www.conventionalcommits.org/). Every change MUST include tests.
 3. **Run local CI checks** (see [DEVELOPMENT.md](DEVELOPMENT.md)):
    - `npm run typecheck && npm test && npm run build`
    - `cd backend && cargo clippy && cargo test`
-4. **Open a Pull Request targeting `drips`**:
-   - Ensure the base branch is **`drips`**.
+4. **Open a Pull Request targeting `main`**:
+   - Ensure the base branch is **`main`**.
    - Your PR description MUST contain at least one line linking the issue:
      ```markdown
      closes #<issue number>
      ```
      *(e.g., `Closes #42`)*.
-5. **Automated Validation & Auto-Merge**:
-   - The repository's automated CI checks and PR governance workflows will validate your PR.
-   - If the PR targets `drips`, links an issue via `closes #<issue number>`, and passes all CI tests, it is automatically queued for squash auto-merge!
-   - If requirements are missed, a bot will comment with exact guidance on how to fix them.
+5. **Review**:
+   - CI must pass before a maintainer looks at the pull request.
+   - A maintainer reviews and merges it. Nothing is merged automatically.
 
 ## Before you open a pull request
 

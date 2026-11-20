@@ -1,7 +1,7 @@
 "use client"
 
+import { AccountCard } from "@/components/app/AccountCard"
 import { PageHeader } from "@/components/app/PageHeader"
-import { PendingServiceNote } from "@/components/app/PendingServiceNote"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
@@ -108,17 +108,7 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Account</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <PendingServiceNote>
-            Your profile, identity check and payout bank account live on the backend, which is not
-            built yet. They appear here once it is connected.
-          </PendingServiceNote>
-        </CardContent>
-      </Card>
+      <AccountCard />
     </div>
   )
 }

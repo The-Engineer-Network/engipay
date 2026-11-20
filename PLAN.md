@@ -524,7 +524,9 @@ lib/api-config.ts. Nothing in the app imports them any more.
        Nigeria. This one gates the launch date, so it is worth answering early.
     f. Repository: move the web app into apps/web now, or keep it flat until
        the API exists.
-    g. Naira route: cNGN on Base, NGNC on Stellar, or both (section 4).
+    g. Naira route: cNGN on Base, NGNC on Stellar, or both (section 4). The
+       user-facing route is decided: one SEP-24 anchor flow for buy and sell
+       (section 16). The issuer and provider are still open.
     h. License: decided on 16 September 2026 - Apache-2.0.
 
 
@@ -571,3 +573,62 @@ Readiness checklist, in order, with status on 16 September 2026:
        with required reviews and required CI.
     6. Well-scoped issues with clear acceptance criteria, labelled for Wave.
     7. Apply the repository to the Stellar Wave.
+
+
+16. NAIRA ROUTE: ONE FLOW FOR BUY AND SELL
+
+Decided 20 November 2026, issue #708. This section records the decision only;
+the code change is a follow-up issue (see the end of this section).
+
+What was wrong:
+    /buy offered two Naira routes in one screen: a Stellar SEP-24 anchor panel
+    (NairaAnchorRamp) and a "Direct Quote" tab on /v1/buy/quotes and
+    /v1/buy/orders. /sell used the anchor only. The same idea, Naira in and
+    Naira out, looked like two different products, and the two paths kept
+    separate order records (buy_quotes/buy_orders against anchor_transactions).
+
+Decision: the SEP-24 anchor is the single Naira route, in both directions.
+    /buy and /sell are the same flow with opposite sides. /buy puts Naira in
+    and receives crypto; /sell takes crypto and pays Naira out. Both render
+    NairaAnchorRamp, with no method switcher and no second route in the screen.
+
+    The quote, the interactive window, the bank details and the status polling
+    all come from the anchor endpoints (/v1/naira/*). The anchor is the
+    counterparty for the Naira leg, so it is the only party whose price we can
+    actually settle.
+
+    /v1/buy/quotes and /v1/buy/orders are retired, not extended. They price
+    from BUY_KOBO_PER_USDC and BUY_FEE_BPS, take no payment, park every order
+    in awaiting_partner, and have no sell counterpart. They also give Naira
+    orders a second state machine beside the one in 2.7, which is exactly the
+    drift this issue is about.
+
+Why the anchor and not the built-in quote:
+    It settles. A licensed anchor performs the Naira leg and the identity
+    check, which the configured rate cannot.
+    It is symmetric. One integration covers buy and sell, so the two screens
+    cannot diverge again.
+    It is standard. SEP-10/SEP-24 means the anchor can be replaced without
+    rewriting the app, and the anchor code already exists (sep10.rs, sep24.rs,
+    routes/naira.rs, anchor_transactions).
+    The built-in quote is an env-configured placeholder with no completion path.
+    Keeping it keeps a Naira price we cannot honour.
+
+The split that still applies:
+    The anchor route ends at the anchor's interactive window. Everything after
+    it (crediting the deposit to the ledger, polling the anchor, reconciling a
+    payout) is backend work under the same route, never a separate user flow.
+    If a later partner (cNGN on Base or NGNC on Stellar, section 4) is needed
+    for an asset or corridor SEP-24 cannot serve, it is another execution
+    method behind the same Naira API and the same screen, not a second tab the
+    user has to choose between. The provider choice stays open (14.b, 14.g).
+
+Follow-ups, none of them part of #708:
+    1. Web: remove the method switcher from /buy and let both /buy and /sell
+       render NairaAnchorRamp, with an asset selector limited to what the
+       anchor supports.
+    2. Backend: remove /v1/buy/quotes and /v1/buy/orders, and retire
+       buy_quotes/buy_orders once their rows are gone, so Naira orders have one
+       home and one state machine.
+    3. Backend: finish the anchor poller that credits completed deposits and
+       moves withdrawals through the states in 2.7.

@@ -76,9 +76,9 @@ fn map_stellar_error(error: StellarAddressError) -> ApiError {
                 .to_owned(),
         ),
         // Any other strkey parse failure.
-        StellarAddressError::Invalid => ApiError::BadRequest(
-            "master_account is not a valid Stellar account address".to_owned(),
-        ),
+        StellarAddressError::Invalid => {
+            ApiError::BadRequest("master_account is not a valid Stellar account address".to_owned())
+        }
     }
 }
 
@@ -127,7 +127,10 @@ mod tests {
         match parsed {
             StellarAddress::Muxed { base, id } => {
                 assert_eq!(base, master, "base account must match the custody account");
-                assert_eq!(id, user_seq_id, "embedded id must match the user sequence id");
+                assert_eq!(
+                    id, user_seq_id,
+                    "embedded id must match the user sequence id"
+                );
             }
             StellarAddress::Account(_) => {
                 panic!("expected a Muxed address, got a plain Account");
@@ -277,17 +280,13 @@ mod tests {
 
     #[test]
     fn rejects_an_evm_address() {
-        let result = derive_stellar_muxed_address(
-            "0x1234567890abcdef1234567890abcdef12345678",
-            0,
-        );
+        let result = derive_stellar_muxed_address("0x1234567890abcdef1234567890abcdef12345678", 0);
         assert!(matches!(result, Err(ApiError::BadRequest(_))));
     }
 
     #[test]
     fn rejects_a_bitcoin_address() {
-        let result =
-            derive_stellar_muxed_address("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", 0);
+        let result = derive_stellar_muxed_address("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", 0);
         assert!(matches!(result, Err(ApiError::BadRequest(_))));
     }
 

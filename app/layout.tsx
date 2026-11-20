@@ -9,6 +9,7 @@ import { StellarWalletProvider } from "@/contexts/StellarWalletContext";
 import { Toaster } from "@/components/ui/toaster";
 import { UserOnboarding } from "@/components/onboarding/UserOnboarding";
 import { ThemeToggle } from "@/components/app/ThemeToggle";
+import { SITE_URL } from "@/lib/site";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -16,6 +17,15 @@ export const metadata: Metadata = {
   description:
     "Send and receive crypto on Base, Stellar and Bitcoin, pay by QR code, and convert between crypto and Naira.",
   generator: "EngiPay",
+  metadataBase: new URL(SITE_URL),
+  openGraph: {
+    type: "website",
+    siteName: "EngiPay",
+    title: "EngiPay - Crypto Payments",
+    description:
+      "Send and receive crypto on Base, Stellar and Bitcoin, pay by QR code, and convert between crypto and Naira.",
+  },
+  twitter: { card: "summary_large_image", title: "EngiPay - Crypto Payments" },
 };
 
 export const viewport = {
