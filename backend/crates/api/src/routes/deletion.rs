@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -206,6 +206,21 @@ struct TransactionExportRow {
 }
 
 /// Handler for POST /v1/deletion-request - process a user's request to delete personal data.
+///
+/// All steps run inside a single database transaction: if any step fails the
+/// whole request is rolled back and the profile is left unchanged.
+///
+/// Fields erased / anonymised:
+/// - `user_profiles.tag` (display handle) is cleared.
+/// - Bank account holder name and account number are erased (set to NULL).
+/// - KYC personal data (full name, date of birth, document number, address)
+///   is erased (set to NULL).
+///
+/// Fields retained for legal retention / audit:
+/// - Ledger postings and balances (append-only double-entry ledger).
+/// - Bank account row itself (id, provider reference, currency) so that
+///   reconciliation and regulatory reporting remain possible.
+/// - KYC session row (id, status, timestamps) without personal data.
 async fn post_deletion_request(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -217,44 +232,109 @@ async fn post_deletion_request(
         .as_ref()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
-    // Step 1: Anonymize personal data in user profile
+    let mut tx = pool.begin().await.map_err(|err| {
+        ApiError::Internal(anyhow::anyhow!("failed to begin transaction: {}", err))
+    })?;
+
+    // Step 1: Anonymize personal data in user profile.
     sqlx::query("UPDATE user_profiles SET tag = NULL, updated_at = now() WHERE id = $1")
         .bind(user_id.as_uuid())
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| {
             ApiError::Internal(anyhow::anyhow!("failed to anonymize profile: {}", err))
         })?;
 
-    // Step 2: Anonymize any identifiable data while keeping ledger history
-    // We'll zero out any personal references but keep the financial records
+    // Step 2: Erase bank account personal data. The row itself is kept for
+    // legal retention (reconciliation / regulatory reporting), but the holder
+    // name and account number are no longer readable.
+    sqlx::query(
+        "UPDATE bank_accounts \
+         SET account_holder_name = NULL, account_number = NULL, updated_at = now() \
+         WHERE user_id = $1",
+    )
+    .bind(user_id.as_uuid())
+    .execute(&mut *tx)
+    .await
+    .map_err(|err| {
+        ApiError::Internal(anyhow::anyhow!("failed to anonymize bank accounts: {}", err))
+    })?;
 
-    // Step 3: If delete_transactions is true, remove transaction references
-    // but keep the ledger postings (balances must still reconcile)
-    if req.delete_transactions {
-        // Delete transaction history entries (anonymized - no personal data)
-        // We keep the ledger postings to maintain balance reconciliation
-        let _ = sqlx::query(
-            "DELETE FROM user_transactions WHERE user_id = $1",
-        )
-        .bind(user_id.as_uuid())
-        .execute(pool)
-        .await
-        .map_err(|err| {
-            ApiError::Internal(anyhow::anyhow!("failed to delete transactions: {}", err))
-        })?;
-    }
+    // Step 3: Erase KYC personal data. The session row is kept (status and
+    // timestamps) for legal retention, but personal fields are cleared.
+    sqlx::query(
+        "UPDATE kyc_sessions \
+         SET full_name = NULL, date_of_birth = NULL, document_number = NULL, \
+             address = NULL, updated_at = now() \
+         WHERE user_id = $1",
+    )
+    .bind(user_id.as_uuid())
+    .execute(&mut *tx)
+    .await
+    .map_err(|err| {
+        ApiError::Internal(anyhow::anyhow!("failed to anonymize kyc data: {}", err))
+    })?;
 
-    // Step 4: Keep ledger postings intact - the double-entry ledger must remain
-    // append-only for audit/compliance purposes
+    // Step 4: Ledger postings are intentionally left untouched - the
+    // double-entry ledger must remain append-only for audit/compliance.
+    // There is no user-visible transaction history table to delete from;
+    // `delete_transactions` is accepted for API compatibility only.
+    let _ = req.delete_transactions;
 
-    let request_id = Uuid::new_v4().to_string();
-    let created_at = chrono::Utc::now().to_rfc3339();
+    // Step 5: Record the deletion request so its id can be looked up later.
+    let row = sqlx::query_as::<_, (Uuid, chrono::DateTime<chrono::Utc>)>(
+        "INSERT INTO deletion_requests (user_id, status) \
+         VALUES ($1, 'processing') \
+         RETURNING id, created_at",
+    )
+    .bind(user_id.as_uuid())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|err| {
+        ApiError::Internal(anyhow::anyhow!("failed to record deletion request: {}", err))
+    })?;
+
+    tx.commit().await.map_err(|err| {
+        ApiError::Internal(anyhow::anyhow!("failed to commit deletion request: {}", err))
+    })?;
 
     Ok(Json(DeletionResponse {
-        request_id,
-        created_at,
+        request_id: row.0.to_string(),
+        created_at: row.1.to_rfc3339(),
         status: "processing".to_string(),
+    }))
+}
+
+/// Handler for GET /v1/deletion-request - return the caller's latest deletion request.
+async fn get_deletion_request(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<DeletionResponse>, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
+    let pool = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    let row = sqlx::query_as::<_, (Uuid, String, chrono::DateTime<chrono::Utc>)>(
+        "SELECT id, status, created_at FROM deletion_requests \
+         WHERE user_id = $1 \
+         ORDER BY created_at DESC \
+         LIMIT 1",
+    )
+    .bind(user_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        ApiError::Internal(anyhow::anyhow!("failed to load deletion request: {}", err))
+    })?;
+
+    let (id, status, created_at) = row.ok_or(ApiError::NotFound)?;
+
+    Ok(Json(DeletionResponse {
+        request_id: id.to_string(),
+        created_at: created_at.to_rfc3339(),
+        status,
     }))
 }
 
@@ -262,7 +342,10 @@ async fn post_deletion_request(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/export", get(get_export))
-        .route("/deletion-request", post(post_deletion_request))
+        .route(
+            "/deletion-request",
+            post(post_deletion_request).get(get_deletion_request),
+        )
 }
 
 #[cfg(test)]

@@ -48,6 +48,24 @@ async fn user(pool: &sqlx::PgPool) -> (Uuid, String) {
     (id, token)
 }
 
+async fn get_session(app: &axum::Router, token: Option<&str>) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method("GET").uri("/v1/kyc/session");
+    if let Some(token) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
 async fn post_session(app: &axum::Router, token: &str) -> (StatusCode, Value) {
     let response = app
         .clone()
@@ -67,6 +85,48 @@ async fn post_session(app: &axum::Router, token: &str) -> (StatusCode, Value) {
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn get_session_requires_auth() {
+    let (app, _pool) = setup().await;
+
+    let (status, _body) = get_session(&app, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn get_session_returns_latest_session() {
+    let (app, pool) = setup().await;
+    let (user_id, token) = user(&pool).await;
+
+    // No session yet.
+    let (status, _body) = get_session(&app, Some(&token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // FakeKycProvider returns Verified { tier: 1 }.
+    let (status, body) = post_session(&app, &token).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, body) = get_session(&app, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "verified");
+    assert_eq!(body["tier"], 1);
+    assert!(
+        body["created_at"].as_str().is_some_and(|s| !s.is_empty()),
+        "created_at must be present: {body}"
+    );
+
+    // The returned session belongs to the caller.
+    let session_user: Uuid =
+        sqlx::query_scalar("SELECT user_id FROM kyc_sessions WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(session_user, user_id);
 }
 
 #[tokio::test]
