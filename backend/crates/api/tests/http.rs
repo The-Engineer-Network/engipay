@@ -454,3 +454,60 @@ mod withdrawals {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }
+
+/// Every POST, PATCH and DELETE under /v1 that moves money must refuse requests
+/// that carry no Bearer token with 401. A test failure here means a new
+/// unauthenticated money-moving route was added — open an issue per endpoint
+/// and fix it before merging.
+#[tokio::test]
+async fn money_moving_endpoints_return_401_without_a_token() {
+    // (method, path, body)
+    // Sign-in routes (/auth/nonce, /auth/verify-evm, /auth/stellar/verify) are
+    // excluded — they are intentionally unauthenticated.
+    let unauthenticated_app = app();
+
+    let routes: &[(&str, &str, &str)] = &[
+        ("POST",   "/v1/withdrawals",                          r#"{"destination":"G...","amount":"1","asset":"USDC"}"#),
+        ("POST",   "/v1/transfers",                            r#"{"to":"G...","amount":"1","asset":"USDC"}"#),
+        ("POST",   "/v1/convert/quote",                        r#"{"from_asset":"USDC","to_asset":"XLM","from_amount":"1"}"#),
+        ("POST",   "/v1/convert/execute",                      r#"{"quote_id":"00000000-0000-0000-0000-000000000000"}"#),
+        ("POST",   "/v1/settles",                              r#"{"hold_id":"00000000-0000-0000-0000-000000000000"}"#),
+        ("POST",   "/v1/quotes",                               r#"{"from_asset":"USDC","to_asset":"XLM","from_amount":"1"}"#),
+        ("POST",   "/v1/payment-requests",                     r#"{"amount":"1","asset":"USDC"}"#),
+        ("POST",   "/v1/payment-requests/00000000-0000-0000-0000-000000000000/pay", r#"{"tx_hash":"abc"}"#),
+        ("POST",   "/v1/money-requests/00000000-0000-0000-0000-000000000000/accept",  ""),
+        ("POST",   "/v1/money-requests/00000000-0000-0000-0000-000000000000/decline", ""),
+        ("POST",   "/v1/kyc/session",                         ""),
+        // /v1/kyc/webhook uses provider-signature auth, not bearer-token auth — excluded.
+        ("POST",   "/v1/bank-accounts",                       r#"{"account_number":"0123456789","bank_code":"044","account_name":"Test"}"#),
+        ("DELETE", "/v1/bank-accounts/00000000-0000-0000-0000-000000000000", ""),
+        ("POST",   "/v1/batch-payments",                      ""),
+        ("POST",   "/v1/batch-payments/00000000-0000-0000-0000-000000000000/approve",  ""),
+        ("POST",   "/v1/batch-payments/00000000-0000-0000-0000-000000000000/execute",  ""),
+        ("POST",   "/v1/batch-payments/00000000-0000-0000-0000-000000000000/cancel",   ""),
+        ("POST",   "/v1/buy/quotes",                          r#"{"amount_usdc":"1"}"#),
+        ("POST",   "/v1/buy/orders",                          r#"{"quote_id":"00000000-0000-0000-0000-000000000000"}"#),
+        ("POST",   "/v1/naira/deposits",                      r#"{"amount":"1"}"#),
+        ("POST",   "/v1/naira/withdrawals",                   r#"{"amount":"1","bank_account_id":"00000000-0000-0000-0000-000000000000"}"#),
+        ("POST",   "/v1/deletion-request",                    ""),
+        ("PATCH",  "/v1/me",                                  r#"{"display_name":"Test"}"#),
+    ];
+
+    for &(method, path, body) in routes {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json");
+        let request = req.body(Body::from(body.to_string())).unwrap();
+        let response = unauthenticated_app
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {path} should return 401 without a token"
+        );
+    }
+}

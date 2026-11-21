@@ -1,7 +1,9 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::Context;
 use engipay_api::middleware::rate_limit::RateLimiter;
+use engipay_api::services::destination_screen::StaticBlockList;
 use engipay_api::{AppState, config::Config, router};
 use sqlx::postgres::PgPoolOptions;
 use tracing::{info, warn};
@@ -51,6 +53,21 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = AppState::with_fakes(database, config.clone(), RateLimiter::new());
     state.replica_database = replica_database;
+
+    // Load withdrawal destination block list from BLOCK_LIST_PATH if set.
+    if let Ok(path) = std::env::var("BLOCK_LIST_PATH") {
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("could not read BLOCK_LIST_PATH={path:?}"))?;
+        let entries: Vec<&str> = content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        let count = entries.len();
+        state.destination_screen = Arc::new(StaticBlockList::new(entries));
+        info!(count, path = %path, "withdrawal destination block list loaded");
+    }
+
     let app = router(state, &config);
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)

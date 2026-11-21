@@ -50,6 +50,17 @@ pub enum KycError {
     Provider(String),
 }
 
+/// A parsed KYC webhook event.
+#[derive(Debug, Clone)]
+pub struct WebhookEvent {
+    /// Provider-assigned unique event id used for deduplication.
+    pub event_id: String,
+    /// The provider reference of the session this event applies to.
+    pub provider_ref: String,
+    /// The outcome of the verification.
+    pub outcome: VerificationOutcome,
+}
+
 /// An external (or simulated) KYC provider.
 ///
 /// Implementations must not log or return identity document numbers, image
@@ -64,6 +75,16 @@ pub trait KycProvider: Send + Sync {
     /// the returned `provider_ref` string.  The reference is logged for
     /// support purposes; it must be opaque.
     fn start_session(&self, user_id: uuid::Uuid) -> Result<SessionStarted, KycError>;
+
+    /// Verify the signature on a raw webhook payload and parse the event.
+    ///
+    /// Returns `Err(KycError::Provider(...))` when the signature is invalid.
+    /// Returns `Ok(None)` for event types the implementation does not care about.
+    fn verify_webhook(
+        &self,
+        raw_body: &[u8],
+        signature_header: Option<&str>,
+    ) -> Result<Option<WebhookEvent>, KycError>;
 }
 
 // ── Fake implementation ───────────────────────────────────────────────────────
@@ -80,6 +101,18 @@ impl KycProvider for FakeKycProvider {
             outcome: VerificationOutcome::Verified { tier: 1 },
         })
     }
+
+    fn verify_webhook(
+        &self,
+        _raw_body: &[u8],
+        _signature_header: Option<&str>,
+    ) -> Result<Option<WebhookEvent>, KycError> {
+        Ok(Some(WebhookEvent {
+            event_id: "fake-event-id".to_string(),
+            provider_ref: "fake-provider-ref".to_string(),
+            outcome: VerificationOutcome::Verified { tier: 1 },
+        }))
+    }
 }
 
 /// A fake KYC provider that always returns a failed outcome.
@@ -93,6 +126,14 @@ impl KycProvider for FakeKycProviderFails {
             redirect_url: format!("https://kyc.example.test/session/fail/{user_id}"),
             outcome: VerificationOutcome::Failed,
         })
+    }
+
+    fn verify_webhook(
+        &self,
+        _raw_body: &[u8],
+        _signature_header: Option<&str>,
+    ) -> Result<Option<WebhookEvent>, KycError> {
+        Err(KycError::Provider("invalid signature".to_string()))
     }
 }
 

@@ -27,8 +27,9 @@
 //! | 1    | ID verified       | 1 000 USDC            |
 //! | 2    | ID + address      | 1 500 USDC            |
 
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
@@ -40,10 +41,9 @@ use crate::routes::auth::AuthUser;
 use crate::services::kyc_provider::{KycError, VerificationOutcome, is_valid_tier};
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route(
-        "/kyc/session",
-        get(get_latest_session).post(create_session),
-    )
+    Router::new()
+        .route("/kyc/session", get(get_latest_session).post(create_session))
+        .route("/kyc/webhook", post(receive_webhook))
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -204,4 +204,119 @@ async fn get_latest_session(
         tier_before,
         created_at,
     }))
+}
+
+// ── Webhook handler ───────────────────────────────────────────────────────────
+
+/// Receives a signed webhook from the KYC provider, verifies the signature,
+/// deduplicates by provider event id, updates the session outcome, and raises
+/// the user tier on a verified result.
+///
+/// Returns 401 when the signature is invalid, 200 (no body) on success or on
+/// a replayed event (idempotent).
+async fn receive_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let signature = headers
+        .get("x-kyc-signature")
+        .and_then(|v| v.to_str().ok());
+
+    let event = match state.kyc_provider.verify_webhook(&body, signature) {
+        Ok(Some(e)) => e,
+        Ok(None) => return Ok(StatusCode::OK),
+        Err(KycError::Provider(_)) => {
+            return Err(ApiError::Unauthorized("invalid webhook signature".to_string()));
+        }
+        Err(e) => {
+            return Err(ApiError::Internal(anyhow::anyhow!("KYC webhook error: {e}")));
+        }
+    };
+
+    let db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    // Deduplicate: if we have already processed this event id, return 200.
+    let already_processed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM kyc_webhook_events WHERE provider_event_id = $1)",
+    )
+    .bind(&event.event_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check event dedup: {e}")))?;
+
+    if already_processed {
+        return Ok(StatusCode::OK);
+    }
+
+    // Look up the session by provider_ref to find the user.
+    let row: Option<(uuid::Uuid, i32)> = sqlx::query_as(
+        "SELECT user_id, tier_after FROM kyc_sessions \
+         WHERE provider_ref = $1 \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&event.provider_ref)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to look up KYC session: {e}")))?;
+
+    if let Some((user_id, current_tier)) = row {
+        let (tier_after, outcome_str) = match event.outcome {
+            VerificationOutcome::Verified { tier } if is_valid_tier(tier) && tier > current_tier => {
+                (tier, "verified")
+            }
+            VerificationOutcome::Verified { .. } => (current_tier, "verified"),
+            VerificationOutcome::Failed => (current_tier, "failed"),
+            VerificationOutcome::Pending => (current_tier, "pending"),
+        };
+
+        if tier_after > current_tier {
+            sqlx::query(
+                "UPDATE user_profiles SET tier = $2, updated_at = now() \
+                 WHERE id = $1 AND tier < $2",
+            )
+            .bind(user_id)
+            .bind(tier_after)
+            .execute(db)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to update tier: {e}")))?;
+        }
+
+        sqlx::query(
+            "INSERT INTO kyc_sessions \
+             (user_id, provider_ref, outcome, tier_before, tier_after) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(user_id)
+        .bind(&event.provider_ref)
+        .bind(outcome_str)
+        .bind(current_tier)
+        .bind(tier_after)
+        .execute(db)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to write webhook audit: {e}")))?;
+
+        tracing::info!(
+            %user_id,
+            provider_ref = %event.provider_ref,
+            event_id = %event.event_id,
+            outcome = outcome_str,
+            "KYC webhook processed"
+        );
+    }
+
+    // Record the event id to prevent replay.
+    sqlx::query(
+        "INSERT INTO kyc_webhook_events (provider_event_id) VALUES ($1) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&event.event_id)
+    .execute(db)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to record webhook event id: {e}")))?;
+
+    Ok(StatusCode::OK)
 }
