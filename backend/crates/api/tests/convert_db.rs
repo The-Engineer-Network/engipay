@@ -335,6 +335,46 @@ async fn execute_is_idempotent_on_repeated_request() {
     assert_eq!(usdc.available, 40_000_000);
 }
 
+// ── #651: Failed hold ────────────────────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn conversion_fails_when_hold_cannot_be_placed() {
+    let (app, pool) = setup().await;
+    let (user_id, token) = user(&pool).await;
+
+    // Fund with less than the quote amount so the hold will fail.
+    fund_user(&pool, user_id, Asset::Usdc, 1_000_000).await; // 0.1 USDC
+
+    // Quote for 10 USDC — far more than the balance.
+    let (status, body) = quote(&app, &token, "USDC", "XLM", "100_000_000").await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let quote_id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+
+    // Execute should fail because the hold cannot be placed.
+    let (status, err) = send(
+        &app,
+        "POST",
+        "/v1/convert/execute",
+        &token,
+        Some(json!({ "quote_id": quote_id })),
+    )
+    .await;
+    assert!(status.is_client_error(), "expected 4xx, got {status}: {err}");
+
+    // Balance must be unchanged.
+    let ledger = PostgresLedgerStore::new(pool.clone());
+    let uid = UserId::from_uuid(user_id);
+    let balances = ledger.get_user_balances(uid).await.unwrap();
+    let usdc = balances.iter().find(|b| b.asset == Asset::Usdc).unwrap();
+    assert_eq!(usdc.available, 1_000_000, "balance changed despite failed hold");
+
+    // The order status must be 'failed'.
+    let (s2, order) = send(&app, "GET", &format!("/v1/convert/orders/{quote_id}"), &token, None).await;
+    assert_eq!(s2, StatusCode::OK, "{order}");
+    assert_eq!(order["status"], "failed");
+}
+
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
 async fn another_users_quote_is_not_found() {
