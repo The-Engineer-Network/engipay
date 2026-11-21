@@ -27,6 +27,10 @@ use uuid::Uuid;
 pub enum WithdrawalStatus {
     /// Created and signed, not yet accepted by the network.
     PendingBroadcast,
+    /// Held in cooling-off period until `cooling_off_until`.
+    CoolingOff,
+    /// Claimed by broadcast worker.
+    Broadcasting,
     /// Horizon accepted the transaction; `tx_hash` is recorded.
     BroadcastAccepted,
     /// The transaction is in a closed ledger and succeeded.
@@ -44,6 +48,8 @@ impl WithdrawalStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PendingBroadcast => "pending_broadcast",
+            Self::CoolingOff => "cooling_off",
+            Self::Broadcasting => "broadcasting",
             Self::BroadcastAccepted => "broadcast_accepted",
             Self::Confirmed => "confirmed",
             Self::Completed => "completed",
@@ -58,8 +64,10 @@ impl WithdrawalStatus {
             .find(|status| status.as_str() == value)
     }
 
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 8] = [
         Self::PendingBroadcast,
+        Self::CoolingOff,
+        Self::Broadcasting,
         Self::BroadcastAccepted,
         Self::Confirmed,
         Self::Completed,
@@ -72,7 +80,14 @@ impl WithdrawalStatus {
         use WithdrawalStatus::*;
         matches!(
             (self, next),
-            (PendingBroadcast, BroadcastAccepted)
+            (PendingBroadcast, CoolingOff)
+                | (CoolingOff, PendingBroadcast)
+                | (PendingBroadcast, Broadcasting)
+                | (Broadcasting, PendingBroadcast)
+                | (Broadcasting, BroadcastAccepted)
+                | (Broadcasting, Failed)
+                | (Broadcasting, PendingManualReview)
+                | (PendingBroadcast, BroadcastAccepted)
                 | (PendingBroadcast, PendingManualReview)
                 | (PendingBroadcast, Failed)
                 | (BroadcastAccepted, Confirmed)
@@ -627,5 +642,25 @@ mod tests {
                 .await,
             Err(WithdrawalError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn all_database_constraint_statuses_parse() {
+        let constraint_statuses = [
+            "pending_broadcast",
+            "cooling_off",
+            "broadcasting",
+            "broadcast_accepted",
+            "confirmed",
+            "completed",
+            "failed",
+            "pending_manual_review",
+        ];
+        for s in constraint_statuses {
+            let parsed = WithdrawalStatus::parse(s);
+            assert!(parsed.is_some(), "Status {s} must parse");
+            assert_eq!(parsed.unwrap().as_str(), s);
+        }
+        assert_eq!(WithdrawalStatus::ALL.len(), constraint_statuses.len());
     }
 }

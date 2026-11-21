@@ -154,8 +154,8 @@ Legend:
 | :---: | :---: | :--- | :--- | :--- |
 | [x] | `FED-01` | App Shell & Wallet Navigation | App navigation, responsive layout, connect wallet sheet (EVM & Stellar), network indicator. | `app/(app)/layout.tsx` |
 | [ ] | `FED-02` | EngiPay Backend API Client | Strongly typed API client library for frontend to communicate with Axum backend. | `lib/api-client.ts` |
-| [ ] | `FED-03` | Live Dashboard Balances | Connect Dashboard to `GET /v1/balances` to show custodial balance alongside connected wallet balances. | `app/(app)/dashboard/` |
-| [ ] | `FED-04` | Unified Activity Feed Component | Replace empty activity screen with infinite scrolling list from `GET /v1/transactions`. | `app/(app)/activity/` |
+| [x] | `FED-03` | Live Dashboard Balances | Connect Dashboard to `GET /v1/balances` to show custodial balance alongside connected wallet balances. | `app/(app)/dashboard/` |
+| [x] | `FED-04` | Unified Activity Feed Component | Replace empty activity screen with infinite scrolling list from `GET /v1/transactions`. | `app/(app)/activity/` |
 | [ ] | `FED-05` | Bank Account Management UI | Add/remove verified Nigerian bank accounts in `/settings`. | `app/(app)/settings/` |
 
 ---

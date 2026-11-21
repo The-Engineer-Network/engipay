@@ -49,6 +49,27 @@ pub struct FeeDistribution {
 pub struct Account {
     /// Returned as a string because it can exceed JavaScript's safe integers.
     pub sequence: String,
+    /// The assets the account currently holds, including native XLM.
+    #[serde(default)]
+    pub balances: Vec<AccountBalance>,
+}
+
+/// One entry in the `balances` array of `GET /accounts/{id}`.
+///
+/// Horizon reports amounts as 7-decimal strings (e.g. `"12.3400000"`).
+/// Use [`parse_stroops`] to convert to a stroop integer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountBalance {
+    /// Always present. `"12.3400000"` — 7-decimal Stellar amount.
+    pub balance: String,
+    /// `"native"` for XLM, `"credit_alphanum4"` or `"credit_alphanum12"` otherwise.
+    pub asset_type: String,
+    /// Present for non-native assets.
+    #[serde(default)]
+    pub asset_code: Option<String>,
+    /// Present for non-native assets.
+    #[serde(default)]
+    pub asset_issuer: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,12 +131,12 @@ pub struct JoinedTransaction {
 /// `PaymentRecord` per operation, all sharing the same `transaction_hash`.
 /// Without a cache each operation would trigger a separate
 /// `GET /transactions/{hash}` call; with the cache only the first does.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TransactionCache {
     entries: HashMap<String, CacheEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CacheEntry {
     transaction: JoinedTransaction,
     inserted_at: Instant,

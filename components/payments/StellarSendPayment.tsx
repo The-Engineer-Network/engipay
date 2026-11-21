@@ -17,7 +17,10 @@ import {
   type StellarMemo,
 } from "@/lib/payment-uri"
 import { type StellarAssetCode, stellarNetwork, stellarTransactionUrl } from "@/lib/stellar"
+import { broadcastPosPayment } from "@/lib/pos"
 import { cn } from "@/lib/utils"
+import { SendStatusAnnouncement } from "@/components/payments/SendStatusAnnouncement"
+import { getSendStatusAnnouncement, type SendPhase } from "@/lib/sendStatus"
 
 const ASSETS: { code: StellarAssetCode; icon: string }[] = [
   { code: "XLM", icon: "\u{2728}" },
@@ -48,6 +51,20 @@ export function StellarSendPayment({
   const [memo, setMemo] = useState(initialMemo?.value ?? "")
   const [isSending, setIsSending] = useState(false)
   const [sent, setSent] = useState<{ hash: string; createsAccount: boolean } | null>(null)
+  const [sendError, setSendError] = useState<string | null>(null)
+
+  let sendPhase: SendPhase = "idle"
+  let sendDetail: string | undefined
+  if (sent) {
+    sendPhase = "success"
+  } else if (sendError) {
+    sendPhase = "error"
+    sendDetail = sendError
+  } else if (isSending) {
+    sendPhase = "waiting"
+    sendDetail = `Check ${stellarWalletName ?? "your wallet"} to approve the request.`
+  }
+  const sendAnnouncement = getSendStatusAnnouncement({ phase: sendPhase, detail: sendDetail })
 
   const pastedSecret = isStellarSecretKey(recipient)
   const recipientValid = recipient === "" || isStellarAddress(recipient)
@@ -71,6 +88,7 @@ export function StellarSendPayment({
   }
 
   const handleSend = async () => {
+    setSendError(null)
     setIsSending(true)
     try {
       const result = await sendStellarPayment({
@@ -80,10 +98,20 @@ export function StellarSendPayment({
         memo: memo ? { type: memoType, value: memo } : undefined,
       })
       setSent(result)
+      broadcastPosPayment({
+        type: "payment_received",
+        recipient,
+        amount,
+        asset,
+        txHash: result.hash,
+        chain: "stellar",
+      })
     } catch (error) {
+      const description = error instanceof Error ? error.message : "Something went wrong."
+      setSendError(description)
       toast({
         title: "Payment not sent",
-        description: error instanceof Error ? error.message : "Something went wrong.",
+        description,
         variant: "destructive",
       })
     } finally {
@@ -139,6 +167,7 @@ export function StellarSendPayment({
         >
           Send another
         </Button>
+        <SendStatusAnnouncement message={sendAnnouncement} />
       </div>
     )
   }
@@ -303,6 +332,7 @@ export function StellarSendPayment({
         Sends on {stellarNetwork.label}. Stellar payments settle in about five seconds and cannot be
         reversed, so check the address and memo.
       </p>
+      <SendStatusAnnouncement message={sendAnnouncement} />
     </div>
   )
 }

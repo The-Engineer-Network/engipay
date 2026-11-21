@@ -7,6 +7,7 @@ use engipay_ledger::{ActiveHold, Balance};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::db_router::DatabaseRouter;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 
@@ -172,14 +173,14 @@ async fn get_balances(
     Query(params): Query<BalancesQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
-    let pool = state
-        .database
-        .clone()
-        .ok_or(ApiError::DatabaseUnavailable)?;
+    let db_router = DatabaseRouter::new(state.database.clone(), state.replica_database.clone());
 
-    let store = PostgresLedgerStore::new(pool);
-    let balances = store
-        .get_user_balances(user_id)
+    let balances = db_router
+        .read_with_fallback(|pool| async move {
+            let store = PostgresLedgerStore::new(pool.clone());
+            store.get_user_balances(user_id).await
+        },
+        true)
         .await
         .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?;
 
@@ -193,8 +194,12 @@ async fn get_balances(
         })?));
     }
 
-    let active_holds: Vec<HoldItem> = store
-        .get_active_holds(user_id)
+    let active_holds = db_router
+        .read_with_fallback(|pool| async move {
+            let store = PostgresLedgerStore::new(pool.clone());
+            store.get_active_holds(user_id).await
+        },
+        true)
         .await
         .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?
         .into_iter()
@@ -555,16 +560,13 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
     use crate::{AppState, router};
 
     fn app() -> axum::Router {
         let config = Config::for_tests();
         router(
-            AppState {
-                database: None,
-                config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(None, config.clone(), RateLimiter::new()),
             &config,
         )
     }
@@ -689,11 +691,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -809,11 +807,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
         let token = crate::auth::jwt::create_token(
             user.as_uuid(),
@@ -870,11 +864,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -948,11 +938,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -1052,11 +1038,7 @@ mod tests {
             .unwrap();
 
         let config = Config::for_tests();
-        let state = AppState {
-            database: Some(pool),
-            config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-        };
+        let state = AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new());
         let app = router(state, &config);
 
         let token = crate::auth::jwt::create_token(
@@ -1128,11 +1110,7 @@ mod tests {
         .unwrap();
 
         let response = router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
         .oneshot(
@@ -1190,11 +1168,7 @@ mod tests {
         .unwrap();
 
         let response = router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
         .oneshot(

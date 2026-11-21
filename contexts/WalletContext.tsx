@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useCallback, useMemo, useState, ReactNode } from "react";
+import React, { createContext, useContext, useCallback, useMemo, useState, useEffect, ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAccount, useDisconnect, useBalance, useChainId } from "wagmi";
 import { formatUnits } from "viem";
@@ -8,6 +8,8 @@ import { toast } from "@/hooks/use-toast";
 import type { Balance } from "@/types/dashboard";
 import { TRACKED_TOKENS } from "@/lib/tokens";
 import { useTokenBalances } from "@/hooks/use-token-balances";
+import { clearSessionToken } from "@/lib/api";
+import { useEvmSignIn } from "@/hooks/use-evm-sign-in";
 import { WalletSheet } from "@/components/wallet/WalletSheet";
 import { useStellarWallet } from "@/contexts/StellarWalletContext";
 
@@ -54,11 +56,47 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const chainId = useChainId();
   const stellar = useStellarWallet();
+  const { signIn: evmSignIn } = useEvmSignIn();
+
+  // Track which address we last signed in as, so a reconnect does not
+  // re-trigger the sign-in flow for the same address.
+  const [signedInAs, setSignedInAs] = useState<string | null>(null);
 
   const { data: nativeBalance, isLoading: isLoadingNative } = useBalance({
     address,
     query: { enabled: Boolean(address) },
   });
+
+  // After an EVM wallet connects (or reconnects to a new address), attempt
+  // to sign in to the EngiPay backend.  The flow is:
+  //   1. Request a nonce from /v1/auth/nonce.
+  //   2. Ask the wallet to sign a message containing the nonce.
+  //   3. Exchange the signature for a session token at /v1/auth/verify-evm.
+  //
+  // If the user declines the signature request we stay connected but signed
+  // out and show a friendly message — no errors in the console, no alarming
+  // pop-ups.
+  useEffect(() => {
+    if (!address || address === signedInAs) return;
+    void (async () => {
+      try {
+        await evmSignIn(address);
+        setSignedInAs(address);
+      } catch (err: unknown) {
+        // "User rejected" from wagmi has a specific error shape.
+        const message = err instanceof Error ? err.message : String(err);
+        const declined = /rejected|denied|cancel|declined/i.test(message);
+        if (declined) {
+          toast({
+            title: "Signature declined",
+            description:
+              "You're connected but not signed in. Some features need a signature to work.",
+          });
+        }
+        // Any other error is silently swallowed so the wallet stays connected.
+      }
+    })();
+  }, [address, signedInAs, evmSignIn]);
 
   const {
     balances: tokenBalances,
@@ -128,8 +166,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const disconnectWallet = useCallback(() => {
     disconnect();
     stellar.disconnectStellar();
-    localStorage.removeItem("engipay-token");
+    clearSessionToken();
     localStorage.removeItem("engipay-user");
+    setSignedInAs(null);
     toast({ title: "Wallet disconnected" });
   }, [disconnect, stellar]);
 

@@ -1,0 +1,500 @@
+//! Naira buy quotes and orders.
+//!
+//! A quote prices a buy from configured terms and is valid for a short time.
+//! An order is created from a live quote, once. Orders wait in
+//! `awaiting_partner` because no Naira partner is connected yet: no payment is
+//! taken, no payment instructions are issued and the ledger is not touched.
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use engipay_core::Asset;
+use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use uuid::Uuid;
+
+use crate::AppState;
+use crate::error::ApiError;
+use crate::routes::auth::AuthUser;
+use crate::services::buy::{self, QUOTE_LIFETIME_SQL, Terms};
+use crate::services::receipt::{self, Receipt, ReceiptType, SignedReceipt};
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/buy/quotes", post(create_quote))
+        .route("/buy/orders", post(create_order))
+        .route("/buy/orders/{id}", get(get_order))
+}
+
+const NOT_CONFIGURED: &str = "Buying with Naira is not available yet: pricing has not been set up.";
+
+// ── Request / response types ──────────────────────────────────────────────────
+
+/// `POST /v1/buy/quotes` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuoteRequest {
+    /// Naira the user pays, as typed: "5000" or "5,000.50".
+    pub naira_amount: String,
+    pub asset: Asset,
+}
+
+/// A priced buy. Money fields are integer strings so no precision is lost.
+#[derive(Debug, Serialize)]
+pub struct QuoteResponse {
+    pub id: Uuid,
+    pub asset: Asset,
+    /// Naira paid, in kobo.
+    pub naira_kobo: String,
+    /// Fee taken from the Naira, in kobo.
+    pub fee_kobo: String,
+    /// Asset the user receives, as a fixed-point decimal.
+    pub receive: String,
+    pub receive_decimals: u32,
+    /// Kobo per whole unit of the asset at this quote.
+    pub kobo_per_unit: String,
+    /// Price source identifier used for the configured Naira rate.
+    pub price_sources: Vec<String>,
+    /// RFC 3339 instant after which the quote can no longer be used.
+    pub expires_at: String,
+}
+
+/// `POST /v1/buy/orders` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrderRequest {
+    pub quote_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrderResponse {
+    pub id: Uuid,
+    pub quote_id: Uuid,
+    pub status: &'static str,
+    pub message: &'static str,
+    /// Signed receipt so the order can be verified outside the app.
+    pub receipt: SignedReceipt,
+}
+
+/// `GET /v1/buy/orders/{id}` response.
+#[derive(Debug, Serialize)]
+pub struct OrderStatusResponse {
+    pub id: Uuid,
+    pub quote_id: Uuid,
+    pub status: String,
+    /// RFC 3339 instant after which the order's quote price no longer holds.
+    pub expires_at: String,
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+async fn create_quote(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<QuoteRequest>,
+) -> Result<(StatusCode, Json<QuoteResponse>), ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?.as_uuid();
+    let db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    // No rate or fee configured means no quote. The rate is never invented.
+    let (Some(kobo_per_unit), Some(fee_bps)) =
+        (state.config.buy_kobo_per_usdc, state.config.buy_fee_bps)
+    else {
+        return Err(ApiError::Unavailable(NOT_CONFIGURED.to_string()));
+    };
+
+    if req.asset != Asset::Usdc {
+        return Err(ApiError::BadRequest(
+            "Only USDC can be bought for now.".to_string(),
+        ));
+    }
+
+    let naira_kobo = buy::parse_naira_to_kobo(&req.naira_amount).ok_or_else(|| {
+        ApiError::BadRequest("Enter a Naira amount such as 5000 or 5000.50.".to_string())
+    })?;
+
+    let terms = Terms {
+        kobo_per_unit,
+        fee_bps,
+    };
+    let priced = buy::price(naira_kobo, terms, Asset::Usdc.decimals()).ok_or_else(|| {
+        ApiError::BadRequest("This amount is too small to buy any USDC.".to_string())
+    })?;
+
+    let row = sqlx::query(
+        r#"INSERT INTO buy_quotes
+               (user_id, asset, naira_kobo, fee_kobo, receive_minor, kobo_per_unit, fee_bps, expires_at, price_sources)
+           VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, $6::numeric, $7, now() + $8::interval, $9::text[])
+           RETURNING id,
+                     to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS expires_at"#,
+    )
+    .bind(user_id)
+    .bind(Asset::Usdc.symbol())
+    .bind(priced.naira_kobo.to_string())
+    .bind(priced.fee_kobo.to_string())
+    .bind(priced.receive_minor.to_string())
+    .bind(kobo_per_unit.to_string())
+    .bind(i32::try_from(fee_bps).map_err(|_| ApiError::Unavailable(NOT_CONFIGURED.to_string()))?)
+    .bind(QUOTE_LIFETIME_SQL)
+    .bind(["configured-env"])
+    .fetch_one(db)
+    .await
+    .map_err(db_error)?;
+
+    let response = QuoteResponse {
+        id: row.try_get("id").map_err(db_error)?,
+        asset: Asset::Usdc,
+        naira_kobo: priced.naira_kobo.to_string(),
+        fee_kobo: priced.fee_kobo.to_string(),
+        receive: buy::format_fixed(priced.receive_minor, Asset::Usdc.decimals()),
+        receive_decimals: Asset::Usdc.decimals(),
+        kobo_per_unit: kobo_per_unit.to_string(),
+        price_sources: vec!["configured-env".to_owned()],
+        expires_at: row.try_get("expires_at").map_err(db_error)?,
+    };
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+async fn create_order(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<OrderRequest>,
+) -> Result<(StatusCode, Json<OrderResponse>), ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?.as_uuid();
+    let db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    // One transaction: lock the quote, check it is live and unused, then record
+    // the order. Returning early drops the transaction and rolls it back.
+    let mut tx = db.begin().await.map_err(db_error)?;
+
+    let quote = sqlx::query(
+        r#"SELECT expires_at > now() AS live,
+                  naira_kobo::text AS naira_kobo,
+                  receive_minor::text AS receive_minor,
+                  asset
+           FROM buy_quotes WHERE id = $1 AND user_id = $2 FOR UPDATE"#,
+    )
+    .bind(req.quote_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_error)?
+    .ok_or(ApiError::NotFound)?;
+
+    let live: bool = quote.try_get("live").map_err(db_error)?;
+    if !live {
+        return Err(ApiError::Conflict(
+            "This quote has expired. Get a new quote.".to_string(),
+        ));
+    }
+
+    let naira_kobo: String = quote.try_get("naira_kobo").map_err(db_error)?;
+    let receive_minor: String = quote.try_get("receive_minor").map_err(db_error)?;
+    let asset_symbol: String = quote.try_get("asset").map_err(db_error)?;
+    let asset = Asset::from_symbol(&asset_symbol).ok_or_else(|| {
+        ApiError::Internal(anyhow::anyhow!(
+            "unknown asset on buy quote: {asset_symbol}"
+        ))
+    })?;
+
+    let inserted = sqlx::query(
+        "INSERT INTO buy_orders (quote_id, user_id) VALUES ($1, $2) \
+         ON CONFLICT (quote_id) DO NOTHING RETURNING id",
+    )
+    .bind(req.quote_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_error)?;
+
+    let Some(row) = inserted else {
+        return Err(ApiError::Conflict(
+            "This quote has already been used for an order.".to_string(),
+        ));
+    };
+    let id: Uuid = row.try_get("id").map_err(db_error)?;
+    tx.commit().await.map_err(db_error)?;
+
+    let receipt = Receipt {
+        receipt_type: ReceiptType::Order,
+        reference: id.to_string(),
+        quote_id: Some(req.quote_id.to_string()),
+        naira_kobo: Some(naira_kobo),
+        amount: Some(receive_minor),
+        asset: Some(asset.symbol().to_string()),
+        issued_at: receipt::now_rfc3339(),
+    };
+    let receipt = state.receipt_signer.sign(receipt);
+
+    Ok((
+        StatusCode::CREATED,
+        Json(OrderResponse {
+            id,
+            quote_id: req.quote_id,
+            status: "awaiting_partner",
+            message: "Your order is saved. Payment instructions will appear here once a Naira partner is connected. No money has been taken.",
+            receipt,
+        }),
+    ))
+}
+
+/// Returns one of the caller's orders. Anyone else's order is not found, so
+/// order existence is never revealed to another user.
+async fn get_order(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<OrderStatusResponse>, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?.as_uuid();
+    let db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    let row = sqlx::query(
+        r#"SELECT o.id AS id,
+                  o.quote_id AS quote_id,
+                  o.status AS status,
+                  to_char(q.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS expires_at
+           FROM buy_orders o
+           JOIN buy_quotes q ON q.id = o.quote_id
+           WHERE o.id = $1 AND o.user_id = $2"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .map_err(db_error)?
+    .ok_or(ApiError::NotFound)?;
+
+    Ok(Json(OrderStatusResponse {
+        id: row.try_get("id").map_err(db_error)?,
+        quote_id: row.try_get("quote_id").map_err(db_error)?,
+        status: row.try_get("status").map_err(db_error)?,
+        expires_at: row.try_get("expires_at").map_err(db_error)?,
+    }))
+}
+
+fn db_error(error: sqlx::Error) -> ApiError {
+    ApiError::Internal(anyhow::anyhow!("buy database error: {error}"))
+}
+
+// ── HTTP tests (#644) ─────────────────────────────────────────────────────────
+//
+// Drive the real router in memory. The 401 tests need no database. The rest
+// need DATABASE_URL pointing at a database with every migration applied, so
+// they are ignored by default; run them with:
+//   DATABASE_URL=postgres://... cargo test -p engipay-api --lib routes::buy -- --include-ignored
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
+    use crate::{AppState, router};
+
+    /// ₦1,500 per USDC, 1% fee.
+    const KOBO_PER_USDC: i128 = 150_000;
+    const FEE_BPS: u32 = 100;
+
+    fn config() -> Config {
+        let mut config = Config::for_tests();
+        config.buy_kobo_per_usdc = Some(KOBO_PER_USDC);
+        config.buy_fee_bps = Some(FEE_BPS);
+        config
+    }
+
+    fn app(pool: Option<sqlx::PgPool>) -> axum::Router {
+        let config = config();
+        router(
+            AppState::with_fakes(pool, config.clone(), RateLimiter::new()),
+            &config,
+        )
+    }
+
+    async fn db_app() -> (axum::Router, sqlx::PgPool) {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        (app(Some(pool.clone())), pool)
+    }
+
+    async fn user(pool: &sqlx::PgPool) -> String {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id) VALUES ($1)")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        crate::auth::jwt::create_token(id, String::new(), config().jwt_secret.as_bytes()).unwrap()
+    }
+
+    async fn post(
+        app: &axum::Router,
+        path: &str,
+        token: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    // ── 401 ───────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_quote_without_a_token_is_401() {
+        let (status, body) = post(
+            &app(None),
+            "/v1/buy/quotes",
+            None,
+            json!({ "naira_amount": "5000", "asset": "USDC" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn a_quote_with_a_bad_token_is_401() {
+        let (status, body) = post(
+            &app(None),
+            "/v1/buy/quotes",
+            Some("not-a-jwt"),
+            json!({ "naira_amount": "5000", "asset": "USDC" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn an_order_without_a_token_is_401() {
+        let (status, body) = post(
+            &app(None),
+            "/v1/buy/orders",
+            None,
+            json!({ "quote_id": Uuid::new_v4() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn an_order_with_a_bad_token_is_401() {
+        let (status, body) = post(
+            &app(None),
+            "/v1/buy/orders",
+            Some("not-a-jwt"),
+            json!({ "quote_id": Uuid::new_v4() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    // ── Invalid amount ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn an_invalid_naira_amount_is_400() {
+        let (app, pool) = db_app().await;
+        let token = user(&pool).await;
+
+        for amount in ["", "abc", "-5000", "5000.505", "0"] {
+            let (status, body) = post(
+                &app,
+                "/v1/buy/quotes",
+                Some(&token),
+                json!({ "naira_amount": amount, "asset": "USDC" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "amount {amount:?}: {body}");
+            assert_eq!(body["error"]["code"], "bad_request", "amount {amount:?}");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn an_amount_too_small_to_buy_anything_is_400() {
+        let (app, pool) = db_app().await;
+        let token = user(&pool).await;
+
+        // One kobo cannot buy a single smallest unit of USDC after the fee.
+        let (status, body) = post(
+            &app,
+            "/v1/buy/quotes",
+            Some(&token),
+            json!({ "naira_amount": "0.01", "asset": "USDC" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    // ── Quote then order ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn a_quote_then_an_order_succeeds() {
+        let (app, pool) = db_app().await;
+        let token = user(&pool).await;
+
+        let (status, quote) = post(
+            &app,
+            "/v1/buy/quotes",
+            Some(&token),
+            json!({ "naira_amount": "5,000", "asset": "USDC" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{quote}");
+        assert_eq!(quote["asset"], "USDC");
+        assert_eq!(quote["naira_kobo"], "500000");
+        assert_eq!(quote["fee_kobo"], "5000");
+        assert_eq!(quote["receive"], "3.3000000");
+        assert_eq!(quote["kobo_per_unit"], KOBO_PER_USDC.to_string());
+        assert!(quote["expires_at"].as_str().is_some_and(|s| !s.is_empty()));
+        let quote_id = quote["id"].as_str().unwrap().to_owned();
+
+        let (status, order) = post(
+            &app,
+            "/v1/buy/orders",
+            Some(&token),
+            json!({ "quote_id": quote_id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{order}");
+        assert_eq!(order["quote_id"], quote_id);
+        assert_eq!(order["status"], "awaiting_partner");
+        assert!(order["id"].as_str().is_some());
+        assert!(order["receipt"].is_object(), "{order}");
+    }
+}

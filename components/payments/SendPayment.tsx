@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { useAccount, useBalance, useEstimateGas, useEstimateFeesPerGas, useSendTransaction, useWriteContract, useWaitForTransactionReceipt } from "wagmi"
 import { encodeFunctionData, formatEther, isAddress, type Address } from "viem"
@@ -15,6 +15,9 @@ import { activeChain } from "@/lib/wagmi"
 import { useWallet } from "@/contexts/WalletContext"
 import { cn } from "@/lib/utils"
 import { validateSendAmount } from "@/lib/amountValidation"
+import { broadcastPosPayment } from "@/lib/pos"
+import { SendStatusAnnouncement } from "@/components/payments/SendStatusAnnouncement"
+import { getSendStatusAnnouncement, type SendPhase } from "@/lib/sendStatus"
 import {
   FALLBACK_NATIVE_GAS,
   FALLBACK_TOKEN_GAS,
@@ -55,6 +58,7 @@ export function SendPayment({
   const { sendTransactionAsync, isPending: isSendingNative } = useSendTransaction()
   const { writeContractAsync, isPending: isSendingToken } = useWriteContract()
   const [txHash, setTxHash] = useState<Address | undefined>()
+  const [sendError, setSendError] = useState<string | null>(null)
 
   const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
     hash: txHash,
@@ -64,10 +68,38 @@ export function SendPayment({
   const isBusy = isSendingNative || isSendingToken || isConfirming
   const recipientValid = recipient === "" || isAddress(recipient)
 
+  let sendPhase: SendPhase = "idle"
+  let sendDetail: string | undefined
+  if (isConfirmed) {
+    sendPhase = "success"
+  } else if (sendError) {
+    sendPhase = "error"
+    sendDetail = sendError
+  } else if (isBusy) {
+    sendPhase = "waiting"
+    sendDetail = isConfirming
+      ? "Waiting for confirmation."
+      : "Check your wallet to approve the request."
+  }
+  const sendAnnouncement = getSendStatusAnnouncement({ phase: sendPhase, detail: sendDetail })
+
   const selectedSymbol =
     asset === NATIVE
       ? activeChain.nativeCurrency.symbol
       : TRACKED_TOKENS.find((token) => token.address === asset)?.symbol ?? ""
+
+  useEffect(() => {
+    if (isConfirmed && txHash && recipient) {
+      broadcastPosPayment({
+        type: "payment_received",
+        recipient,
+        amount,
+        asset: selectedSymbol,
+        txHash,
+        chain: "base",
+      })
+    }
+  }, [isConfirmed, txHash, recipient, amount, selectedSymbol])
 
   // Exact balance in base units, so the check never goes through floating point.
   const selectedDecimals =
@@ -133,6 +165,7 @@ export function SendPayment({
   }
 
   const handleSend = async () => {
+    setSendError(null)
     if (!isConnected) {
       toast({
         title: "Wallet not connected",
@@ -187,11 +220,13 @@ export function SendPayment({
       const rejected =
         error?.name === "UserRejectedRequestError" ||
         /user rejected|denied/i.test(error?.message ?? "")
+      const description = rejected
+        ? "You rejected the request in your wallet."
+        : error?.shortMessage || error?.message || "Something went wrong."
+      setSendError(description)
       toast({
         title: rejected ? "Transaction cancelled" : "Payment failed",
-        description: rejected
-          ? "You rejected the request in your wallet."
-          : error?.shortMessage || error?.message || "Something went wrong.",
+        description,
         variant: "destructive",
       })
     }
@@ -229,6 +264,7 @@ export function SendPayment({
         >
           Send another
         </Button>
+        <SendStatusAnnouncement message={sendAnnouncement} />
       </div>
     )
   }
@@ -378,6 +414,7 @@ export function SendPayment({
       <p className="text-center text-xs text-muted-foreground">
         Sends on {activeChain.name}. On-chain transfers cannot be reversed, so check the address.
       </p>
+      <SendStatusAnnouncement message={sendAnnouncement} />
     </div>
   )
 }

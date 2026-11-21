@@ -314,6 +314,7 @@ mod tests {
 
     use super::{DepositChain, build_qr_uri};
     use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
     use crate::{AppState, router};
 
     // ── QR URI unit tests ────────────────────────────────────────────────────
@@ -414,11 +415,7 @@ mod tests {
     fn app() -> axum::Router {
         let config = Config::for_tests();
         router(
-            AppState {
-                database: None,
-                config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(None, config.clone(), RateLimiter::new()),
             &config,
         )
     }
@@ -529,11 +526,7 @@ mod tests {
         let mut config = Config::for_tests();
         config.stellar_custody_account = Some(custody.to_owned());
         router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
     }
@@ -542,11 +535,7 @@ mod tests {
         let mut config = Config::for_tests();
         config.base_custody_address = Some(address.to_owned());
         router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
     }
@@ -555,11 +544,7 @@ mod tests {
         let mut config = Config::for_tests();
         config.bitcoin_custody_address = Some(address.to_owned());
         router(
-            AppState {
-                database: Some(pool),
-                config: config.clone(),
-            rate_limiter: RateLimiter::new(),
-            },
+            AppState::with_fakes(Some(pool), config.clone(), RateLimiter::new()),
             &config,
         )
     }

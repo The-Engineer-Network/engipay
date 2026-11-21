@@ -36,9 +36,25 @@ npm test
 # Build production bundle
 npm run build
 
+# Browser smoke tests against the production build (run after `npm run build`)
+npx playwright install chromium
+npm run test:e2e
+
 # Run dependency audit
 npm audit --audit-level=high
 ```
+
+### API client decision (#670)
+
+The web app's canonical path to the EngiPay API is the typed client: use
+`lib/api.ts` for shared transport concerns (API base URL, authentication and
+error parsing) and `lib/api-client.ts` for typed endpoint wrappers. This keeps
+authentication and error handling in one place.
+
+The Next.js `/api` rewrite remains temporarily for existing raw callers. Those
+call sites will be migrated in follow-up issues; once they are gone, the
+rewrite can be removed. Direct calls to external services such as Horizon and
+RPC endpoints are outside this decision.
 
 ### 2. Backend (Rust Workspace)
 

@@ -1,8 +1,13 @@
+use axum::extract::State;
 use axum::{Json, Router, routing::post};
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::error::ApiError;
+
+/// How long a nonce can be used after it is issued.
+pub const NONCE_LIFETIME: &str = "5 minutes";
 
 #[derive(Debug, Serialize)]
 pub struct NonceResponse {
@@ -13,27 +18,21 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/auth/nonce", post(issue_nonce))
 }
 
-/// Issues a fresh nonce for the SIWE handshake. Persistence and five-minute
-/// consumption are handled by the nonce store introduced in issue #98.
-async fn issue_nonce() -> Json<NonceResponse> {
-    Json(NonceResponse {
-        nonce: Uuid::new_v4().simple().to_string(),
-    })
-}
+/// POST /v1/auth/nonce - issue a single-use nonce for wallet sign-in.
+/// The nonce is stored, so a sign-in can only use one that was issued here.
+async fn issue_nonce(State(state): State<AppState>) -> Result<Json<NonceResponse>, ApiError> {
+    let pool = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    let nonce = Uuid::new_v4().simple().to_string();
+    sqlx::query("INSERT INTO auth_nonces (nonce, expires_at) VALUES ($1, now() + $2::interval)")
+        .bind(&nonce)
+        .bind(NONCE_LIFETIME)
+        .execute(pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to store nonce: {}", e)))?;
 
-    #[tokio::test]
-    async fn issues_a_32_character_nonce() {
-        let Json(response) = issue_nonce().await;
-        assert_eq!(response.nonce.len(), 32);
-        assert!(
-            response
-                .nonce
-                .chars()
-                .all(|character| character.is_ascii_hexdigit())
-        );
-    }
+    Ok(Json(NonceResponse { nonce }))
 }

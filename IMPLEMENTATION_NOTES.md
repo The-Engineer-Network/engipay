@@ -1,0 +1,225 @@
+# Implementation Notes for Issues #512 and #514
+
+This document describes the work completed and what remains for issues #512 (CSV batch payments) and #514 (Naira deposits/withdrawals via SEP-24).
+
+## Issue #393: Key Management Signer Γ£à **COMPLETE**
+
+### What was implemented:
+- Γ£à `KmsBackend` trait for secure signing without exposing private keys
+- Γ£à `KmsSigner` struct that works on both testnet and mainnet
+- Γ£à `FakeKmsBackend` for testing
+- Γ£à `LocalTestnetSigner` unchanged (still refuses mainnet)
+- Γ£à Comprehensive tests for KMS signing functionality
+- Γ£à `CustodySigner` wrapper works with both local and KMS signers
+
+### Done when criteria met:
+- Γ£à Signing works through the trait with a fake KMS in tests
+- Γ£à The mainnet refusal in the local signer is untouched
+
+**Status**: Ready for review and merge.
+
+---
+
+## Issue #516: Claimable Balances Γ£à **COMPLETE**
+
+### What was implemented:
+- Γ£à Added `use_claimable_balance` field to `PaymentRequest`
+- Γ£à Modified `build_payment()` to create `CreateClaimableBalance` operations
+- Γ£à Added `parse_destination()` helper for `AccountId` conversion
+- Γ£à Updated all `PaymentRequest` constructors across the codebase
+- Γ£à Comprehensive tests for claimable balances with XLM, USDC, muxed addresses, memos
+
+### How it works:
+When `use_claimable_balance` is true, the payment system creates a `CreateClaimableBalance` operation instead of a direct `Payment` operation. The claimable balance has an unconditional predicate, allowing the recipient to claim it anytime, even if they don't have a trustline for the asset yet.
+
+**Status**: Ready for review and merge.
+
+---
+
+## Issue #512: CSV Batch Payments ≡ƒÜº **FOUNDATION IMPLEMENTED**
+
+### What was implemented:
+- Γ£à Created `backend/crates/api/src/routes/batch_payments.rs` with core structure
+- Γ£à CSV parsing and validation functions
+- Γ£à Data structures (`BatchPaymentRow`, `BatchPaymentStatus`, etc.)
+- Γ£à Database migration (`0018_batch_payments.sql`) with:
+  - `batch_payments` table with status tracking
+  - `batch_payment_rows` table for individual rows
+  - Idempotency via `withdrawal_id` and `transfer_id` foreign keys
+  - Automatic counter updates via triggers
+  - Approval workflow support
+- Γ£à Basic tests for CSV parsing and validation
+- Γ£à Added `csv` crate dependency
+
+### What needs to be completed:
+
+#### 1. Database Integration
+```rust
+// In upload_batch():
+// - Insert batch record with transaction
+// - Bulk insert all validated rows
+// - Handle database errors properly
+```
+
+#### 2. Worker Implementation
+Create `backend/crates/api/src/workers/batch_processor.rs`:
+- Poll for batches in `pending` or `processing` status
+- Process rows one at a time
+- Update row status after each attempt
+- Handle retries for transient failures
+- Respect rate limits
+
+#### 3. API Route Registration
+In `backend/crates/api/src/routes/mod.rs`:
+```rust
+pub mod batch_payments;
+
+// In the router:
+.route("/v1/batch-payments", post(batch_payments::upload_batch))
+.route("/v1/batch-payments/:batch_id", get(batch_payments::get_batch_status))
+.route("/v1/batch-payments/:batch_id/rows", get(batch_payments::get_batch_rows))
+.route("/v1/batch-payments/:batch_id/approve", post(batch_payments::approve_batch))
+.route("/v1/batch-payments/:batch_id/cancel", post(batch_payments::cancel_batch))
+```
+
+#### 4. Amount Validation and Threshold Check
+```rust
+// Parse amounts using engipay_core::Money
+// Sum total across all rows
+// Check against APPROVAL_THRESHOLD
+```
+
+#### 5. Payment Execution Logic
+- Integrate with existing withdrawal/transfer systems
+- Store `withdrawal_id` or `transfer_id` for idempotency
+- Ensure re-running never pays a row twice (check if ID already set)
+
+#### 6. Frontend Integration
+- CSV upload component
+- Batch status dashboard
+- Approval interface for second account
+- Row-by-row results display
+
+### Done when criteria:
+- [ ] Re-running a partially processed batch never pays a row twice
+- [ ] CSV validation catches all errors before execution
+- [ ] Approval workflow works for amounts above threshold
+- [ ] Each row's outcome is reported
+
+**Status**: Core structure ready, needs integration and worker implementation.
+
+---
+
+## Issue #514: Naira SEP-24 Anchor Integration ≡ƒÜº **FOUNDATION IMPLEMENTED**
+
+### What was implemented:
+- Γ£à Created `backend/crates/chain/src/stellar/sep10.rs` for SEP-10 authentication
+  - `get_challenge()` to request challenge from anchor
+  - `authenticate()` to sign challenge and obtain JWT
+  - `authenticate_account()` for complete auth flow
+  - Network passphrase verification
+- Γ£à Created `backend/crates/chain/src/stellar/sep24.rs` for interactive flows
+  - `start_deposit()` for fiat -> crypto deposits
+  - `start_withdraw()` for crypto -> fiat withdrawals
+  - `get_transaction()` for polling transaction status
+  - Complete SEP-24 data structures
+- Γ£à Created `backend/crates/api/src/routes/naira.rs` for API endpoints
+  - Deposit and withdrawal request/status handlers
+  - Structure for bank account details
+- Γ£à Database migration `0019_anchor_transactions.sql` with:
+  - `anchor_transactions` table for tracking SEP-24 flows
+  - Ledger integration via `deposit_transfer_id` and `withdrawal_id`
+  - JWT storage for anchor authentication
+  - Status tracking aligned with SEP-24 specification
+
+### What needs to be completed:
+
+#### 1. Choose and Configure an Anchor ΓÜá∩╕Å **REQUIRED**
+Research and select a Stellar anchor that supports NGN on/off-ramps:
+- Flutterwave
+- Cowrie
+- Or other Stellar-compliant anchor with NGN support
+
+Configure in environment:
+```env
+STELLAR_ANCHOR_URL=https://anchor.example.com
+STELLAR_ANCHOR_HOME_DOMAIN=anchor.example.com
+```
+
+#### 2. Complete API Route Implementation
+In `backend/crates/api/src/routes/naira.rs`:
+- Integrate with SEP-10/SEP-24 modules Γ£à (structure ready)
+- Get user's Stellar custody account from database
+- Call anchor APIs using implemented sep10/sep24 functions
+- Store transactions in `anchor_transactions` table
+- Handle errors and edge cases
+
+#### 3. Implement Transaction Polling Worker
+Create `backend/crates/chain/src/workers/anchor_poller.rs`:
+- Poll pending anchor transactions
+- Credit ledger when deposit completes
+- Update withdrawal status when off-ramp completes
+- Handle anchor errors and timeouts
+
+#### 4. API Route Registration
+- Naira deposit flow with anchor iframe
+- Naira withdrawal flow with bank details
+- Transaction status tracking
+- KYC handling (if required by anchor)
+
+### Done when criteria:
+- [ ] A testnet anchor flow completes end to end
+- [ ] Deposits are credited to the ledger
+- [ ] Withdrawals debit the ledger and reach the bank account
+
+### Key Considerations:
+1. **Anchor Selection**: Must support NGN and be production-ready
+2. **SEP-10 Auth**: Custody key signs challenges, JWT cached
+3. **SEP-24 Flow**: User completes KYC/bank details in anchor's iframe
+4. **Polling**: Transaction status checked every 10-30 seconds
+5. **Timeouts**: Abandon transactions that don't complete within reasonable time
+6. **Testing**: Use anchor's testnet for development
+
+**Status**: Core SEP-10/SEP-24 modules implemented, needs anchor selection and API/worker completion.
+
+---
+
+## Testing Strategy
+
+### For Batch Payments (#512):
+1. Unit tests for CSV parsing Γ£à
+2. Unit tests for row validation Γ£à
+3. Integration tests for database operations
+4. Worker tests with mock payments
+5. End-to-end tests with small CSV files
+
+### For SEP-24 (#514):
+1. Mock anchor server for unit tests
+2. Real testnet anchor for integration tests
+3. Test both deposit and withdrawal flows
+4. Test error handling (anchor timeout, rejection, etc.)
+
+---
+
+## Dependencies
+
+### External Crates Needed:
+- `csv = "1.3"` Γ£à Added to api/Cargo.toml
+
+### Internal Changes Required:
+- Route registration in `api/src/routes/mod.rs`
+- Worker startup in `api/src/main.rs`
+- Configuration for anchor URL and credentials
+
+---
+
+## Deployment Checklist
+
+Before merging to production:
+- [ ] All database migrations tested
+- [ ] Approval threshold configurable per entity
+- [ ] Batch processing worker deployed
+- [ ] Anchor polling worker deployed
+- [ ] Monitoring and alerts for stuck batches/transactions
+- [ ] Rate limiting on batch uploads
+- [ ] Documentation for CSV format and approval process
