@@ -1,4 +1,5 @@
 -- Batch payment support for CSV uploads (Issue #512)
+-- Renamed from 0018_batch_payments.sql to 0022_batch_payments.sql (Issue #607).
 --
 -- Allows businesses to upload a CSV of recipients and amounts, validate all
 -- rows before execution, require approval above thresholds, and execute

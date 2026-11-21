@@ -51,6 +51,38 @@ pub fn validate_account_number(number: &str) -> Result<(), ApiError> {
     }
 }
 
+/// Computes the CBN NUBAN check digit for a 3-digit bank code and the first
+/// nine digits of the account number. Returns `None` on malformed input.
+pub fn nuban_check_digit(bank_code: &str, serial: &str) -> Option<u32> {
+    const WEIGHTS: [u32; 12] = [3, 7, 3, 3, 7, 3, 3, 7, 3, 3, 7, 3];
+    if bank_code.len() != 3 || serial.len() != 9 {
+        return None;
+    }
+    let mut sum = 0u32;
+    for (digit, weight) in bank_code.chars().chain(serial.chars()).zip(WEIGHTS) {
+        sum += digit.to_digit(10)? * weight;
+    }
+    Some((10 - sum % 10) % 10)
+}
+
+/// Rejects a 10-digit account number whose NUBAN check digit does not match,
+/// so a typo is caught before a paid name enquiry. Only banks with a 3-digit
+/// CBN code use NUBAN; other (e.g. fintech) codes are not checked here.
+pub fn validate_nuban_check_digit(bank_code: &str, number: &str) -> Result<(), ApiError> {
+    if bank_code.len() != 3 || number.len() != 10 {
+        return Ok(());
+    }
+    let (serial, check) = number.split_at(9);
+    match nuban_check_digit(bank_code, serial) {
+        Some(expected) if check.chars().next().and_then(|c| c.to_digit(10)) == Some(expected) => {
+            Ok(())
+        }
+        _ => Err(ApiError::BadRequest(
+            "Account number is not valid for this bank. Check for a typo.".to_string(),
+        )),
+    }
+}
+
 // ── Request / response types ──────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -122,6 +154,7 @@ async fn add_account(
 
     validate_bank_code(&req.bank_code)?;
     validate_account_number(&req.account_number)?;
+    validate_nuban_check_digit(&req.bank_code, &req.account_number)?;
 
     // Name enquiry with the configured provider. Logs only the last 4 digits.
     let account_name = state
@@ -226,5 +259,28 @@ mod tests {
                 "{bad:?} should be refused"
             );
         }
+    }
+
+    #[test]
+    fn nuban_check_digit_matches_known_numbers() {
+        // 044 + 012345678: weighted sum 196 -> check digit 4.
+        assert_eq!(nuban_check_digit("044", "012345678"), Some(4));
+        // 058 + 000000000: sum 5*7+8*3 = 59 -> check digit 1.
+        assert_eq!(nuban_check_digit("058", "000000000"), Some(1));
+        // A sum that is a multiple of ten yields check digit 0.
+        assert_eq!(nuban_check_digit("000", "000000000"), Some(0));
+        assert!(validate_nuban_check_digit("044", "0123456784").is_ok());
+        assert!(validate_nuban_check_digit("058", "0000000001").is_ok());
+    }
+
+    #[test]
+    fn one_digit_typo_is_rejected() {
+        assert!(validate_nuban_check_digit("044", "0123456785").is_err());
+        assert!(validate_nuban_check_digit("044", "0123456884").is_err());
+    }
+
+    #[test]
+    fn non_nuban_bank_codes_are_not_checked() {
+        assert!(validate_nuban_check_digit("100004", "0123456780").is_ok());
     }
 }

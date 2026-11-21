@@ -4,6 +4,12 @@ export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$
 /** localStorage key the signed-in session token is kept under. */
 export const SESSION_TOKEN_KEY = "engipay-token"
 
+/** Stable API error code returned when an account cannot move funds. */
+export const ACCOUNT_FROZEN_ERROR_CODE = "account_frozen"
+
+/** Browser event emitted when the API reports that the current account is frozen. */
+export const ACCOUNT_FROZEN_EVENT = "engipay:account-frozen"
+
 /** A failed API call. `code` is the stable error code the API returns. */
 export class ApiRequestError extends Error {
   readonly status: number
@@ -74,7 +80,11 @@ async function send<T>(path: string, init: RequestInit, token: string | null): P
   } catch {
     // The body was not JSON; keep the generic message.
   }
-  throw new ApiRequestError(response.status, code, message)
+  const error = new ApiRequestError(response.status, code, message)
+  if (error.code === ACCOUNT_FROZEN_ERROR_CODE && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(ACCOUNT_FROZEN_EVENT))
+  }
+  throw error
 }
 
 /**
