@@ -1,45 +1,34 @@
 "use client"
 
 import { useCallback, useState } from "react"
-import { apiPublicRequest, writeSessionToken } from "@/lib/api"
-import { buildSignInMessage } from "@/lib/siwe"
+import {
+  requestStellarChallenge,
+  verifyStellarChallenge,
+  writeSessionToken,
+} from "@/lib/api-client"
 
-interface NonceResponse {
-  nonce: string
-}
-
-interface VerifyResponse {
-  token: string
-  user_id: string
-}
-
-/** Freighter's signTransaction API is used; we ask it to sign a plain text message. */
-type SignMessageFn = (message: string) => Promise<string>
+type SignTransactionFn = (transaction: string, networkPassphrase: string) => Promise<string>
 
 /**
- * Signs a Stellar wallet in to EngiPay: get a nonce, ask the wallet to sign a
- * message that carries it, and exchange the signature for a session token.
+ * Signs a Stellar wallet in to EngiPay: get a SEP-10 challenge, ask the wallet
+ * to sign its transaction XDR, and exchange the signed transaction for a
+ * session token.
  *
- * Pass `signMessage` as a thin wrapper over whichever signing method the
+ * Pass `signTransaction` as a thin wrapper over whichever signing method the
  * wallet exposes (Freighter or WalletConnect).
  */
 export function useStellarSignIn() {
   const [isSigning, setIsSigning] = useState(false)
 
-  const signIn = useCallback(async (address: string, signMessage: SignMessageFn) => {
+  const signIn = useCallback(async (address: string, signTransaction: SignTransactionFn) => {
     setIsSigning(true)
     try {
-      const nonce = await apiPublicRequest<NonceResponse>("/v1/auth/nonce", { method: "POST" })
-      if (!nonce) throw new Error("The API did not return a sign-in nonce.")
-
-      const message = buildSignInMessage({ address, nonce: nonce.nonce, issuedAt: new Date() })
-      const signature = await signMessage(message)
-
-      const session = await apiPublicRequest<VerifyResponse>("/v1/auth/verify-stellar", {
-        method: "POST",
-        body: JSON.stringify({ address, message, signature }),
-      })
-      if (!session) throw new Error("The API did not return a session.")
+      const challenge = await requestStellarChallenge(address)
+      const transaction = await signTransaction(
+        challenge.transaction,
+        challenge.network_passphrase
+      )
+      const session = await verifyStellarChallenge({ account: address, transaction })
 
       writeSessionToken(session.token)
       return session

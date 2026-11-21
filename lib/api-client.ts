@@ -67,6 +67,11 @@ export interface SessionResponse {
   user_id: string
 }
 
+export interface StellarChallengeResponse {
+  transaction: string
+  network_passphrase: string
+}
+
 export interface DepositAddress {
   address: string
   asset: string
@@ -344,13 +349,21 @@ export async function verifyEvmSignIn(params: {
   return result
 }
 
-/** POST /v1/auth/verify-stellar — verify a Stellar wallet signature and start a session. */
-export async function verifyStellarSignIn(params: {
-  address: string
-  message: string
-  signature: string
+/** GET /v1/auth/stellar/challenge — get a SEP-10 transaction to sign. */
+export async function requestStellarChallenge(account: string): Promise<StellarChallengeResponse> {
+  const result = await apiPublicRequest<StellarChallengeResponse>(
+    `/v1/auth/stellar/challenge?account=${encodeURIComponent(account)}`
+  )
+  if (!result) throw new Error("API did not return a Stellar sign-in challenge.")
+  return result
+}
+
+/** POST /v1/auth/stellar/verify — exchange a signed SEP-10 transaction for a session. */
+export async function verifyStellarChallenge(params: {
+  account: string
+  transaction: string
 }): Promise<SessionResponse> {
-  const result = await apiPublicRequest<SessionResponse>("/v1/auth/verify-stellar", {
+  const result = await apiPublicRequest<SessionResponse>("/v1/auth/stellar/verify", {
     method: "POST",
     body: JSON.stringify(params),
   })
