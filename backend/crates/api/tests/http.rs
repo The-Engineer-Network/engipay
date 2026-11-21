@@ -37,6 +37,27 @@ async fn health_reports_ok_without_a_database() {
     assert_eq!(body["database"], "not_configured");
 }
 
+/// Building the router panics on duplicate or invalid routes, so this test
+/// fails if such a route is added.
+#[tokio::test]
+async fn router_builds_and_serves_healthz() {
+    let config = Config::for_tests();
+    let app = router(
+        AppState::with_fakes(None, config.clone(), RateLimiter::new()),
+        &config,
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn sign_in_endpoints_report_no_database_instead_of_pretending() {
     let verify_body = r#"{"message":"Sign in\nNonce: abcdef1234","signature":"0x00","address":"0x0000000000000000000000000000000000000001"}"#;

@@ -93,8 +93,8 @@ pub struct CreateMoneyRequestResponse {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/money-requests", post(create).get(list))
-        .route("/money-requests/:id/accept", post(accept))
-        .route("/money-requests/:id/decline", post(decline))
+        .route("/money-requests/{id}/accept", post(accept))
+        .route("/money-requests/{id}/decline", post(decline))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
