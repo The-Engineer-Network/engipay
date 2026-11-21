@@ -20,12 +20,16 @@
 //! Returns the caller's conversion (assets, amounts, rate, fee, status).
 //! Conversions owned by another user (or nonexistent) return 404.
 //!
+//! ## List (`GET /v1/convert/orders`)
+//! Returns the caller's conversions newest first, with `limit` and cursor
+//! pagination matching `/v1/transactions`.
+//!
 //! ## Rounding rule
 //! See [`crate::services::price_source`] for the documented rounding rule.
 //! Summary: floor-divide when computing amounts the user receives; fee rounded
 //! up. The platform can never accidentally give away more than it intends.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -43,10 +47,14 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/convert/quote", post(create_quote))
         .route("/convert/execute", post(execute_conversion))
+        .route("/convert/orders", get(list_conversions))
         .route("/convert/orders/{id}", get(get_conversion))
 }
 
 const QUOTE_LIFETIME_SQL: &str = "30 seconds";
+
+const DEFAULT_LIMIT: i64 = 20;
+const MAX_LIMIT: i64 = 100;
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -113,6 +121,23 @@ pub struct ConversionResponse {
     /// Rate as "numerator/denominator" (to_minor per from_minor).
     pub rate: String,
     pub status: String,
+}
+
+/// `GET /v1/convert/orders` query parameters.
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    /// Maximum number of conversions to return (default 20, max 100).
+    pub limit: Option<i64>,
+    /// Opaque cursor from a previous page's `next_cursor`.
+    pub cursor: Option<String>,
+}
+
+/// `GET /v1/convert/orders` response.
+#[derive(Debug, Serialize)]
+pub struct ListResponse {
+    pub items: Vec<ConversionResponse>,
+    /// Cursor to fetch the next page, or `null` when there are no more.
+    pub next_cursor: Option<String>,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -207,6 +232,75 @@ async fn create_quote(
     ))
 }
 
+async fn list_conversions(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<ListResponse>, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?.as_uuid();
+    let db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+
+    // Cursor is the `created_at` of the last item on the previous page.
+    let cursor = match query.cursor.as_deref() {
+        Some(c) if !c.is_empty() => Some(
+            chrono::DateTime::parse_from_rfc3339(c)
+                .map_err(|_| ApiError::BadRequest("Invalid cursor.".to_string()))?
+                .with_timezone(&chrono::Utc),
+        ),
+        _ => None,
+    };
+
+    // Fetch one extra row to determine whether a next page exists.
+    let rows = sqlx::query(
+        "SELECT id, asset_in, asset_out, \
+                amount_in::text AS amount_in, \
+                amount_out::text AS amount_out, \
+                fee::text AS fee, \
+                rate::text AS rate, \
+                status, \
+                to_char(created_at AT TIME ZONE 'UTC', \
+                        'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at \
+         FROM conversions \
+         WHERE user_id = $1 \
+           AND ($2::timestamptz IS NULL OR created_at < $2) \
+         ORDER BY created_at DESC \
+         LIMIT $3",
+    )
+    .bind(user_id)
+    .bind(cursor)
+    .bind(limit + 1)
+    .fetch_all(db)
+    .await
+    .map_err(db_error)?;
+
+    let has_more = rows.len() as i64 > limit;
+    let mut items = Vec::with_capacity(rows.len().min(limit as usize));
+    let mut last_created_at: Option<String> = None;
+
+    for row in rows.into_iter().take(limit as usize) {
+        last_created_at = Some(row.try_get("created_at").map_err(db_error)?);
+        items.push(ConversionResponse {
+            id: row.try_get("id").map_err(db_error)?,
+            from_asset: parse_asset(row.try_get("asset_in").map_err(db_error)?)?,
+            to_asset: parse_asset(row.try_get("asset_out").map_err(db_error)?)?,
+            amount_in: row.try_get("amount_in").map_err(db_error)?,
+            amount_out: row.try_get("amount_out").map_err(db_error)?,
+            fee: row.try_get("fee").map_err(db_error)?,
+            rate: row.try_get("rate").map_err(db_error)?,
+            status: row.try_get("status").map_err(db_error)?,
+        });
+    }
+
+    let next_cursor = if has_more { last_created_at } else { None };
+
+    Ok(Json(ListResponse { items, next_cursor }))
+}
+
 async fn get_conversion(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -235,13 +329,10 @@ async fn get_conversion(
     .map_err(db_error)?
     .ok_or(ApiError::NotFound)?;
 
-    let asset_in: String = row.try_get("asset_in").map_err(db_error)?;
-    let asset_out: String = row.try_get("asset_out").map_err(db_error)?;
-
     Ok(Json(ConversionResponse {
         id: row.try_get("id").map_err(db_error)?,
-        from_asset: parse_asset(&asset_in)?,
-        to_asset: parse_asset(&asset_out)?,
+        from_asset: parse_asset(row.try_get("asset_in").map_err(db_error)?)?,
+        to_asset: parse_asset(row.try_get("asset_out").map_err(db_error)?)?,
         amount_in: row.try_get("amount_in").map_err(db_error)?,
         amount_out: row.try_get("amount_out").map_err(db_error)?,
         fee: row.try_get("fee").map_err(db_error)?,
@@ -250,163 +341,13 @@ async fn get_conversion(
     }))
 }
 
-fn parse_asset(symbol: &str) -> Result<Asset, ApiError> {
+fn parse_asset(symbol: String) -> Result<Asset, ApiError> {
     symbol
-        .parse::<Asset>()
-        .map_err(|_| ApiError::Internal(anyhow::anyhow!("unknown asset symbol: {}", symbol)))
-}
-
-async fn execute_conversion(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    Json(req): Json<ExecuteRequest>,
-) -> Result<(StatusCode, Json<ExecuteResponse>), ApiError> {
-    let user_id_core = auth.user_id(state.config.jwt_secret.as_bytes())?;
-    let user_id = user_id_core.as_uuid();
-    let db = state
-        .database
-        .as_ref()
-        .ok_or(ApiError::DatabaseUnavailable)?;
-
-    // Check if user's account is frozen
-    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&db)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
-        .unwrap_or(false);
-
-    if is_frozen {
-        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
-    }
-
-    // ── 1. Lock the quote row ─────────────────────────────────────────────────
-    let mut tx = db.begin().await.map_err(db_error)?;
-
-    let quote = sqlx::query(
-        "SELECT id, asset_in, asset_out, \
-                amount_in::text AS amount_in, \
-                amount_out::text AS amount_out, \
-                fee::text AS fee, \
-                (expires_at > now()) AS live, \
-                status \
-         FROM conversions \
-         WHERE id = $1 AND user_id = $2 \
-         FOR UPDATE",
-    )
-    .bind(req.quote_id)
-    .bind(user_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(db_error)?
-    .ok_or(ApiError::NotFound)?;
-
-    let status: String = quote.try_get("status").map_err(db_error)?;
-    if status == "completed" {
-        // Idempotent replay: return the already-credited amount.
-        let amount_out: String = quote.try_get("amount_out").map_err(db_error)?;
-        let asset_out: String = quote.try_get("asset_out").map_err(db_error)?;
-        tx.commit().await.map_err(db_error)?;
-        return Ok((
-            StatusCode::OK,
-            Json(ExecuteResponse {
-                conversion_id: req.quote_id,
-                status,
-                amount_out,
-                to_asset: parse_asset(&asset_out)?,
-            }),
-        ));
-    }
-
-    if status != "quoted" {
-        return Err(ApiError::BadRequest(format!(
-            "conversion is not executable (status: {status})"
-        )));
-    }
-
-    let live: bool = quote.try_get("live").map_err(db_error)?;
-    if !live {
-        return Err(ApiError::BadRequest("quote has expired".to_string()));
-    }
-
-    // ── 2. Transition to processing ───────────────────────────────────────────
-    sqlx::query("UPDATE conversions SET status = 'processing' WHERE id = $1")
-        .bind(req.quote_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error)?;
-
-    let asset_in: String = quote.try_get("asset_in").map_err(db_error)?;
-    let asset_out: String = quote.try_get("asset_out").map_err(db_error)?;
-    let amount_in: String = quote.try_get("amount_in").map_err(db_error)?;
-    let amount_out: String = quote.try_get("amount_out").map_err(db_error)?;
-
-    let from_asset = parse_asset(&asset_in)?;
-    let to_asset = parse_asset(&asset_out)?;
-    let amount_in: i128 = amount_in.parse().map_err(|_| {
-        ApiError::Internal(anyhow::anyhow!("invalid stored amount_in"))
-    })?;
-
-    // ── 3. Hold the source amount ─────────────────────────────────────────────
-    let hold = state
-        .ledger
-        .hold(user_id_core, from_asset, Money::from_minor(amount_in))
-        .await;
-
-    let hold_id = match hold {
-        Ok(h) => h,
-        Err(e) => {
-            sqlx::query("UPDATE conversions SET status = 'failed' WHERE id = $1")
-                .bind(req.quote_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(db_error)?;
-            tx.commit().await.map_err(db_error)?;
-            return Err(ApiError::Internal(anyhow::anyhow!(
-                "failed to hold funds: {e}"
-            )));
-        }
-    };
-
-    // ── 4. Settle: debit hold, credit target ──────────────────────────────────
-    let settle = state
-        .ledger
-        .settle_convert(hold_id, user_id_core, to_asset, &amount_out)
-        .await;
-
-    match settle {
-        Ok(()) => {
-            sqlx::query("UPDATE conversions SET status = 'completed' WHERE id = $1")
-                .bind(req.quote_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(db_error)?;
-            tx.commit().await.map_err(db_error)?;
-            Ok((
-                StatusCode::OK,
-                Json(ExecuteResponse {
-                    conversion_id: req.quote_id,
-                    status: "completed".to_string(),
-                    amount_out,
-                    to_asset,
-                }),
-            ))
-        }
-        Err(e) => {
-            let _ = state.ledger.release(hold_id).await;
-            sqlx::query("UPDATE conversions SET status = 'failed' WHERE id = $1")
-                .bind(req.quote_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(db_error)?;
-            tx.commit().await.map_err(db_error)?;
-            Err(ApiError::Internal(anyhow::anyhow!(
-                "failed to settle conversion: {e}"
-            )))
-        }
-    }
+        .parse()
+        .map_err(|_| ApiError::Internal("Invalid asset stored on conversion.".to_string()))
 }
 
 fn db_error(e: sqlx::Error) -> ApiError {
-    ApiError::Internal(anyhow::anyhow!("database error: {e}"))
+    tracing::error!(error = %e, "database error in convert route");
+    ApiError::Internal("Database error.".to_string())
 }

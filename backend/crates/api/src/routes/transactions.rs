@@ -55,7 +55,7 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/transactions", get(get_transactions))
 }
 
-fn decode_cursor(cursor: &str) -> Result<(String, String), ApiError> {
+pub(crate) fn decode_cursor(cursor: &str) -> Result<(String, String), ApiError> {
     let decoded = BASE64
         .decode(cursor)
         .map_err(|_| ApiError::BadRequest("invalid cursor".to_string()))?;
@@ -69,7 +69,7 @@ fn decode_cursor(cursor: &str) -> Result<(String, String), ApiError> {
     Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
-fn encode_cursor(created_at: &str, tx_id: &str) -> String {
+pub(crate) fn encode_cursor(created_at: &str, tx_id: &str) -> String {
     let cursor_data = format!("{}|{}", created_at, tx_id);
     BASE64.encode(cursor_data)
 }
