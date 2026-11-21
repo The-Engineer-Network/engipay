@@ -239,6 +239,7 @@ pub(crate) async fn load_payment_request_detail(
 
 /// Request body for recording a payment against a payment request.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecordPaymentRequest {
     /// Amount being paid, as a decimal string in the request's asset.
     pub amount: String,

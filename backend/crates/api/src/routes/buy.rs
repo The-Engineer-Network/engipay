@@ -33,6 +33,7 @@ const NOT_CONFIGURED: &str = "Buying with Naira is not available yet: pricing ha
 
 /// `POST /v1/buy/quotes` body.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuoteRequest {
     /// Naira the user pays, as typed: "5000" or "5,000.50".
     pub naira_amount: String,
@@ -61,6 +62,7 @@ pub struct QuoteResponse {
 
 /// `POST /v1/buy/orders` body.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OrderRequest {
     pub quote_id: Uuid,
 }

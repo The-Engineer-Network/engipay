@@ -20,6 +20,7 @@ use crate::services::recipient::resolve_recipient;
 /// Money is never a floating point value: `amount` stays a decimal string until
 /// [`Money::parse`] turns it into integer minor units for the asset.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransferRequest {
     /// Recipient's user id (`uuid`). The sender is always the authenticated
     /// caller, so a client cannot move money out of someone else's account.

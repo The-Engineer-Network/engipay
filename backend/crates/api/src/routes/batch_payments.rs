@@ -368,6 +368,32 @@ pub async fn execute_batch(
         ));
     }
 
+    // Daily velocity limit: refuse the whole batch before any row is paid.
+    let unpaid: Vec<(String, String)> = sqlx::query_as(
+        "SELECT asset, amount FROM batch_payment_rows \
+         WHERE batch_id = $1 AND status::text <> 'success' \
+           AND tx_hash IS NULL AND transfer_id IS NULL AND withdrawal_id IS NULL",
+    )
+    .bind(batch_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to total batch rows: {}", e)))?;
+    let batch_total = unpaid_batch_total_minor(&unpaid)?;
+    let tier: i32 = sqlx::query_scalar("SELECT COALESCE(tier, 0) FROM user_profiles WHERE id = $1")
+        .bind(user_id.as_uuid())
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch user tier: {}", e)))?
+        .unwrap_or(0);
+    crate::services::limits::check_velocity_limits(
+        &pool,
+        user_id,
+        tier,
+        engipay_core::Money::from_minor(engipay_core::Asset::Usdc, batch_total),
+        state.config.tier_0_daily_limit_minor,
+    )
+    .await?;
+
     // Set batch to processing
     sqlx::query("UPDATE batch_payments SET status = 'processing'::batch_status, updated_at = NOW() WHERE batch_id = $1")
         .bind(batch_id)
@@ -789,6 +815,57 @@ pub fn validate_row(row: &BatchPaymentRow, row_number: usize) -> Result<(Asset, 
     }
 
     Ok((asset, money))
+}
+
+/// Sums the unpaid rows of a batch in integer minor units (never floats).
+fn unpaid_batch_total_minor(rows: &[(String, String)]) -> Result<i128, ApiError> {
+    let mut total: i128 = 0;
+    for (asset, amount) in rows {
+        let asset: engipay_core::Asset = asset
+            .parse()
+            .map_err(|_| ApiError::Internal(anyhow::anyhow!("stored batch row has invalid asset")))?;
+        let money = engipay_core::Money::parse(asset, amount.trim())
+            .map_err(|_| ApiError::Internal(anyhow::anyhow!("stored batch row has invalid amount")))?;
+        total = total.saturating_add(money.minor);
+    }
+    Ok(total)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod batch_limit_tests {
+    use super::*;
+
+    #[test]
+    fn unpaid_total_sums_minor_units() {
+        let rows = vec![
+            ("USDC".to_owned(), "1.50".to_owned()),
+            ("USDC".to_owned(), "2.25".to_owned()),
+        ];
+        let expected = engipay_core::Money::parse(engipay_core::Asset::Usdc, "3.75")
+            .unwrap()
+            .minor;
+        assert_eq!(unpaid_batch_total_minor(&rows).unwrap(), expected);
+    }
+
+    #[test]
+    fn unpaid_total_rejects_bad_rows() {
+        assert!(unpaid_batch_total_minor(&[("NOPE".into(), "1".into())]).is_err());
+        assert!(unpaid_batch_total_minor(&[("USDC".into(), "x".into())]).is_err());
+    }
+
+    #[test]
+    fn batch_over_the_limit_maps_to_limit_exceeded() {
+        use crate::services::limits::LimitError;
+        let err: ApiError = LimitError::Exceeded {
+            tier: 0,
+            current: 0,
+            requested: 10,
+            limit: 5,
+        }
+        .into();
+        assert!(matches!(err, ApiError::LimitExceeded(_)));
+    }
 }
 
 #[cfg(test)]

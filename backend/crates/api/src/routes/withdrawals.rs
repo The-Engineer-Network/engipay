@@ -27,6 +27,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateWithdrawalRequest {
     pub amount: i64,
     pub estimated_network_fee: i64,
