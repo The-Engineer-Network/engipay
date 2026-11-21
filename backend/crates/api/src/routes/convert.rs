@@ -47,6 +47,7 @@ const QUOTE_LIFETIME_SQL: &str = "30 seconds";
 
 /// `POST /v1/convert/quote` body.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuoteRequest {
     pub from_asset: Asset,
     pub to_asset: Asset,
@@ -77,6 +78,7 @@ pub struct QuoteResponse {
 
 /// `POST /v1/convert/execute` body.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecuteRequest {
     pub quote_id: Uuid,
 }
@@ -266,6 +268,23 @@ async fn execute_conversion(
     let amount_in: i128 = parse_amount(quote.try_get("amount_in").map_err(db_error)?)?;
     let amount_out: i128 = parse_amount(quote.try_get("amount_out").map_err(db_error)?)?;
     let fee: i128 = parse_amount(quote.try_get("fee").map_err(db_error)?)?;
+
+    // Daily velocity limit on the source amount, before anything is marked
+    // processing or held. The limit is tracked in USDC minor units, so only
+    // USDC sources are counted here.
+    if asset_in == Asset::Usdc {
+        if let Err(err) = crate::services::flow_limits::check_outflow_velocity(
+            db,
+            user_id_core,
+            Money::from_minor(asset_in, amount_in),
+            state.config.tier_0_daily_limit_minor,
+        )
+        .await
+        {
+            tx.rollback().await.map_err(db_error)?;
+            return Err(err);
+        }
+    }
 
     // ── 2. Mark as processing ─────────────────────────────────────────────────
     sqlx::query("UPDATE conversions SET status = 'processing' WHERE id = $1")

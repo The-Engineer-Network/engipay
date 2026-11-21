@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -10,6 +10,9 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
+use crate::routes::payment_request_paging::{
+    ListPaymentRequestsQuery, PaymentRequestsPage, build_page, decode_cursor, effective_limit,
+};
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -75,6 +78,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/payment-requests/{id}", get(get_payment_request))
         .route("/payment-requests/{id}/pay", post(record_payment))
+        .route(
+            "/payment-requests/{id}/cancel",
+            post(crate::routes::payment_request_cancel::cancel_payment_request),
+        )
         .route("/payment-requests", get(list_payment_requests))
 }
 
@@ -232,6 +239,7 @@ pub(crate) async fn load_payment_request_detail(
 
 /// Request body for recording a payment against a payment request.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecordPaymentRequest {
     /// Amount being paid, as a decimal string in the request's asset.
     pub amount: String,
@@ -518,11 +526,19 @@ async fn record_payment(
 /// GET /v1/payment-requests
 ///
 /// List the authenticated merchant's payment requests, most recent first.
+/// Paginated with `limit` (default 20, max 100) and an opaque `cursor`.
 /// Automatically expires any stale requests before returning.
 async fn list_payment_requests(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<PaymentRequestSummary>>, ApiError> {
+    Query(params): Query<ListPaymentRequestsQuery>,
+) -> Result<Json<PaymentRequestsPage>, ApiError> {
+    let limit = effective_limit(params.limit);
+    let cursor = params.cursor.as_deref().map(decode_cursor).transpose()?;
+    let (cursor_ts, cursor_id) = match cursor {
+        Some((ts, id)) => (Some(ts), Some(id)),
+        None => (None, None),
+    };
     let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
     let pool = state
         .database
@@ -561,11 +577,16 @@ async fn list_payment_requests(
         FROM payment_requests pr
         LEFT JOIN payment_request_payments pp ON pp.payment_request_id = pr.id
         WHERE pr.user_id = $1
+          AND ($2::timestamptz IS NULL OR (pr.created_at, pr.id) < ($2, $3))
         GROUP BY pr.id
-        ORDER BY pr.created_at DESC
+        ORDER BY pr.created_at DESC, pr.id DESC
+        LIMIT $4
         "#,
     )
     .bind(user_id.as_uuid())
+    .bind(cursor_ts)
+    .bind(cursor_id)
+    .bind(limit + 1)
     .fetch_all(&pool)
     .await
     .map_err(db_err)?;
@@ -614,7 +635,7 @@ async fn list_payment_requests(
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
 
-    Ok(Json(summaries))
+    Ok(Json(build_page(summaries, limit)))
 }
 
 #[cfg(test)]

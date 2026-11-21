@@ -286,49 +286,36 @@ impl PostgresLedgerStore {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         set_serializable(&mut tx).await?;
 
-        let fingerprint = hold_fingerprint(user, money);
-        if let Some(receipt) = check_idempotency(&mut tx, reference, &fingerprint).await? {
-            return Ok(receipt);
-        }
-
-        let available = get_user_balance(&mut tx, user, money.asset, "available").await?;
-        if available < money.minor {
-            return Err(LedgerError::InsufficientFunds {
-                available: Money::from_minor(money.asset, available),
-                requested: money,
-            });
-        }
-
-        let tx_id = Uuid::new_v4();
-        insert_transaction(&mut tx, tx_id, "hold", reference, &fingerprint).await?;
-
-        let neg = negate(money.minor)?;
-        insert_posting_user(&mut tx, tx_id, user, money.asset, "available", neg).await?;
-        insert_posting_user(&mut tx, tx_id, user, money.asset, "held", money.minor).await?;
-
-        insert_hold(&mut tx, reference, user, money).await?;
-
-        // Outbox event written atomically with the ledger change.
-        let event = crate::outbox::DomainEvent::HoldCreated {
-            user_id: user,
-            asset: money.asset,
-            amount: money.minor,
-            reference: reference.to_owned(),
-        };
-        crate::outbox::pg::insert_outbox_event(
-            &mut tx,
-            Uuid::new_v4(),
-            crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
-            &event,
-            Some(reference),
-        )
-        .await?;
+        let receipt = create_hold_in_tx(&mut tx, user, money, reference).await?;
 
         tx.commit().await.map_err(db_err)?;
-        Ok(Receipt {
-            transaction_id: tx_id,
-            replayed: false,
-        })
+        Ok(receipt)
+    }
+
+    /// Reserves money for something in flight, inside a caller-supplied
+    /// transaction.
+    ///
+    /// This is the same operation as [`Self::create_hold`], but it does not
+    /// begin or commit a transaction of its own: the caller owns the
+    /// transaction (and its isolation level) and is responsible for
+    /// committing or rolling it back.  That lets a caller create the hold and
+    /// write its own rows atomically — if the hold fails, nothing the caller
+    /// wrote in the same transaction is persisted.
+    ///
+    /// The caller must have set the transaction to `SERIALIZABLE` (see
+    /// [`set_serializable`]) before calling this, so concurrent writers cannot
+    /// violate ledger invariants.
+    pub async fn create_hold_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, Postgres>,
+        user: UserId,
+        money: Money,
+        reference: &str,
+    ) -> Result<Receipt, LedgerError> {
+        crate::require_positive(money)?;
+        require_non_empty(reference)?;
+
+        create_hold_in_tx(tx, user, money, reference).await
     }
 
     /// Moves spendable money from one user to another, instantly and
@@ -644,7 +631,9 @@ async fn jitter_sleep(attempt: u32) {
 
 // ── SQL helpers ────────────────────────────────────────────────────────
 
-async fn set_serializable(tx: &mut sqlx::Transaction<'_, Postgres>) -> Result<(), LedgerError> {
+pub async fn set_serializable(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+) -> Result<(), LedgerError> {
     sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
         .execute(&mut **tx)
         .await
@@ -768,6 +757,60 @@ async fn get_user_balance(
 
     let s: String = row.get("balance");
     s.parse::<i128>().map_err(|_| LedgerError::Overflow)
+}
+
+/// Shared body of [`PostgresLedgerStore::create_hold`] and
+/// [`PostgresLedgerStore::create_hold_in_transaction`]: performs the balance
+/// check, the postings, the `ledger_holds` row and the outbox event inside
+/// `tx`, without committing.  Returns the hold's [`Receipt`].
+async fn create_hold_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    user: UserId,
+    money: Money,
+    reference: &str,
+) -> Result<Receipt, LedgerError> {
+    let fingerprint = hold_fingerprint(user, money);
+    if let Some(receipt) = check_idempotency(tx, reference, &fingerprint).await? {
+        return Ok(receipt);
+    }
+
+    let available = get_user_balance(tx, user, money.asset, "available").await?;
+    if available < money.minor {
+        return Err(LedgerError::InsufficientFunds {
+            available: Money::from_minor(money.asset, available),
+            requested: money,
+        });
+    }
+
+    let tx_id = Uuid::new_v4();
+    insert_transaction(tx, tx_id, "hold", reference, &fingerprint).await?;
+
+    let neg = negate(money.minor)?;
+    insert_posting_user(tx, tx_id, user, money.asset, "available", neg).await?;
+    insert_posting_user(tx, tx_id, user, money.asset, "held", money.minor).await?;
+
+    insert_hold(tx, reference, user, money).await?;
+
+    // Outbox event written atomically with the ledger change.
+    let event = crate::outbox::DomainEvent::HoldCreated {
+        user_id: user,
+        asset: money.asset,
+        amount: money.minor,
+        reference: reference.to_owned(),
+    };
+    crate::outbox::pg::insert_outbox_event(
+        tx,
+        Uuid::new_v4(),
+        crate::outbox::DomainEvent::aggregate_id_from_tx(tx_id),
+        &event,
+        Some(reference),
+    )
+    .await?;
+
+    Ok(Receipt {
+        transaction_id: tx_id,
+        replayed: false,
+    })
 }
 
 async fn insert_hold(

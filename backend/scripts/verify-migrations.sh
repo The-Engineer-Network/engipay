@@ -3,6 +3,10 @@
 # scratch, and that the full set can be applied a second time to a fresh
 # database without error.
 #
+# Migrations are applied with `sqlx migrate run` (the same tool the API uses),
+# so sqlx versioning problems — such as two files sharing a numeric prefix —
+# are caught here rather than at runtime.
+#
 # Two passes are performed:
 #   Pass 1 — apply all migrations to a clean database and capture the schema.
 #   Pass 2 — drop and recreate the database, apply all migrations again, and
@@ -22,11 +26,14 @@ psql_cmd() { docker compose exec -T postgres psql -U "${POSTGRES_USER:-engipay}"
 cleanup() { psql_cmd -d postgres -c "DROP DATABASE IF EXISTS \"$db\";" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
+# Apply all migrations to the target database using sqlx, the same tool the API
+# uses.  sqlx reads the migrations directory, validates the version numbers and
+# records applied versions in _sqlx_migrations, so duplicate or malformed
+# versions fail here.
 apply_migrations() {
   local target_db="$1"
-  for migration in migrations/*.sql; do
-    psql_cmd -d "$target_db" -v ON_ERROR_STOP=1 -f - < "$migration" >/dev/null
-  done
+  local url="postgres://${POSTGRES_USER:-engipay}:${POSTGRES_PASSWORD:-engipay}@${POSTGRES_HOST:-localhost}:${POSTGRES_PORT:-5432}/${target_db}"
+  DATABASE_URL="$url" sqlx migrate run --source migrations
 }
 
 capture_schema() {
@@ -126,10 +133,7 @@ verify_triggers() {
 # ── Pass 1 ─────────────────────────────────────────────────────────────────────
 echo "Pass 1: applying migrations to a fresh database..."
 psql_cmd -d postgres -c "CREATE DATABASE \"$db\";" >/dev/null
-for migration in migrations/*.sql; do
-  echo "  migrating: $(basename "$migration")"
-  psql_cmd -d "$db" -v ON_ERROR_STOP=1 -f - < "$migration" >/dev/null
-done
+apply_migrations "$db"
 
 echo "Verifying schema (pass 1)..."
 verify_tables "$db"
@@ -141,10 +145,7 @@ schema_pass1=$(capture_schema "$db")
 echo "Pass 2: dropping database and re-applying all migrations..."
 psql_cmd -d postgres -c "DROP DATABASE \"$db\";" >/dev/null
 psql_cmd -d postgres -c "CREATE DATABASE \"$db\";" >/dev/null
-for migration in migrations/*.sql; do
-  echo "  migrating: $(basename "$migration")"
-  psql_cmd -d "$db" -v ON_ERROR_STOP=1 -f - < "$migration" >/dev/null
-done
+apply_migrations "$db"
 
 echo "Verifying schema (pass 2)..."
 verify_tables "$db"

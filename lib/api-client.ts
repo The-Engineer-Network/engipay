@@ -9,11 +9,34 @@
 
 export {
   ApiRequestError,
+  ACCOUNT_FROZEN_ERROR_CODE,
+  ACCOUNT_FROZEN_EVENT,
   readSessionToken,
   writeSessionToken,
   clearSessionToken,
 } from "./api.ts"
-import { apiRequest, apiPublicRequest } from "./api.ts"
+import {
+  ApiRequestError,
+  ACCOUNT_FROZEN_ERROR_CODE,
+  apiRequest,
+  apiPublicRequest,
+} from "./api.ts"
+
+/** Returns true only for the API's account-frozen error. */
+export function isAccountFrozenError(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.code === ACCOUNT_FROZEN_ERROR_CODE
+}
+
+/** Returns true only for an API response body containing account_frozen. */
+export function isAccountFrozenResponse(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false
+  const error = (body as { error?: unknown }).error
+  return (
+    !!error &&
+    typeof error === "object" &&
+    (error as { code?: unknown }).code === ACCOUNT_FROZEN_ERROR_CODE
+  )
+}
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -400,9 +423,43 @@ export async function createWithdrawal(
   return result
 }
 
+// ── Withdrawal status (#689) ──────────────────────────────────────────────────
+
+/** Terminal statuses — once reached the status page stops polling. */
+export const WITHDRAWAL_FINAL_STATUSES = [
+  "completed",
+  "failed",
+  "cancelled",
+] as const
+
+export type WithdrawalFinalStatus = (typeof WITHDRAWAL_FINAL_STATUSES)[number]
+
+export type WithdrawalStatus =
+  | "pending"
+  | "held"
+  | "processing"
+  | WithdrawalFinalStatus
+
+export interface Withdrawal {
+  id: string
+  /** Amount in the smallest currency unit (e.g. kobo, satoshi, stroops). */
+  amount: number
+  estimated_network_fee: number
+  status: WithdrawalStatus
+  /** Destination address / account. */
+  destination: string
+  /** On-chain transaction hash, available once broadcast. */
+  tx_hash?: string | null
+  /**
+   * ISO-8601 timestamp until which funds are held for new-address cooling-off.
+   * Present only when status is "held".
+   */
+  cooling_off_until?: string | null
+}
+
 /** GET /v1/withdrawals/:id — fetch a single withdrawal. */
-export async function getWithdrawal(id: string): Promise<WithdrawalResponse> {
-  const result = await apiRequest<WithdrawalResponse>(`/v1/withdrawals/${id}`)
+export async function getWithdrawal(id: string): Promise<Withdrawal> {
+  const result = await apiRequest<Withdrawal>(`/v1/withdrawals/${id}`)
   if (!result) throw new Error("API did not return a withdrawal.")
   return result
 }
@@ -431,9 +488,39 @@ export async function createPaymentRequest(
 }
 
 /** GET /v1/payment-requests — list the signed-in merchant's payment requests. */
-export async function listPaymentRequests(): Promise<PaymentRequestSummary[]> {
-  const result = await apiRequest<PaymentRequestSummary[]>("/v1/payment-requests")
-  return result ?? []
+export async function listPaymentRequests(
+  opts: { limit?: number; cursor?: string } = {}
+): Promise<PaymentRequestSummary[]> {
+  const page = await listPaymentRequestsPage(opts)
+  return page.requests
+}
+
+/** POST /v1/payment-requests/{id}/cancel — owner cancels a pending request. */
+export async function cancelPaymentRequest(id: string): Promise<{ id: string; status: string }> {
+  const result = await apiRequest<{ id: string; status: string }>(
+    `/v1/payment-requests/${id}/cancel`,
+    { method: "POST" }
+  )
+  if (!result) throw new Error("API did not confirm the cancellation.")
+  return result
+}
+
+export interface PaymentRequestsPage {
+  requests: PaymentRequestSummary[]
+  cursor: string | null
+  has_more: boolean
+}
+
+/** GET /v1/payment-requests with `limit` and `cursor` pagination. */
+export async function listPaymentRequestsPage(
+  opts: { limit?: number; cursor?: string } = {}
+): Promise<PaymentRequestsPage> {
+  const qs = new URLSearchParams()
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit))
+  if (opts.cursor) qs.set("cursor", opts.cursor)
+  const suffix = qs.toString() ? `?${qs.toString()}` : ""
+  const result = await apiRequest<PaymentRequestsPage>(`/v1/payment-requests${suffix}`)
+  return result ?? { requests: [], cursor: null, has_more: false }
 }
 
 // ── Batch Payments Functions (#512) ──────────────────────────────────────────
@@ -523,3 +610,28 @@ export async function getNairaWithdrawalStatus(transactionId: string): Promise<A
   return result
 }
 
+
+// ── Receipt verification ──────────────────────────────────────────────────────
+
+/**
+ * A signed receipt as the API accepts it.
+ * Supports both the route-level shape {key_id, payload, signature} and the
+ * service-level shape {receipt: {...}, signature}.
+ */
+export type ReceiptBlob =
+  | { key_id: string; payload: unknown; signature: string }
+  | { receipt: { receipt_id: string; receipt_type: string; ledger_transaction_id: string; amount_minor: string; asset: string; timestamp: string; key_id: string; metadata?: Record<string, string> }; signature: string }
+
+export interface VerifyReceiptResponse {
+  valid: boolean
+}
+
+/** POST /v1/receipts/verify */
+export async function verifyReceipt(receipt: ReceiptBlob): Promise<VerifyReceiptResponse> {
+  const result = await apiPublicRequest<VerifyReceiptResponse>("/v1/receipts/verify", {
+    method: "POST",
+    body: JSON.stringify({ receipt }),
+  })
+  if (!result) throw new Error("API did not return a verification response.")
+  return result
+}

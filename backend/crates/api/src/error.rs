@@ -16,6 +16,10 @@ pub enum ApiError {
     NotFound,
     #[error("{0}")]
     Conflict(String),
+    #[error("forbidden")]
+    Forbidden,
+    #[error("{0}")]
+    UnprocessableEntity(String),
     #[error("the database is not available")]
     DatabaseUnavailable,
     #[error("{0}")]
@@ -62,6 +66,10 @@ impl ApiError {
             ApiError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             ApiError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            ApiError::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            ApiError::UnprocessableEntity(_) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "unprocessable_entity")
+            }
             ApiError::DatabaseUnavailable => {
                 (StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
             }

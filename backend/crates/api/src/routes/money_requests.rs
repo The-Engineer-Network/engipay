@@ -28,7 +28,8 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
-use engipay_core::{Asset, Money};
+use engipay_core::{Asset, Money, UserId};
+use engipay_ledger::postgres::PostgresLedgerStore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -41,6 +42,7 @@ use crate::services::recipient::resolve_recipient;
 
 /// Body for `POST /v1/money-requests`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateMoneyRequest {
     /// EngiPay tag of the person being asked to pay.
     pub recipient_tag: String,
@@ -60,6 +62,7 @@ fn default_expiry_hours() -> i64 {
 
 /// Body for `POST /v1/money-requests/:id/accept`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcceptMoneyRequest {
     /// Client-generated UUID. Re-send the same key on every retry so the
     /// transfer is only booked once.
@@ -94,10 +97,10 @@ pub struct CreateMoneyRequestResponse {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/money-requests", post(create).get(list))
-        .route("/money-requests/:id/accept", post(accept))
-        .route("/money-requests/:id/decline", post(decline))
+        .route("/money-requests/{id}/accept", post(accept))
+        .route("/money-requests/{id}/decline", post(decline))
         .route(
-            "/money-requests/:id/cancel",
+            "/money-requests/{id}/cancel",
             post(crate::routes::money_request_cancel::cancel),
         )
 }
@@ -229,9 +232,12 @@ pub async fn list(
 
 /// `POST /v1/money-requests/:id/accept`
 ///
-/// The recipient accepts the request. Exactly one ledger transfer is booked,
-/// even if this endpoint is called more than once (idempotency key + DB unique
-/// constraint on `transfer_id`).
+/// The recipient accepts the request, which books one internal ledger
+/// transfer from the recipient (payer) to the requester. Exactly one transfer
+/// is booked, even if this endpoint is called more than once: the ledger
+/// reference is derived from the request id, so a retry — with the same
+/// idempotency key, a different one, or none — always replays the same
+/// ledger transaction instead of moving money again.
 pub async fn accept(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -250,18 +256,10 @@ pub async fn accept(
     if req.recipient_id != user_id.as_uuid() {
         return Err(ApiError::Forbidden);
     }
-    if req.status != "pending" {
-        return Err(ApiError::UnprocessableEntity(format!(
-            "request is {}",
-            req.status
-        )));
-    }
-    if req.expires_at < Utc::now() {
-        return Err(ApiError::UnprocessableEntity("request has expired".into()));
-    }
 
-    // Idempotency check: if this key was already used for this request, return
-    // 200 without doing any work.
+    // Idempotency check first: a retry with the key that already accepted
+    // this request is a no-op success, even though the request is no longer
+    // `pending` by the time the retry arrives.
     let already_accepted: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM p2p_money_requests WHERE id = $1 AND accept_idempotency_key = $2",
     )
@@ -275,10 +273,43 @@ pub async fn accept(
         return Ok(StatusCode::OK.into_response());
     }
 
-    // Book the transfer.  The transfer_id UNIQUE constraint means a second
-    // attempt with a *different* idempotency key (or no key) cannot create a
-    // second transfer for the same request.
-    let transfer_id = Uuid::new_v4();
+    if req.status != "pending" {
+        return Err(ApiError::UnprocessableEntity(format!(
+            "request is {}",
+            req.status
+        )));
+    }
+    if req.expires_at < Utc::now() {
+        return Err(ApiError::UnprocessableEntity("request has expired".into()));
+    }
+
+    // Daily velocity limit: the payer (the accepting recipient) is the one
+    // whose money moves, so refuse before anything is booked.
+    enforce_accept_velocity_limit(&state, &pool, user_id, &req.asset, &req.amount).await?;
+
+    let asset: Asset = req.asset.parse().map_err(|_| {
+        ApiError::Internal(anyhow::anyhow!("stored asset is invalid: {}", req.asset))
+    })?;
+    let amount_minor: i128 = req.amount.parse().map_err(|_| {
+        ApiError::Internal(anyhow::anyhow!("stored amount is invalid: {}", req.amount))
+    })?;
+    let money = Money::from_minor(asset, amount_minor);
+
+    // The reference is derived from the (immutable) request id, not the
+    // caller-supplied idempotency key, so the money moves exactly once no
+    // matter how many times — or with how many different keys — accept is
+    // called for this request.
+    let reference = format!("money-request-accept:{id}");
+    let ledger = PostgresLedgerStore::new(pool.clone());
+    let receipt = ledger
+        .transfer(
+            UserId::from_uuid(req.recipient_id),
+            UserId::from_uuid(req.requester_id),
+            money,
+            &reference,
+        )
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
 
     // Insert idempotency key and mark accepted atomically.
     let updated = sqlx::query(
@@ -291,21 +322,13 @@ pub async fn accept(
            AND expires_at > now()",
     )
     .bind(id)
-    .bind(transfer_id)
+    .bind(receipt.transaction_id)
     .bind(payload.idempotency_key)
     .execute(&pool)
     .await
-    .map_err(|e| {
-        // A unique-constraint violation on transfer_id means a concurrent
-        // accept already ran: treat as idempotent success.
-        if e.to_string().contains("unique") || e.to_string().contains("duplicate") {
-            ApiError::UnprocessableEntity("request was already accepted".into())
-        } else {
-            ApiError::Internal(anyhow::anyhow!(e))
-        }
-    })?;
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
 
-    if updated.rows_affected() == 0 {
+    if updated.rows_affected() == 0 && !receipt.replayed {
         // Either already accepted/declined/expired between our load and here.
         return Err(ApiError::UnprocessableEntity(
             "request could not be accepted (already resolved or expired)".into(),
@@ -362,6 +385,42 @@ pub async fn decline(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/// Parses a stored request amount into integer minor units (never floats).
+fn request_money(asset: &str, amount: &str) -> Result<Money, ApiError> {
+    let asset: Asset = asset
+        .parse()
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("stored request has invalid asset")))?;
+    Money::parse(asset, amount.trim())
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("stored request has invalid amount")))
+}
+
+/// Refuses an accept that would push the payer over their tier's rolling
+/// 24h limit (HTTP 403 via `ApiError::LimitExceeded`).
+async fn enforce_accept_velocity_limit(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    payer: engipay_core::UserId,
+    asset: &str,
+    amount: &str,
+) -> Result<(), ApiError> {
+    let money = request_money(asset, amount)?;
+    let tier: i32 = sqlx::query_scalar("SELECT COALESCE(tier, 0) FROM user_profiles WHERE id = $1")
+        .bind(payer.as_uuid())
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch user tier: {}", e)))?
+        .unwrap_or(0);
+    crate::services::limits::check_velocity_limits(
+        pool,
+        payer,
+        tier,
+        money,
+        state.config.tier_0_daily_limit_minor,
+    )
+    .await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow)]
 struct MoneyRequestRecord {
     id: Uuid,
@@ -401,14 +460,17 @@ impl From<MoneyRequestRecord> for MoneyRequestRow {
 struct MoneyRequestFull {
     #[allow(dead_code)]
     id: Uuid,
+    requester_id: Uuid,
     recipient_id: Uuid,
+    asset: String,
+    amount: String,
     status: String,
     expires_at: DateTime<Utc>,
 }
 
 async fn load_request(pool: &sqlx::PgPool, id: Uuid) -> Result<MoneyRequestFull, ApiError> {
     sqlx::query_as::<_, MoneyRequestFull>(
-        "SELECT id, recipient_id, status, expires_at
+        "SELECT id, requester_id, recipient_id, asset, amount::text AS amount, status, expires_at
          FROM p2p_money_requests WHERE id = $1",
     )
     .bind(id)
@@ -424,6 +486,27 @@ async fn load_request(pool: &sqlx::PgPool, id: Uuid) -> Result<MoneyRequestFull,
 mod tests {
     use super::*;
     use engipay_core::Asset;
+
+    #[test]
+    fn stored_request_amount_parses_to_minor_units() {
+        let money = request_money("USDC", "12.50").unwrap();
+        assert_eq!(money.minor, Money::parse(Asset::Usdc, "12.50").unwrap().minor);
+        assert!(request_money("NOPE", "1").is_err());
+        assert!(request_money("USDC", "abc").is_err());
+    }
+
+    #[test]
+    fn accept_over_the_limit_maps_to_limit_exceeded() {
+        use crate::services::limits::LimitError;
+        let err: ApiError = LimitError::Exceeded {
+            tier: 0,
+            current: 10,
+            requested: 5,
+            limit: 12,
+        }
+        .into();
+        assert!(matches!(err, ApiError::LimitExceeded(_)));
+    }
 
     #[test]
     fn default_expiry_is_48_hours() {

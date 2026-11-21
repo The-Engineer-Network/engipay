@@ -44,7 +44,13 @@ pub struct Config {
     pub stellar_anchor_url: String,
     /// Stellar Anchor home domain for SEP-10 authentication (e.g. "testanchor.stellar.org").
     pub stellar_anchor_home_domain: String,
+    /// Withdrawal amount (in USDC minor units, 7 decimals) at or above which a
+    /// withdrawal is flagged for manual review (`WITHDRAWAL_REVIEW_THRESHOLD_USDC`).
+    pub withdrawal_review_threshold_minor: i128,
 }
+
+/// Default withdrawal review threshold: 100 USDC, in minor units.
+pub const DEFAULT_REVIEW_THRESHOLD_MINOR: i128 = 100 * 10_000_000;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{name} is invalid: {reason}")]
@@ -91,6 +97,26 @@ impl Config {
                 })?)
             }
             _ => None,
+        };
+
+        let withdrawal_review_threshold_minor = match env::var("WITHDRAWAL_REVIEW_THRESHOLD_USDC") {
+            Ok(value) if !value.trim().is_empty() => {
+                let usdc: i128 = value.trim().parse().map_err(|_| ConfigError {
+                    name: "WITHDRAWAL_REVIEW_THRESHOLD_USDC",
+                    reason: format!("expected a whole number of USDC, got {value:?}"),
+                })?;
+                if usdc < 0 {
+                    return Err(ConfigError {
+                        name: "WITHDRAWAL_REVIEW_THRESHOLD_USDC",
+                        reason: format!("must not be negative, got {value:?}"),
+                    });
+                }
+                usdc.checked_mul(10_000_000).ok_or_else(|| ConfigError {
+                    name: "WITHDRAWAL_REVIEW_THRESHOLD_USDC",
+                    reason: format!("is too large to convert to minor units, got {value:?}"),
+                })?
+            }
+            _ => DEFAULT_REVIEW_THRESHOLD_MINOR,
         };
 
         let receipt_signing_key_id = match env::var("RECEIPT_SIGNING_KEY_ID") {
@@ -171,6 +197,7 @@ impl Config {
                 .unwrap_or_else(|_| "https://testanchor.stellar.org".to_owned()),
             stellar_anchor_home_domain: env::var("STELLAR_ANCHOR_HOME_DOMAIN")
                 .unwrap_or_else(|_| "testanchor.stellar.org".to_owned()),
+            withdrawal_review_threshold_minor,
         })
     }
 
@@ -201,6 +228,7 @@ impl Config {
             )],
             stellar_anchor_url: "https://testanchor.stellar.org".to_owned(),
             stellar_anchor_home_domain: "testanchor.stellar.org".to_owned(),
+            withdrawal_review_threshold_minor: DEFAULT_REVIEW_THRESHOLD_MINOR,
         }
     }
 }
