@@ -17,6 +17,7 @@ import {
   ApiRequestError,
   apiRequest,
   getKycStatus,
+  logout,
   readSessionToken,
   startKycSession,
   type KycStatus,
@@ -114,6 +115,20 @@ export function AccountCard() {
           ? error.message
           : "Could not start identity verification. Try again."
       )
+    },
+  })
+
+  const signOut = useMutation({
+    mutationFn: logout,
+    onSettled: () => {
+      // Clear the local session whether or not the server call succeeded, so
+      // the UI is signed out even if the token was already invalid.
+      setHasSession(false)
+      setDraft("")
+      setServerError(null)
+      setKycError(null)
+      queryClient.removeQueries({ queryKey: ["profile"] })
+      queryClient.removeQueries({ queryKey: ["kyc-status"] })
     },
   })
 
@@ -227,108 +242,98 @@ export function AccountCard() {
                   onClick={handleStellarSignIn}
                   disabled={isEvmSigning || isStellarSigning}
                 >
-                  {isStellarSigning ? "Waiting for your wallet…" : "Sign in with Stellar"}
+                  {isStellarSigning ? "Waiting for your wallet…" : "Sign in with Stellar wallet"}
                 </Button>
               )}
-              {signInError && (
-                <p role="alert" className="text-xs text-destructive">
-                  {signInError}
-                </p>
-              )}
+              {signInError && <p className="text-sm text-destructive">{signInError}</p>}
             </div>
           ) : (
             <div className="space-y-3">
-              <PendingServiceNote>
-                Sign in with an Ethereum or Stellar wallet to see your tag, tier and daily limit.
-              </PendingServiceNote>
-              <Button type="button" variant="outline" className="w-full" onClick={connectWallet}>
-                Connect a wallet
+              <p className="text-sm text-muted-foreground">
+                Connect a wallet to sign in and see your tag, tier and daily limit.
+              </p>
+              <Button type="button" className="w-full" onClick={() => void connectWallet()}>
+                Connect wallet
               </Button>
             </div>
           )
-        ) : profile.isLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-4 w-40" />
-            <Skeleton className="h-4 w-32" />
-            <Skeleton className="h-4 w-48" />
-          </div>
-        ) : profile.isError ? (
-          <p role="alert" className="text-sm text-destructive">
-            {profile.error instanceof ApiRequestError
-              ? profile.error.message
-              : "Could not load your account. Try again."}
-          </p>
         ) : (
           <>
-            <dl className="space-y-2 text-sm">
-              <div className="flex items-center justify-between gap-4">
+            {profile.isLoading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-4 w-48" />
+              </div>
+            ) : profile.isError ? (
+              <p className="text-sm text-destructive">
+                {profile.error instanceof ApiRequestError
+                  ? profile.error.message
+                  : "Could not load your profile. Try again."}
+              </p>
+            ) : (
+              <dl className="grid grid-cols-2 gap-2 text-sm">
                 <dt className="text-muted-foreground">Tag</dt>
-                <dd className="font-medium">
-                  {currentTag ? `@${currentTag}` : "Not set"}
-                </dd>
-              </div>
-              <div className="flex items-center justify-between gap-4">
+                <dd>{currentTag ? `@${currentTag}` : "Not set"}</dd>
                 <dt className="text-muted-foreground">Tier</dt>
-                <dd className="font-medium">{profile.data?.tier ?? 0}</dd>
-              </div>
-              <div className="flex items-center justify-between gap-4">
+                <dd>{profile.data?.tier ?? "—"}</dd>
                 <dt className="text-muted-foreground">Daily limit</dt>
-                <dd className="font-medium">{profile.data?.daily_limit ?? "—"}</dd>
-              </div>
-            </dl>
+                <dd>{profile.data?.daily_limit ?? "—"}</dd>
+              </dl>
+            )}
 
-            <div className="space-y-2 border-t pt-4">
-              <div className="flex items-center justify-between gap-4 text-sm">
-                <span className="text-muted-foreground">Identity verification</span>
-                <span className="font-medium">
-                  {kyc.isLoading
-                    ? "Loading…"
-                    : kyc.data
-                      ? KYC_STATUS_LABELS[kyc.data.status]
-                      : "Unknown"}
-                </span>
-              </div>
-              {kyc.data?.status !== "verified" && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => startVerification.mutate()}
-                  disabled={startVerification.isPending}
-                >
-                  {startVerification.isPending ? "Starting…" : "Verify identity"}
+            <form className="space-y-2" onSubmit={handleSubmit}>
+              <Label htmlFor="account-tag">Tag</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="account-tag"
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder="your-tag"
+                  autoComplete="off"
+                />
+                <Button type="submit" disabled={!canSave}>
+                  {saveTag.isPending ? "Saving…" : "Save"}
                 </Button>
-              )}
-              {kycError && (
-                <p role="alert" className="text-xs text-destructive">
-                  {kycError}
-                </p>
-              )}
+              </div>
+              {inlineError && <p className="text-sm text-destructive">{inlineError}</p>}
+              {serverError && <p className="text-sm text-destructive">{serverError}</p>}
+            </form>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium">Identity verification</p>
+                  <p className="text-sm text-muted-foreground">
+                    {kyc.isLoading
+                      ? "Checking status…"
+                      : kyc.data
+                        ? KYC_STATUS_LABELS[kyc.data.status]
+                        : "Status unavailable"}
+                  </p>
+                </div>
+                {kyc.data?.status !== "verified" && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => startVerification.mutate()}
+                    disabled={startVerification.isPending}
+                  >
+                    {startVerification.isPending ? "Starting…" : "Verify identity"}
+                  </Button>
+                )}
+              </div>
+              {kycError && <p className="text-sm text-destructive">{kycError}</p>}
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-2 border-t pt-4">
-              <Label htmlFor="account-tag">Set your tag</Label>
-              <Input
-                id="account-tag"
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder="your-tag"
-                autoComplete="off"
-              />
-              {inlineError && (
-                <p role="alert" className="text-xs text-destructive">
-                  {inlineError}
-                </p>
-              )}
-              {serverError && (
-                <p role="alert" className="text-xs text-destructive">
-                  {serverError}
-                </p>
-              )}
-              <Button type="submit" className="w-full" disabled={!canSave}>
-                {saveTag.isPending ? "Saving…" : "Save tag"}
-              </Button>
-            </form>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => signOut.mutate()}
+              disabled={signOut.isPending}
+            >
+              {signOut.isPending ? "Signing out…" : "Sign out"}
+            </Button>
           </>
         )}
       </CardContent>
