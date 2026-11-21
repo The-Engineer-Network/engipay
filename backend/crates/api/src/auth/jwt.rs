@@ -10,6 +10,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, deco
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+
 /// The default lifetime of a session token.
 pub const DEFAULT_EXPIRY_SECONDS: i64 = 24 * 60 * 60;
 
@@ -80,9 +81,6 @@ impl FaultInjection {
     }
 }
 
-/// The default lifetime of a session token.
-pub const DEFAULT_EXPIRY_SECONDS: i64 = 24 * 60 * 60;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Claims {
     /// The authenticated user's id.
@@ -93,6 +91,10 @@ pub struct Claims {
     pub iat: i64,
     /// Expiry, Unix seconds.
     pub exp: i64,
+    /// JWT ID: a UUID unique to each token, used for revocation.
+    /// Absent on tokens issued before revocation was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jti: Option<Uuid>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +124,7 @@ pub fn create_token(user_id: Uuid, wallet: String, secret: &[u8]) -> Result<Stri
         wallet,
         iat: now,
         exp: now.saturating_add(DEFAULT_EXPIRY_SECONDS),
+        jti: Some(Uuid::new_v4()),
     };
 
     encode(

@@ -54,6 +54,14 @@ async fn main() -> anyhow::Result<()> {
     let mut state = AppState::with_fakes(database, config.clone(), RateLimiter::new());
     state.replica_database = replica_database;
 
+    if config.production_mode && !state.fake_provider_names.is_empty() {
+        let fakes = state.fake_provider_names.join(", ");
+        anyhow::bail!(
+            "refusing to start in production mode with fake providers: {fakes}. \
+             Configure real provider credentials or unset ENGIPAY_ENV=production."
+        );
+    }
+
     // Load withdrawal destination block list from BLOCK_LIST_PATH if set.
     if let Ok(path) = std::env::var("BLOCK_LIST_PATH") {
         let content = std::fs::read_to_string(&path)
