@@ -47,6 +47,10 @@ pub struct Config {
     /// Withdrawal amount (in USDC minor units, 7 decimals) at or above which a
     /// withdrawal is flagged for manual review (`WITHDRAWAL_REVIEW_THRESHOLD_USDC`).
     pub withdrawal_review_threshold_minor: i128,
+    /// Shared bearer token that internal workers present on internal-only
+    /// routes such as settling holds (`INTERNAL_API_TOKEN`). When unset those
+    /// routes reject every request.
+    pub internal_api_token: Option<String>,
 }
 
 /// Default withdrawal review threshold: 100 USDC, in minor units.
@@ -198,6 +202,10 @@ impl Config {
             stellar_anchor_home_domain: env::var("STELLAR_ANCHOR_HOME_DOMAIN")
                 .unwrap_or_else(|_| "testanchor.stellar.org".to_owned()),
             withdrawal_review_threshold_minor,
+            internal_api_token: env::var("INTERNAL_API_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty())
+                .map(|token| token.trim().to_owned()),
         })
     }
 
@@ -229,6 +237,7 @@ impl Config {
             stellar_anchor_url: "https://testanchor.stellar.org".to_owned(),
             stellar_anchor_home_domain: "testanchor.stellar.org".to_owned(),
             withdrawal_review_threshold_minor: DEFAULT_REVIEW_THRESHOLD_MINOR,
+            internal_api_token: Some("test-internal-token-do-not-use-in-production".to_owned()),
         }
     }
 }

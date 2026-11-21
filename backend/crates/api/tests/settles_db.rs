@@ -1,5 +1,6 @@
-//! POST /v1/settles against a real Postgres (#643): an expired quote, a
-//! replayed hold and a hold reference that has never been settled.
+//! POST /internal/settles against a real Postgres (#643): an expired quote, a
+//! replayed hold and a hold reference that has never been settled. Settles are
+//! internal-only and require the shared internal token (#618).
 //!
 //! Needs DATABASE_URL pointing at a database with every migration applied, so
 //! it is ignored by default. Run it with:
@@ -21,6 +22,9 @@ use uuid::Uuid;
 const TRANSFER_SCHEDULE: &str = "00000000-0000-0000-0000-000000000001";
 const FEE_MINOR: i64 = 1_000_000;
 
+/// Settles are internal-only: callers must present the shared token.
+const INTERNAL_TOKEN: &str = "test-internal-token";
+
 async fn setup() -> (axum::Router, sqlx::PgPool) {
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPoolOptions::new()
@@ -28,7 +32,8 @@ async fn setup() -> (axum::Router, sqlx::PgPool) {
         .connect(&url)
         .await
         .unwrap();
-    let config = Config::for_tests();
+    let mut config = Config::for_tests();
+    config.internal_token = INTERNAL_TOKEN.to_owned();
     let app = router(
         AppState::with_fakes(Some(pool.clone()), config.clone(), RateLimiter::new()),
         &config,
@@ -55,13 +60,26 @@ async fn insert_quote(pool: &sqlx::PgPool, expires_in: &str) -> Uuid {
 }
 
 async fn settle(app: &axum::Router, hold_reference: &str, quote_id: Uuid) -> (StatusCode, Value) {
+    settle_with_token(app, hold_reference, quote_id, Some(INTERNAL_TOKEN)).await
+}
+
+async fn settle_with_token(
+    app: &axum::Router,
+    hold_reference: &str,
+    quote_id: Uuid,
+    token: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/internal/settles")
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        request = request.header("x-internal-token", token);
+    }
     let response = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/settles")
-                .header(header::CONTENT_TYPE, "application/json")
+            request
                 .body(Body::from(
                     json!({ "hold_reference": hold_reference, "quote_id": quote_id }).to_string(),
                 ))
@@ -83,6 +101,42 @@ async fn settle_rows(pool: &sqlx::PgPool, hold_reference: &str) -> i64 {
         .fetch_one(pool)
         .await
         .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn an_unauthenticated_request_cannot_settle_a_hold() {
+    let (app, pool) = setup().await;
+    let quote_id = insert_quote(&pool, "5 minutes").await;
+    let hold = format!("hold-{}", Uuid::new_v4());
+
+    // No token at all.
+    let (status, body) = settle_with_token(&app, &hold, quote_id, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(settle_rows(&pool, &hold).await, 0);
+
+    // A wrong token is refused too.
+    let (status, body) = settle_with_token(&app, &hold, quote_id, Some("wrong-token")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(settle_rows(&pool, &hold).await, 0);
+
+    // The public /v1 route no longer exists.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/settles")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "hold_reference": hold, "quote_id": quote_id }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(settle_rows(&pool, &hold).await, 0);
 }
 
 #[tokio::test]
