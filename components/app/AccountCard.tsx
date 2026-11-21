@@ -13,7 +13,14 @@ import { useWallet } from "@/contexts/WalletContext"
 import { useEvmSignIn } from "@/hooks/use-evm-sign-in"
 import { useStellarSignIn } from "@/hooks/use-stellar-sign-in"
 import { useToast } from "@/hooks/use-toast"
-import { ApiRequestError, apiRequest, readSessionToken } from "@/lib/api"
+import {
+  ApiRequestError,
+  apiRequest,
+  getKycStatus,
+  readSessionToken,
+  startKycSession,
+  type KycStatus,
+} from "@/lib/api"
 import { stellarNetwork } from "@/lib/stellar"
 import { checkTag } from "@/lib/tags"
 
@@ -22,6 +29,13 @@ interface Profile {
   tag: string | null
   tier: number
   daily_limit: string
+}
+
+const KYC_STATUS_LABELS: Record<KycStatus["status"], string> = {
+  unverified: "Not verified",
+  pending: "Verification pending",
+  verified: "Verified",
+  rejected: "Verification rejected",
 }
 
 /**
@@ -40,6 +54,7 @@ export function AccountCard() {
   const [signInError, setSignInError] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
   const [serverError, setServerError] = useState<string | null>(null)
+  const [kycError, setKycError] = useState<string | null>(null)
 
   // The session lives in localStorage, so it is only known after mount. It is
   // re-read when the wallet changes, because disconnecting clears it.
@@ -51,6 +66,13 @@ export function AccountCard() {
   const profile = useQuery({
     queryKey: ["profile"],
     queryFn: async () => (await apiRequest<Profile>("/v1/me")) as Profile,
+    enabled: hasSession,
+    retry: false,
+  })
+
+  const kyc = useQuery({
+    queryKey: ["kyc-status"],
+    queryFn: getKycStatus,
     enabled: hasSession,
     retry: false,
   })
@@ -75,6 +97,22 @@ export function AccountCard() {
       // Keep what the user typed, so they can change it and try again.
       setServerError(
         error instanceof ApiRequestError ? error.message : "Could not save the tag. Try again."
+      )
+    },
+  })
+
+  const startVerification = useMutation({
+    mutationFn: startKycSession,
+    onSuccess: (session) => {
+      setKycError(null)
+      // Follow the provider's hosted verification URL.
+      window.location.assign(session.url)
+    },
+    onError: (error) => {
+      setKycError(
+        error instanceof ApiRequestError
+          ? error.message
+          : "Could not start identity verification. Try again."
       )
     },
   })
@@ -208,65 +246,86 @@ export function AccountCard() {
               </Button>
             </div>
           )
-        ) : profile.isPending ? (
-          <div className="space-y-3" aria-busy="true" aria-label="Loading your account">
-            <Skeleton className="h-5 w-full" />
-            <Skeleton className="h-5 w-3/4" />
+        ) : profile.isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="h-4 w-48" />
           </div>
         ) : profile.isError ? (
           <p role="alert" className="text-sm text-destructive">
             {profile.error instanceof ApiRequestError
               ? profile.error.message
-              : "Could not load your account."}
+              : "Could not load your account. Try again."}
           </p>
         ) : (
           <>
-            <dl className="space-y-3 text-sm">
+            <dl className="space-y-2 text-sm">
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-muted-foreground">Tag</dt>
-                <dd className="font-medium">{currentTag ? `@${currentTag}` : "Not set"}</dd>
+                <dd className="font-medium">
+                  {currentTag ? `@${currentTag}` : "Not set"}
+                </dd>
               </div>
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-muted-foreground">Tier</dt>
-                <dd className="font-medium">Tier {profile.data.tier}</dd>
+                <dd className="font-medium">{profile.data?.tier ?? 0}</dd>
               </div>
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-muted-foreground">Daily limit</dt>
-                <dd className="font-medium">{profile.data.daily_limit}</dd>
+                <dd className="font-medium">{profile.data?.daily_limit ?? "—"}</dd>
               </div>
             </dl>
 
-            <form onSubmit={handleSubmit} className="space-y-2" noValidate>
-              <Label htmlFor="account-tag">{currentTag ? "Change your tag" : "Choose a tag"}</Label>
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground" aria-hidden="true">
-                  @
+            <div className="space-y-2 border-t pt-4">
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <span className="text-muted-foreground">Identity verification</span>
+                <span className="font-medium">
+                  {kyc.isLoading
+                    ? "Loading…"
+                    : kyc.data
+                      ? KYC_STATUS_LABELS[kyc.data.status]
+                      : "Unknown"}
                 </span>
-                <Input
-                  id="account-tag"
-                  value={draft}
-                  onChange={(event) => {
-                    setDraft(event.target.value)
-                    setServerError(null)
-                  }}
-                  placeholder="alice_92"
-                  autoComplete="off"
-                  aria-invalid={inlineError !== null || serverError !== null}
-                  aria-describedby="account-tag-help"
-                />
               </div>
-              <p
-                id="account-tag-help"
-                role={inlineError || serverError ? "alert" : undefined}
-                className={
-                  inlineError || serverError
-                    ? "text-xs text-destructive"
-                    : "text-xs text-muted-foreground"
-                }
-              >
-                {serverError ?? inlineError ?? "3 to 20 letters, numbers or underscores."}
-              </p>
-              <Button type="submit" disabled={!canSave}>
+              {kyc.data?.status !== "verified" && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => startVerification.mutate()}
+                  disabled={startVerification.isPending}
+                >
+                  {startVerification.isPending ? "Starting…" : "Verify identity"}
+                </Button>
+              )}
+              {kycError && (
+                <p role="alert" className="text-xs text-destructive">
+                  {kycError}
+                </p>
+              )}
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-2 border-t pt-4">
+              <Label htmlFor="account-tag">Set your tag</Label>
+              <Input
+                id="account-tag"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="your-tag"
+                autoComplete="off"
+              />
+              {inlineError && (
+                <p role="alert" className="text-xs text-destructive">
+                  {inlineError}
+                </p>
+              )}
+              {serverError && (
+                <p role="alert" className="text-xs text-destructive">
+                  {serverError}
+                </p>
+              )}
+              <Button type="submit" className="w-full" disabled={!canSave}>
                 {saveTag.isPending ? "Saving…" : "Save tag"}
               </Button>
             </form>

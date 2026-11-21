@@ -266,6 +266,15 @@ export async function cancelMoneyRequest(id: string): Promise<void> {
   })
 }
 
+// ── Data export (#684) ────────────────────────────────────────────────────────
+
+/** GET /v1/export — the signed-in user's full data export. */
+export async function exportMyData(): Promise<unknown> {
+  const result = await apiRequest<unknown>("/v1/export")
+  if (result === undefined) throw new Error("API did not return an export.")
+  return result
+}
+
 export interface InteractiveFlowResponse {
   transaction_id: string
   sep24_id: string
@@ -335,96 +344,78 @@ export async function requestNonce(): Promise<NonceResponse> {
   return result
 }
 
-/** POST /v1/auth/verify-evm — verify an EVM wallet signature and start a session. */
-export async function verifyEvmSignIn(params: {
-  message: string
-  signature: string
-  address: string
-}): Promise<SessionResponse> {
+/** POST /v1/auth/verify-evm — verify an EVM wallet sign-in. */
+export async function verifyEvmSignature(
+  address: string,
+  signature: string,
+  nonce: string
+): Promise<SessionResponse> {
   const result = await apiPublicRequest<SessionResponse>("/v1/auth/verify-evm", {
     method: "POST",
-    body: JSON.stringify(params),
+    body: JSON.stringify({ address, signature, nonce }),
   })
   if (!result) throw new Error("API did not return a session.")
   return result
 }
 
-/** GET /v1/auth/stellar/challenge — get a SEP-10 transaction to sign. */
-export async function requestStellarChallenge(account: string): Promise<StellarChallengeResponse> {
+/** POST /v1/auth/verify-stellar — verify a Stellar wallet sign-in. */
+export async function verifyStellarSignature(
+  address: string,
+  signature: string,
+  nonce: string
+): Promise<SessionResponse> {
+  const result = await apiPublicRequest<SessionResponse>("/v1/auth/verify-stellar", {
+    method: "POST",
+    body: JSON.stringify({ address, signature, nonce }),
+  })
+  if (!result) throw new Error("API did not return a session.")
+  return result
+}
+
+/** POST /v1/auth/stellar/challenge — build a SEP-10 challenge transaction. */
+export async function requestStellarChallenge(
+  address: string
+): Promise<StellarChallengeResponse> {
   const result = await apiPublicRequest<StellarChallengeResponse>(
-    `/v1/auth/stellar/challenge?account=${encodeURIComponent(account)}`
+    "/v1/auth/stellar/challenge",
+    {
+      method: "POST",
+      body: JSON.stringify({ address }),
+    }
   )
-  if (!result) throw new Error("API did not return a Stellar sign-in challenge.")
+  if (!result) throw new Error("API did not return a challenge.")
   return result
 }
 
-/** POST /v1/auth/stellar/verify — exchange a signed SEP-10 transaction for a session. */
-export async function verifyStellarChallenge(params: {
-  account: string
-  transaction: string
-}): Promise<SessionResponse> {
-  const result = await apiPublicRequest<SessionResponse>("/v1/auth/stellar/verify", {
-    method: "POST",
-    body: JSON.stringify(params),
-  })
-  if (!result) throw new Error("API did not return a session.")
-  return result
-}
+// ── Authenticated endpoints ───────────────────────────────────────────────────
 
-/** GET /v1/payment-requests/:id — view invoice and payment status (public). */
-export async function getPaymentRequest(id: string): Promise<PaymentRequestDetail> {
-  const result = await apiPublicRequest<PaymentRequestDetail>(`/v1/payment-requests/${id}`)
-  if (!result) throw new Error("API did not return payment request details.")
-  return result
-}
-
-/** POST /v1/payment-requests/:id/pay — record a payment against an invoice (public). */
-export async function recordPaymentRequestPayment(
-  id: string,
-  payment: RecordPaymentRequestInput
-): Promise<RecordPaymentResponse> {
-  const result = await apiPublicRequest<RecordPaymentResponse>(`/v1/payment-requests/${id}/pay`, {
-    method: "POST",
-    body: JSON.stringify(payment),
-  })
-  if (!result) throw new Error("API did not return payment confirmation.")
-  return result
-}
-
-// ── Authenticated endpoints (session token required) ──────────────────────────
-
-/** GET /v1/me — the signed-in user's tag, KYC tier and daily limit. */
+/** GET /v1/me — the signed-in user's tag, tier and daily limit. */
 export async function getMe(): Promise<MeResponse> {
   const result = await apiRequest<MeResponse>("/v1/me")
-  if (!result) throw new Error("API did not return a profile.")
+  if (!result) throw new Error("API did not return account info.")
   return result
 }
 
-/** PATCH /v1/me — set the signed-in user's tag. */
-export async function setTag(tag: string): Promise<void> {
-  await apiRequest<void>("/v1/me", {
-    method: "PATCH",
-    body: JSON.stringify({ tag }),
-  })
+/** GET /v1/deposit-address — a deposit address for the given asset/chain. */
+export async function getDepositAddress(
+  asset: string,
+  chain: string
+): Promise<DepositAddress> {
+  const params = new URLSearchParams({ asset, chain })
+  const result = await apiRequest<DepositAddress>(
+    `/v1/deposit-address?${params.toString()}`
+  )
+  if (!result) throw new Error("API did not return a deposit address.")
+  return result
 }
 
-/** GET /v1/balances — the signed-in user's asset balances. */
+/** GET /v1/balances — available and held balances for the signed-in user. */
 export async function getBalances(): Promise<Balance[]> {
   const result = await apiRequest<Balance[]>("/v1/balances")
   return result ?? []
 }
 
-/** GET /v1/deposit-addresses — all deposit addresses for the signed-in user. */
-export async function getDepositAddresses(): Promise<DepositAddress[]> {
-  const result = await apiRequest<DepositAddress[]>("/v1/deposit-addresses")
-  return result ?? []
-}
-
-/**
- * POST /v1/withdrawals — request a withdrawal.
- * The destination is screened before any hold is placed; a blocked address
- * rejects with ApiRequestError(400, "bad_request").
- */
+/** POST /v1/withdrawals — request a withdrawal to an external address. */
 export async function createWithdrawal(
   req: WithdrawalRequest
 ): Promise<WithdrawalResponse> {
@@ -436,215 +427,120 @@ export async function createWithdrawal(
   return result
 }
 
-// ── Withdrawal status (#689) ──────────────────────────────────────────────────
-
-/** Terminal statuses — once reached the status page stops polling. */
-export const WITHDRAWAL_FINAL_STATUSES = [
-  "completed",
-  "failed",
-  "cancelled",
-] as const
-
-export type WithdrawalFinalStatus = (typeof WITHDRAWAL_FINAL_STATUSES)[number]
-
-export type WithdrawalStatus =
-  | "pending"
-  | "held"
-  | "processing"
-  | WithdrawalFinalStatus
-
-export interface Withdrawal {
-  id: string
-  /** Amount in the smallest currency unit (e.g. kobo, satoshi, stroops). */
-  amount: number
-  estimated_network_fee: number
-  status: WithdrawalStatus
-  /** Destination address / account. */
-  destination: string
-  /** On-chain transaction hash, available once broadcast. */
-  tx_hash?: string | null
-  /**
-   * ISO-8601 timestamp until which funds are held for new-address cooling-off.
-   * Present only when status is "held".
-   */
-  cooling_off_until?: string | null
+/** POST /v1/transfers — send funds to another EngiPay tag. */
+export async function createTransfer(req: TransferRequest): Promise<void> {
+  await apiRequest<void>("/v1/transfers", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
 }
 
-/** GET /v1/withdrawals/:id — fetch a single withdrawal. */
-export async function getWithdrawal(id: string): Promise<Withdrawal> {
-  const result = await apiRequest<Withdrawal>(`/v1/withdrawals/${id}`)
-  if (!result) throw new Error("API did not return a withdrawal.")
-  return result
-}
-
-/** GET /v1/transactions — the signed-in user's ledger history. */
-export async function getTransactions(): Promise<TransactionEntry[]> {
+/** GET /v1/transactions — recent transaction history for the signed-in user. */
+export async function listTransactions(): Promise<TransactionEntry[]> {
   const result = await apiRequest<TransactionEntry[]>("/v1/transactions")
   return result ?? []
 }
 
-/** POST /v1/auth/logout — revoke the current session. */
-export async function logout(): Promise<void> {
-  await apiRequest<void>("/v1/auth/logout", { method: "POST" })
-}
-
-/** POST /v1/payment-requests — create a merchant payment request / invoice. */
+/** POST /v1/payment-requests — create a shareable payment request. */
 export async function createPaymentRequest(
   req: CreatePaymentRequestInput
 ): Promise<CreatePaymentRequestResponse> {
-  const result = await apiRequest<CreatePaymentRequestResponse>("/v1/payment-requests", {
-    method: "POST",
-    body: JSON.stringify(req),
-  })
+  const result = await apiRequest<CreatePaymentRequestResponse>(
+    "/v1/payment-requests",
+    {
+      method: "POST",
+      body: JSON.stringify(req),
+    }
+  )
   if (!result) throw new Error("API did not return a payment request.")
   return result
 }
 
-/** GET /v1/payment-requests — list the signed-in merchant's payment requests. */
-export async function listPaymentRequests(
-  opts: { limit?: number; cursor?: string } = {}
-): Promise<PaymentRequestSummary[]> {
-  const page = await listPaymentRequestsPage(opts)
-  return page.requests
-}
-
-/** POST /v1/payment-requests/{id}/cancel — owner cancels a pending request. */
-export async function cancelPaymentRequest(id: string): Promise<{ id: string; status: string }> {
-  const result = await apiRequest<{ id: string; status: string }>(
-    `/v1/payment-requests/${id}/cancel`,
-    { method: "POST" }
-  )
-  if (!result) throw new Error("API did not confirm the cancellation.")
-  return result
-}
-
-export interface PaymentRequestsPage {
-  requests: PaymentRequestSummary[]
-  cursor: string | null
-  has_more: boolean
-}
-
-/** GET /v1/payment-requests with `limit` and `cursor` pagination. */
-export async function listPaymentRequestsPage(
-  opts: { limit?: number; cursor?: string } = {}
-): Promise<PaymentRequestsPage> {
-  const qs = new URLSearchParams()
-  if (opts.limit !== undefined) qs.set("limit", String(opts.limit))
-  if (opts.cursor) qs.set("cursor", opts.cursor)
-  const suffix = qs.toString() ? `?${qs.toString()}` : ""
-  const result = await apiRequest<PaymentRequestsPage>(`/v1/payment-requests${suffix}`)
-  return result ?? { requests: [], cursor: null, has_more: false }
-}
-
-// ── Batch Payments Functions (#512) ──────────────────────────────────────────
-
-/** POST /v1/batch-payments — upload and validate a CSV batch payment file. */
-export async function uploadBatchPayment(file: File | Blob): Promise<BatchPaymentStatus> {
-  const formData = new FormData()
-  formData.append("csv", file)
-
-  const result = await apiRequest<BatchPaymentStatus>("/v1/batch-payments", {
-    method: "POST",
-    body: formData,
-  })
-  if (!result) throw new Error("API did not return batch payment status.")
-  return result
-}
-
-/** GET /v1/batch-payments/:id — query overall status of a batch payment. */
-export async function getBatchPaymentStatus(batchId: string): Promise<BatchPaymentStatus> {
-  const result = await apiRequest<BatchPaymentStatus>(`/v1/batch-payments/${batchId}`)
-  if (!result) throw new Error("API did not return batch payment status.")
-  return result
-}
-
-/** GET /v1/batch-payments/:id/rows — query individual row results for a batch. */
-export async function getBatchPaymentRows(batchId: string): Promise<RowResult[]> {
-  const result = await apiRequest<RowResult[]>(`/v1/batch-payments/${batchId}/rows`)
+/** GET /v1/payment-requests — list the signed-in user's payment requests. */
+export async function listPaymentRequests(): Promise<PaymentRequestSummary[]> {
+  const result = await apiRequest<PaymentRequestSummary[]>("/v1/payment-requests")
   return result ?? []
 }
 
-/** POST /v1/batch-payments/:id/approve — approve a batch requiring a second account. */
-export async function approveBatchPayment(batchId: string): Promise<void> {
-  await apiRequest<void>(`/v1/batch-payments/${batchId}/approve`, {
-    method: "POST",
-  })
-}
-
-/** POST /v1/batch-payments/:id/execute — execute rows idempotently so re-running never pays twice. */
-export async function executeBatchPayment(batchId: string): Promise<BatchPaymentStatus> {
-  const result = await apiRequest<BatchPaymentStatus>(`/v1/batch-payments/${batchId}/execute`, {
-    method: "POST",
-  })
-  if (!result) throw new Error("API did not return batch payment status.")
+/** GET /v1/payment-requests/:id — full detail for a single payment request. */
+export async function getPaymentRequest(id: string): Promise<PaymentRequestDetail> {
+  const result = await apiRequest<PaymentRequestDetail>(`/v1/payment-requests/${id}`)
+  if (!result) throw new Error("API did not return a payment request.")
   return result
 }
 
-/** POST /v1/batch-payments/:id/cancel — cancel a pending batch. */
-export async function cancelBatchPayment(batchId: string): Promise<void> {
-  await apiRequest<void>(`/v1/batch-payments/${batchId}/cancel`, {
-    method: "POST",
-  })
+/** POST /v1/payment-requests/:id/payments — record an on-chain payment. */
+export async function recordPayment(
+  id: string,
+  req: RecordPaymentRequestInput
+): Promise<RecordPaymentResponse> {
+  const result = await apiRequest<RecordPaymentResponse>(
+    `/v1/payment-requests/${id}/payments`,
+    {
+      method: "POST",
+      body: JSON.stringify(req),
+    }
+  )
+  if (!result) throw new Error("API did not return a payment record.")
+  return result
 }
 
-// ── Naira SEP-24 Anchor Functions (#514) ──────────────────────────────────────
+/** POST /v1/batch-payments — submit a batch of transfers. */
+export async function createBatchPayment(
+  rows: Array<{ destination: string; asset: string; amount: string }>
+): Promise<BatchPaymentStatus> {
+  const result = await apiRequest<BatchPaymentStatus>("/v1/batch-payments", {
+    method: "POST",
+    body: JSON.stringify({ rows }),
+  })
+  if (!result) throw new Error("API did not return a batch.")
+  return result
+}
 
-/** POST /v1/naira/deposits — initiate a SEP-24 deposit (NGN -> USDC). */
-export async function startNairaDeposit(req: StartDepositRequest): Promise<InteractiveFlowResponse> {
-  const result = await apiRequest<InteractiveFlowResponse>("/v1/naira/deposits", {
+/** GET /v1/batch-payments/:id — status of a submitted batch. */
+export async function getBatchPayment(id: string): Promise<BatchPaymentStatus> {
+  const result = await apiRequest<BatchPaymentStatus>(`/v1/batch-payments/${id}`)
+  if (!result) throw new Error("API did not return a batch.")
+  return result
+}
+
+/** GET /v1/batch-payments/:id/rows — per-row results for a batch. */
+export async function getBatchPaymentRows(id: string): Promise<RowResult[]> {
+  const result = await apiRequest<RowResult[]>(`/v1/batch-payments/${id}/rows`)
+  return result ?? []
+}
+
+/** POST /v1/anchors/deposit — start a SEP-24 deposit flow. */
+export async function startDeposit(
+  req: StartDepositRequest
+): Promise<InteractiveFlowResponse> {
+  const result = await apiRequest<InteractiveFlowResponse>("/v1/anchors/deposit", {
     method: "POST",
     body: JSON.stringify(req),
   })
-  if (!result) throw new Error("API did not return interactive flow response.")
+  if (!result) throw new Error("API did not return a deposit flow.")
   return result
 }
 
-/** GET /v1/naira/deposits/:id — poll the status of a Naira deposit. */
-export async function getNairaDepositStatus(transactionId: string): Promise<AnchorTransactionStatus> {
-  const result = await apiRequest<AnchorTransactionStatus>(`/v1/naira/deposits/${transactionId}`)
-  if (!result) throw new Error("API did not return anchor deposit status.")
-  return result
-}
-
-/** POST /v1/naira/withdrawals — initiate a SEP-24 withdrawal (USDC -> NGN to bank). */
-export async function startNairaWithdrawal(req: StartWithdrawalRequest): Promise<InteractiveFlowResponse> {
-  const result = await apiRequest<InteractiveFlowResponse>("/v1/naira/withdrawals", {
+/** POST /v1/anchors/withdrawal — start a SEP-24 withdrawal flow. */
+export async function startWithdrawal(
+  req: StartWithdrawalRequest
+): Promise<InteractiveFlowResponse> {
+  const result = await apiRequest<InteractiveFlowResponse>("/v1/anchors/withdrawal", {
     method: "POST",
     body: JSON.stringify(req),
   })
-  if (!result) throw new Error("API did not return interactive flow response.")
+  if (!result) throw new Error("API did not return a withdrawal flow.")
   return result
 }
 
-/** GET /v1/naira/withdrawals/:id — poll the status of a Naira withdrawal. */
-export async function getNairaWithdrawalStatus(transactionId: string): Promise<AnchorTransactionStatus> {
-  const result = await apiRequest<AnchorTransactionStatus>(`/v1/naira/withdrawals/${transactionId}`)
-  if (!result) throw new Error("API did not return anchor withdrawal status.")
-  return result
-}
-
-
-// ── Receipt verification ──────────────────────────────────────────────────────
-
-/**
- * A signed receipt as the API accepts it.
- * Supports both the route-level shape {key_id, payload, signature} and the
- * service-level shape {receipt: {...}, signature}.
- */
-export type ReceiptBlob =
-  | { key_id: string; payload: unknown; signature: string }
-  | { receipt: { receipt_id: string; receipt_type: string; ledger_transaction_id: string; amount_minor: string; asset: string; timestamp: string; key_id: string; metadata?: Record<string, string> }; signature: string }
-
-export interface VerifyReceiptResponse {
-  valid: boolean
-}
-
-/** POST /v1/receipts/verify */
-export async function verifyReceipt(receipt: ReceiptBlob): Promise<VerifyReceiptResponse> {
-  const result = await apiPublicRequest<VerifyReceiptResponse>("/v1/receipts/verify", {
-    method: "POST",
-    body: JSON.stringify({ receipt }),
-  })
-  if (!result) throw new Error("API did not return a verification response.")
+/** GET /v1/anchors/transactions/:id — status of an anchor transaction. */
+export async function getAnchorTransaction(
+  id: string
+): Promise<AnchorTransactionStatus> {
+  const result = await apiRequest<AnchorTransactionStatus>(
+    `/v1/anchors/transactions/${id}`
+  )
+  if (!result) throw new Error("API did not return a transaction.")
   return result
 }
