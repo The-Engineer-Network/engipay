@@ -77,6 +77,73 @@ async fn get_openapi_spec() -> Json<serde_json::Value> {
                     }
                 }
             },
+            "/v1/deletion-request": {
+                "get": {
+                    "summary": "Get latest deletion request",
+                    "description": "Returns the caller's latest account deletion request and its status",
+                    "security": [
+                        { "bearerAuth": [] }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Latest deletion request",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": { "type": "string" },
+                                            "status": { "type": "string" },
+                                            "created_at": { "type": "string" },
+                                            "completed_at": { "type": "string", "nullable": true }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "401": {
+                            "description": "Unauthorized"
+                        },
+                        "404": {
+                            "description": "No deletion request found"
+                        }
+                    }
+                }
+            },
+            "/v1/kyc/session": {
+                "get": {
+                    "summary": "Get latest KYC session",
+                    "description": "Returns the caller's latest KYC verification session",
+                    "security": [
+                        { "bearerAuth": [] }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Latest KYC session",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": { "type": "string" },
+                                            "status": { "type": "string" },
+                                            "tier": { "type": "string" },
+                                            "created_at": { "type": "string" },
+                                            "updated_at": { "type": "string" }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "401": {
+                            "description": "Unauthorized"
+                        },
+                        "404": {
+                            "description": "No KYC session found"
+                        }
+                    }
+                }
+            },
             "/v1/transactions": {
                 "get": {
                     "summary": "Get transaction history",
