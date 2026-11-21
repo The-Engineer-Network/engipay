@@ -25,6 +25,104 @@ pub async fn settle_payment_request(
     Ok(())
 }
 
+/// Books the internal ledger transfer that backs a payment request (#620).
+///
+/// Moves `amount` of the request's asset from `payer_id` to the request owner
+/// inside the caller's transaction, so the payment row and the balance
+/// movement commit or roll back together. Returns the id of the created
+/// transfer.
+pub async fn book_internal_payment(
+    tx: &mut sqlx::PgTransaction<'_>,
+    payment_request_id: Uuid,
+    payer_id: Uuid,
+    amount: i64,
+) -> Result<Uuid, ApiError> {
+    if amount <= 0 {
+        return Err(ApiError::BadRequest(
+            "amount must be positive".to_owned(),
+        ));
+    }
+
+    let request = sqlx::query(
+        r#"
+        SELECT user_id, asset FROM payment_requests
+        WHERE id = $1
+        "#,
+    )
+    .bind(payment_request_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+    .ok_or_else(|| ApiError::NotFound("payment request not found".to_owned()))?;
+
+    let owner_id: Uuid = request
+        .try_get("user_id")
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    let asset: String = request
+        .try_get("asset")
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    if owner_id == payer_id {
+        return Err(ApiError::BadRequest(
+            "cannot pay your own payment request".to_owned(),
+        ));
+    }
+
+    // Debit the payer; the guard makes the update a no-op when funds are short.
+    let debited = sqlx::query(
+        r#"
+        UPDATE balances
+        SET amount = amount - $1, updated_at = now()
+        WHERE user_id = $2 AND asset = $3 AND amount >= $1
+        "#,
+    )
+    .bind(amount)
+    .bind(payer_id)
+    .bind(&asset)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    if debited.rows_affected() == 0 {
+        return Err(ApiError::BadRequest("insufficient balance".to_owned()));
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO balances (user_id, asset, amount)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, asset)
+        DO UPDATE SET amount = balances.amount + EXCLUDED.amount, updated_at = now()
+        "#,
+    )
+    .bind(owner_id)
+    .bind(&asset)
+    .bind(amount)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    let transfer_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO transfers
+            (id, from_user_id, to_user_id, asset, amount, status, payment_request_id)
+        VALUES ($1, $2, $3, $4, $5, 'completed', $6)
+        "#,
+    )
+    .bind(transfer_id)
+    .bind(payer_id)
+    .bind(owner_id)
+    .bind(&asset)
+    .bind(amount)
+    .bind(payment_request_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    Ok(transfer_id)
+}
+
 /// Expiry verification service for background cleanup task (#129).
 /// Mark all stale (expired) payment requests as expired.
 pub async fn mark_stale_requests_expired(pool: &PgPool) -> Result<u64, ApiError> {

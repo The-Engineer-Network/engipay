@@ -56,6 +56,5 @@ pub fn v1() -> Router<AppState> {
         .merge(transfers::routes())
         .merge(withdrawals::router())
         .merge(quotes::routes())
-        .merge(settles::routes())
 }
 pub mod batch_upload_limits;
