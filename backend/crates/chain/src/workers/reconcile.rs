@@ -1,7 +1,7 @@
-//! Daily ledger reconciliation against on-chain Stellar custody balances.
+//! Daily ledger reconciliation against on-chain custody balances.
 //!
 //! Each run:
-//!   1. Fetches the custody account's current balances from Horizon.
+//!   1. Fetches the custody account's current balances from each configured chain.
 //!   2. Queries `ledger_postings` for the total user liability per asset.
 //!   3. Computes `discrepancy = custody_balance - ledger_liability`.
 //!   4. Persists the result in `reconciliation_runs`.
@@ -20,6 +20,8 @@ use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+use crate::bitcoin::BitcoinEsploraClient;
+use crate::evm::BaseClient;
 use crate::stellar::StellarClient;
 
 /// Default reconciliation interval — once every 24 hours.
@@ -66,11 +68,16 @@ pub enum ReconcileError {
     Chain(#[from] crate::ChainError),
 }
 
-/// Reconciles the ledger against on-chain Stellar custody balances on a
-/// configurable interval.
+/// Reconciles the ledger against on-chain custody balances on a configurable interval.
+///
+/// Stellar is always reconciled when a `StellarClient` is provided. Base and
+/// Bitcoin are reconciled only when their respective clients are set via
+/// [`ReconcileWorker::with_base`] and [`ReconcileWorker::with_bitcoin`].
 pub struct ReconcileWorker {
     store: PostgresLedgerStore,
     stellar: StellarClient,
+    base: Option<BaseClient>,
+    bitcoin: Option<BitcoinEsploraClient>,
     surplus_tolerance: i128,
 }
 
@@ -83,8 +90,22 @@ impl ReconcileWorker {
         Self {
             store: PostgresLedgerStore::new(pool),
             stellar,
+            base: None,
+            bitcoin: None,
             surplus_tolerance,
         }
+    }
+
+    /// Attaches a Base client so ETH and USDC on Base are reconciled each tick.
+    pub fn with_base(mut self, client: BaseClient) -> Self {
+        self.base = Some(client);
+        self
+    }
+
+    /// Attaches a Bitcoin Esplora client so BTC is reconciled each tick.
+    pub fn with_bitcoin(mut self, client: BitcoinEsploraClient) -> Self {
+        self.bitcoin = Some(client);
+        self
     }
 
     /// Runs reconciliation on `interval` until `shutdown` fires.
@@ -123,8 +144,39 @@ impl ReconcileWorker {
     /// result, and emits structured alert logs for any discrepancy outside
     /// tolerance.
     pub async fn tick(&self) -> Result<Vec<AssetReport>, ReconcileError> {
-        // --- 1. Fetch on-chain custody balances ---
-        let chain_balances = self.stellar.custody_balances().await?;
+        // --- 1. Fetch on-chain custody balances from all configured chains ---
+        let mut chain_map: std::collections::HashMap<Asset, i128> = std::collections::HashMap::new();
+
+        // Stellar (always present).
+        for (asset, balance) in self.stellar.custody_balances().await? {
+            *chain_map.entry(asset).or_insert(0) += balance;
+        }
+
+        // Base (optional).
+        if let Some(ref base) = self.base {
+            match base.custody_balances().await {
+                Ok(balances) => {
+                    for (asset, balance) in balances {
+                        *chain_map.entry(asset).or_insert(0) += balance;
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "could not read Base custody balances; skipping Base in this run");
+                }
+            }
+        }
+
+        // Bitcoin (optional).
+        if let Some(ref btc) = self.bitcoin {
+            match btc.custody_balance_sats().await {
+                Ok(sats) => {
+                    *chain_map.entry(Asset::Btc).or_insert(0) += i128::from(sats);
+                }
+                Err(e) => {
+                    warn!(error = %e, "could not read Bitcoin custody balance; skipping BTC in this run");
+                }
+            }
+        }
 
         // --- 2. Fetch ledger liabilities ---
         let liabilities = self.store.total_liability_by_asset().await?;
@@ -133,19 +185,17 @@ impl ReconcileWorker {
         let mut liability_map: std::collections::HashMap<Asset, i128> =
             liabilities.into_iter().collect();
 
-        // Build a lookup: asset → on-chain balance
-        let mut chain_map: std::collections::HashMap<Asset, i128> =
-            chain_balances.into_iter().collect();
+        // All assets that could appear across any configured chain.
+        let all_assets: Vec<Asset> = Asset::ALL.into_iter().collect();
 
-        // Union of all assets seen from either source (Stellar assets only).
-        let stellar_assets: Vec<Asset> = Asset::ALL
-            .into_iter()
-            .filter(|a| a.is_on(engipay_core::Chain::Stellar))
-            .collect();
+        // Only report assets that appear in either the chain map or the ledger.
+        let mut reports = Vec::with_capacity(all_assets.len());
 
-        let mut reports = Vec::with_capacity(stellar_assets.len());
-
-        for asset in stellar_assets {
+        for asset in all_assets {
+            // Skip assets with no data from any source this run.
+            if !chain_map.contains_key(&asset) && !liability_map.contains_key(&asset) {
+                continue;
+            }
             let ledger_liability = liability_map.remove(&asset).unwrap_or(0);
             let custody_balance = chain_map.remove(&asset).unwrap_or(0);
 
