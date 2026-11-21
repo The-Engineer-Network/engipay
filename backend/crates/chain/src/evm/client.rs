@@ -113,6 +113,41 @@ impl BaseClient {
         &self.deposit_addresses
     }
 
+    /// Returns the current on-chain balances of all custody addresses.
+    ///
+    /// Queries `eth_getBalance` for native ETH and `eth_call(balanceOf)`
+    /// against the USDC contract for each deposit address. Amounts are in
+    /// the asset's ledger minor units (wei for ETH, 1e-6 USDC for USDC).
+    pub async fn custody_balances(&self) -> Result<Vec<(engipay_core::Asset, i128)>, ChainError> {
+        use engipay_core::Asset;
+        let mut totals: std::collections::HashMap<Asset, i128> =
+            std::collections::HashMap::new();
+
+        for addr in self.deposit_addresses.iter() {
+            // ETH balance — eth_getBalance returns a hex-encoded wei amount.
+            let eth_hex: String = self.rpc("eth_getBalance", serde_json::json!([addr, "latest"])).await?;
+            let eth_wei = u128::from_str_radix(eth_hex.trim_start_matches("0x"), 16)
+                .map_err(|e| ChainError::Unavailable(format!("unexpected eth_getBalance: {e}")))?;
+            *totals.entry(Asset::Eth).or_insert(0) += i128::from(eth_wei);
+
+            // USDC balance — balanceOf(address) ABI call.
+            // Selector: keccak256("balanceOf(address)")[0..4] = 0x70a08231
+            let call_data = format!("0x70a08231000000000000000000000000{}", addr.trim_start_matches("0x"));
+            let usdc_hex: String = self.rpc(
+                "eth_call",
+                serde_json::json!([{
+                    "to": self.network.usdc_contract(),
+                    "data": call_data,
+                }, "latest"]),
+            ).await?;
+            let usdc_minor = u128::from_str_radix(usdc_hex.trim_start_matches("0x"), 16)
+                .map_err(|e| ChainError::Unavailable(format!("unexpected USDC balanceOf: {e}")))?;
+            *totals.entry(Asset::Usdc).or_insert(0) += i128::from(usdc_minor);
+        }
+
+        Ok(totals.into_iter().collect())
+    }
+
     /// Sends one JSON-RPC 2.0 call and decodes its `result` field.
     ///
     /// Transport failures, non-2xx responses and JSON-RPC errors all surface

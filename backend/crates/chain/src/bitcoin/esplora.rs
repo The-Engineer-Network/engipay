@@ -58,6 +58,45 @@ struct EsploraTransaction {
     status: EsploraStatus,
 }
 
+#[derive(Debug, Deserialize)]
+struct EsploraAddressStats {
+    funded_txo_sum: u64,
+    spent_txo_sum: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct EsploraAddress {
+    chain_stats: EsploraAddressStats,
+}
+
+impl BitcoinEsploraClient {
+    /// Returns the total confirmed custody balance in satoshis.
+    ///
+    /// Queries `GET /address/:addr` for each custody address and sums
+    /// `chain_stats.funded_txo_sum - chain_stats.spent_txo_sum`.
+    pub async fn custody_balance_sats(&self) -> Result<u64, ChainError> {
+        let mut total: u64 = 0;
+        for addr in &self.custody_addresses {
+            let url = format!("{}/address/{}", self.base_url, addr);
+            let info: EsploraAddress = self
+                .http
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| ChainError::Unavailable(e.to_string()))?
+                .json()
+                .await
+                .map_err(|e| ChainError::Unavailable(format!("address parse error: {e}")))?;
+            total = total.saturating_add(
+                info.chain_stats
+                    .funded_txo_sum
+                    .saturating_sub(info.chain_stats.spent_txo_sum),
+            );
+        }
+        Ok(total)
+    }
+}
+
 impl ChainClient for BitcoinEsploraClient {
     fn chain(&self) -> Chain {
         Chain::Bitcoin
