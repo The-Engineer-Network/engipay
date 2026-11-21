@@ -17,7 +17,11 @@ import {
 import { ArrowDown } from "lucide-react"
 import { DISPLAY_ASSETS } from "@/lib/assets"
 import { decimalsForAsset, isPositiveAmount } from "@/lib/amountInput"
-import { getConvertQuote, type ConvertQuote } from "@/lib/api-client"
+import {
+  executeConversion,
+  getConvertQuote,
+  type ConvertQuote,
+} from "@/lib/api-client"
 
 export default function ConvertPage() {
   const [from, setFrom] = useState(DISPLAY_ASSETS[0]?.symbol ?? "ETH")
@@ -26,10 +30,19 @@ export default function ConvertPage() {
   const [quote, setQuote] = useState<ConvertQuote | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
   const [quoteLoading, setQuoteLoading] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
+  const [converting, setConverting] = useState(false)
+  const [convertError, setConvertError] = useState<string | null>(null)
+  const [convertSuccess, setConvertSuccess] = useState<string | null>(null)
 
   const amountValid = amount === "" || isPositiveAmount(amount)
   const sameAsset = from === to
   const canQuote = amount !== "" && amountValid && !sameAsset
+
+  const expiresAtMs = quote ? Date.parse(quote.expiresAt) : NaN
+  const quoteExpired = quote !== null && !Number.isNaN(expiresAtMs) && expiresAtMs <= now
+  const quoteLive = quote !== null && !quoteExpired
 
   useEffect(() => {
     if (!canQuote) {
@@ -63,11 +76,60 @@ export default function ConvertPage() {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [from, to, amount, canQuote])
+  }, [from, to, amount, canQuote, refreshKey])
+
+  useEffect(() => {
+    if (!quote) return
+    const expiresAt = Date.parse(quote.expiresAt)
+    if (Number.isNaN(expiresAt)) return
+    const remaining = expiresAt - Date.now()
+    if (remaining <= 0) {
+      setNow(Date.now())
+      return
+    }
+    const timer = setTimeout(() => setNow(Date.now()), remaining + 50)
+    return () => clearTimeout(timer)
+  }, [quote])
 
   const flip = () => {
     setFrom(to)
     setTo(from)
+  }
+
+  const refreshQuote = () => {
+    setConvertError(null)
+    setConvertSuccess(null)
+    setRefreshKey((key) => key + 1)
+  }
+
+  const handleConvert = async () => {
+    if (!quote || !quoteLive || converting) return
+    setConverting(true)
+    setConvertError(null)
+    setConvertSuccess(null)
+    try {
+      const idempotencyKey =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const result = await executeConversion({
+        from,
+        to,
+        amount,
+        idempotencyKey,
+      })
+      setConvertSuccess(
+        result?.amountOut
+          ? `Converted ${amount} ${from} to ${result.amountOut} ${to}.`
+          : `Converted ${amount} ${from} to ${to}.`,
+      )
+      setQuote(null)
+      setRefreshKey((key) => key + 1)
+    } catch (err: unknown) {
+      setConvertError(err instanceof Error ? err.message : "Could not complete the conversion.")
+    } finally {
+      setConverting(false)
+    }
   }
 
   return (
@@ -175,10 +237,36 @@ export default function ConvertPage() {
           {quoteError && (
             <p className="text-xs text-destructive">{quoteError}</p>
           )}
+          {quoteExpired && (
+            <p className="text-xs text-destructive">This quote has expired. Refresh it to continue.</p>
+          )}
+          {convertError && (
+            <p className="text-xs text-destructive">{convertError}</p>
+          )}
+          {convertSuccess && (
+            <p className="text-xs text-emerald-600">{convertSuccess}</p>
+          )}
 
-          <Button type="button" className="h-12 w-full rounded-full text-base font-semibold" disabled>
-            Convert
-          </Button>
+          {quoteExpired ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-12 w-full rounded-full text-base font-semibold"
+              onClick={refreshQuote}
+              disabled={quoteLoading}
+            >
+              {quoteLoading ? "Refreshing…" : "Refresh quote"}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              className="h-12 w-full rounded-full text-base font-semibold"
+              onClick={handleConvert}
+              disabled={!quoteLive || converting}
+            >
+              {converting ? "Converting…" : "Convert"}
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>
