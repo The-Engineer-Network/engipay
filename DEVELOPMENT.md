@@ -86,3 +86,99 @@ bash ./scripts/test-db-guarantees.sh
 1. **Every Issue Requires a Test**: No code is merged without unit or integration tests verifying expected behavior and edge cases.
 2. **Zero Floating Point**: Use `Money` (integer minor units in `i128`).
 3. **No Plaintext Secrets**: Never commit `.env` files or keys.
+
+---
+
+## 🔐 Backend Quickstart: Getting a Session Token
+
+This section shows you how to authenticate with the EngiPay backend and get a working session token using curl.
+
+### Prerequisites
+
+- A test Ethereum-compatible wallet with a private key
+- `curl` installed
+- `cast` from Foundry toolkit (for signing), or Node.js with ethers
+
+### Step 1: Request a nonce
+
+```bash
+# Replace with your wallet address
+ADDRESS="0x1234567890123456789012345678901234567890"
+
+curl -X POST https://api.engipay.io/v1/auth/nonce \
+  -H "Content-Type: application/json" \
+  -d "{\"address\": \"$ADDRESS\"}"
+```
+
+**Response:**
+```json
+{
+  "nonce": "Sign this message to authenticate with EngiPay: abc123def456"
+}
+```
+
+### Step 2: Sign the nonce with your private key
+
+Using `cast` (Foundry):
+```bash
+NONCE="Sign this message to authenticate with EngiPay: abc123def456"
+PRIVATE_KEY="0xYourPrivateKeyHere"
+
+SIGNATURE=$(cast wallet sign --private-key $PRIVATE_KEY "$NONCE")
+echo "Signature: $SIGNATURE"
+```
+
+Or using Node.js:
+```javascript
+const { Wallet } = require('ethers');
+const wallet = new Wallet('0xYourPrivateKeyHere');
+const nonce = 'Sign this message to authenticate with EngiPay: abc123def456';
+const signature = await wallet.signMessage(nonce);
+console.log('Signature:', signature);
+```
+
+### Step 3: Verify the signature and get your token
+
+```bash
+curl -X POST https://api.engipay.io/v1/auth/verify-evm \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"address\": \"$ADDRESS\",
+    \"signature\": \"$SIGNATURE\"
+  }"
+```
+
+**Response:**
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user_id": "usr_1234567890"
+}
+```
+
+### Step 4: Use the token to access protected endpoints
+
+```bash
+TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# Get your user profile
+curl https://api.engipay.io/v1/me \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{
+  "tag": "@yourname",
+  "tier": 1,
+  "daily_limit": "1000000"
+}
+```
+
+### Done!
+
+You now have a working session token that you can use to test all authenticated endpoints locally. The token can be used in your local development environment by setting it in localStorage:
+
+```javascript
+localStorage.setItem('engipay-token', 'your-token-here');
+```
