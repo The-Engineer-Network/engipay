@@ -3,19 +3,67 @@
 import { PageHeader } from "@/components/app/PageHeader"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { TransactionDetailsSheet } from "@/components/app/TransactionDetailsSheet"
+import { ActivityFilters } from "@/components/app/ActivityFilters"
 import { useEngiPayTransactions } from "@/hooks/use-engipay-transactions"
+import type { EngiPayTransaction } from "@/hooks/use-engipay-transactions"
 import { ArrowUpRight, ArrowDownLeft, Receipt, Loader2, ExternalLink } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useState, useEffect } from "react"
+import { useSearchParams, useRouter } from "next/navigation"
 
 export default function ActivityPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  
+  // Read filters from URL
+  const [kind, setKind] = useState<string>(searchParams.get("kind") || "")
+  const [startDate, setStartDate] = useState<string>(searchParams.get("startDate") || "")
+  const [endDate, setEndDate] = useState<string>(searchParams.get("endDate") || "")
+  const [selectedTransaction, setSelectedTransaction] = useState<EngiPayTransaction | null>(null)
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false)
+
+  // Build filters object
+  const filters = {
+    ...(kind && { kind }),
+    ...(startDate && { startDate }),
+    ...(endDate && { endDate }),
+  }
+
   const { transactions, isLoading, isLoadingMore, hasMore, loadMore, error } =
-    useEngiPayTransactions({ limit: 15 })
+    useEngiPayTransactions({ limit: 15, filters: Object.keys(filters).length > 0 ? filters : undefined })
+
+  // Update URL when filters change
+  useEffect(() => {
+    const params = new URLSearchParams()
+    if (kind) params.set("kind", kind)
+    if (startDate) params.set("startDate", startDate)
+    if (endDate) params.set("endDate", endDate)
+    
+    const queryString = params.toString()
+    const newUrl = queryString ? `?${queryString}` : "/activity"
+    router.replace(newUrl, { scroll: false })
+  }, [kind, startDate, endDate, router])
+
+  const handleTransactionClick = (transaction: EngiPayTransaction) => {
+    setSelectedTransaction(transaction)
+    setIsDetailsOpen(true)
+  }
 
   return (
     <div className="mx-auto max-w-2xl">
       <PageHeader
         title="Activity"
         description="Every payment, conversion and Naira transfer in one list."
+      />
+
+      <ActivityFilters
+        kind={kind}
+        startDate={startDate}
+        endDate={endDate}
+        onKindChange={setKind}
+        onStartDateChange={setStartDate}
+        onEndDateChange={setEndDate}
       />
 
       {error && (
@@ -36,7 +84,8 @@ export default function ActivityPage() {
             {transactions.map((tx) => (
               <li
                 key={tx.id}
-                className="lift-card glass-panel flex items-center justify-between p-4"
+                onClick={() => handleTransactionClick(tx)}
+                className="lift-card glass-panel flex items-center justify-between p-4 cursor-pointer hover:bg-accent/50 transition-colors"
               >
                 <div className="flex items-center gap-3">
                   <span
@@ -140,6 +189,14 @@ export default function ActivityPage() {
             </p>
           </CardContent>
         </Card>
+      )}
+
+      {selectedTransaction && (
+        <TransactionDetailsSheet
+          transaction={selectedTransaction}
+          open={isDetailsOpen}
+          onOpenChange={setIsDetailsOpen}
+        />
       )}
     </div>
   )
