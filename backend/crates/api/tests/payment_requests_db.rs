@@ -551,3 +551,78 @@ async fn list_reflects_partial_paid_amount() {
     assert_eq!(remaining, 500_000_000); // 50 USDC
     assert_eq!(item["status"], "partially_paid");
 }
+
+// ── #647: Concurrent payments cannot overpay ─────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn concurrent_payments_cannot_overpay_a_payment_request() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+
+    // Create a payment request for exactly 10 USDC.
+    let (status, body) = create_request(
+        &app,
+        &token,
+        serde_json::json!({
+            "asset": "USDC",
+            "amount": "10.0000000",
+            "allow_partial": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // Fire 5 concurrent payments of 4 USDC each (total 20 USDC > 10 USDC limit).
+    let handles: Vec<_> = (0..5)
+        .map(|i| {
+            let app = app.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                pay(
+                    &app,
+                    &id,
+                    serde_json::json!({
+                        "amount": "4.0000000",
+                        "chain": "base",
+                        "tx_hash": format!("tx-concurrent-overpay-{i}-{}", Uuid::new_v4())
+                    }),
+                )
+                .await
+            })
+        })
+        .collect();
+
+    let mut paid_count = 0u32;
+    let mut rejected_count = 0u32;
+    for h in handles {
+        let (status, _) = h.await.unwrap();
+        if status.is_success() {
+            paid_count += 1;
+        } else {
+            rejected_count += 1;
+        }
+    }
+
+    // At least one payment must have been rejected to prevent overpay.
+    assert!(
+        rejected_count >= 1,
+        "expected at least one rejection but all {paid_count} payments succeeded"
+    );
+
+    // The final paid total must not exceed 10 USDC (100_000_000 minor units).
+    let (_, req) = get_request(&app, &id).await;
+    let total_paid: i64 = req["paid_amount"]
+        .as_str()
+        .unwrap_or("0")
+        .replace('.', "")
+        .parse()
+        .unwrap_or(0);
+    // 10 USDC = 100_000_000 minor units; allow for string formatting differences.
+    let max_minor = 100_000_000i64;
+    assert!(
+        total_paid <= max_minor,
+        "overpaid: total paid {total_paid} exceeds max {max_minor}"
+    );
+}
