@@ -331,6 +331,95 @@ async fn watch() -> anyhow::Result<()> {
         }
     }
 
+    // ── Base (EVM) deposit watcher ──────────────────────────────────────────
+    // Started when BASE_RPC_URL and BASE_CUSTODY_ADDRESS are both set;
+    // shares the same shutdown token so Ctrl+C stops everything together.
+    if let (Ok(base_rpc), Ok(base_custody)) = (
+        env::var("BASE_RPC_URL"),
+        env::var("BASE_CUSTODY_ADDRESS"),
+    ) {
+        use engipay_chain::evm::{BaseClient, BaseNetwork};
+        use engipay_chain::watch::{ChainWatch, CursorFormat, watch_chain};
+
+        let custody_addrs: Vec<String> = base_custody
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
+        match BaseClient::new(BaseNetwork::Base, base_rpc, &custody_addrs) {
+            Ok(base_client) => {
+                let base_cfg = ChainWatch {
+                    chain_key: engipay_chain::evm::BASE_CHAIN_KEY,
+                    network: "base".to_owned(),
+                    custody: custody_addrs.clone(),
+                    poll: Duration::from_secs(2),
+                    start_override: env::var("BASE_START_BLOCK")
+                        .ok()
+                        .and_then(|v| v.parse().ok()),
+                    format: CursorFormat::BlockNumber,
+                };
+                let base_cursor = pool.as_ref().map(|p| CursorStore::new(p.clone()));
+                let base_creditor = creditor.clone();
+                let base_shutdown = shutdown.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        watch_chain(Arc::new(base_client), base_cfg, base_cursor, base_creditor, base_shutdown).await
+                    {
+                        tracing::error!(error = %e, "Base watcher stopped with error");
+                    }
+                });
+                info!(custody = ?custody_addrs, "Base deposit watcher started");
+            }
+            Err(e) => {
+                warn!(error = %e, "BASE_RPC_URL and BASE_CUSTODY_ADDRESS set but BaseClient failed to build; Base deposits will not be watched");
+            }
+        }
+    } else {
+        info!("BASE_RPC_URL or BASE_CUSTODY_ADDRESS not set; Base deposits will not be watched");
+    }
+
+    // ── Bitcoin deposit watcher ──────────────────────────────────────────────
+    // Started when BITCOIN_ESPLORA_URL and BITCOIN_CUSTODY_ADDRESS are both set.
+    if let (Ok(esplora_url), Ok(btc_custody)) = (
+        env::var("BITCOIN_ESPLORA_URL"),
+        env::var("BITCOIN_CUSTODY_ADDRESS"),
+    ) {
+        use engipay_chain::bitcoin::{BitcoinEsploraClient, UtxoWatcher};
+        use engipay_chain::watch::{ChainWatch, CursorFormat, watch_chain};
+
+        let custody_addrs: Vec<String> = btc_custody
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let utxo_watcher = UtxoWatcher::new();
+        let btc_cfg = ChainWatch {
+            chain_key: engipay_chain::bitcoin::BITCOIN_CHAIN_ID,
+            network: "bitcoin".to_owned(),
+            custody: custody_addrs.clone(),
+            poll: Duration::from_secs(60),
+            start_override: env::var("BITCOIN_START_HEIGHT")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            format: CursorFormat::BlockNumber,
+        };
+        let btc_cursor = pool.as_ref().map(|p| CursorStore::new(p.clone()));
+        let btc_creditor = creditor.clone();
+        let btc_shutdown = shutdown.clone();
+        let btc_client = BitcoinEsploraClient::new(esplora_url, utxo_watcher, custody_addrs.clone());
+        tokio::spawn(async move {
+            if let Err(e) =
+                watch_chain(Arc::new(btc_client), btc_cfg, btc_cursor, btc_creditor, btc_shutdown).await
+            {
+                tracing::error!(error = %e, "Bitcoin watcher stopped with error");
+            }
+        });
+        info!(custody = ?custody_addrs, "Bitcoin deposit watcher started");
+    } else {
+        info!("BITCOIN_ESPLORA_URL or BITCOIN_CUSTODY_ADDRESS not set; Bitcoin deposits will not be watched");
+    }
+
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {

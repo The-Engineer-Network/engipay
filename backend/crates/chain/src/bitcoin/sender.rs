@@ -35,6 +35,7 @@ use std::fmt;
 
 use engipay_core::{Asset, Money};
 use thiserror::Error;
+use tracing::info;
 
 use super::Txid;
 
@@ -337,14 +338,17 @@ pub struct SenderConfig {
     pub change_address: String,
     /// Fee rate in satoshis per byte.
     pub fee_rate_sats_per_byte: u64,
+    /// Esplora base URL used to broadcast raw transactions (`POST /tx`).
+    pub esplora_url: String,
 }
 
 impl SenderConfig {
-    /// Creates default configuration with a change address.
-    pub fn new(change_address: String) -> Self {
+    /// Creates default configuration with a change address and Esplora URL.
+    pub fn new(change_address: String, esplora_url: String) -> Self {
         Self {
             change_address,
             fee_rate_sats_per_byte: DEFAULT_FEE_RATE,
+            esplora_url,
         }
     }
 
@@ -406,14 +410,33 @@ impl<S: BitcoinSigner> BitcoinWithdrawalSender<S> {
             .sign_withdrawal(request, &selection, &self.config.change_address)
             .await?;
 
-        // 4. Broadcast (placeholder - needs RPC client or esplora)
-        // Real implementation would POST raw_tx to bitcoind or esplora
-        tracing::info!(
-            txid = %hex::encode(prepared.txid.as_bytes()),
+        // 4. Broadcast via Esplora POST /tx
+        let txid_hex = hex::encode(prepared.txid.as_bytes());
+        let raw_hex = hex::encode(&prepared.raw_tx);
+        let broadcast_url = format!("{}/tx", self.config.esplora_url.trim_end_matches('/'));
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|e| BitcoinSenderError::BroadcastFailed(e.to_string()))?;
+        let resp = http
+            .post(&broadcast_url)
+            .body(raw_hex)
+            .send()
+            .await
+            .map_err(|e| BitcoinSenderError::BroadcastFailed(e.to_string()))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(BitcoinSenderError::BroadcastFailed(format!(
+                "esplora returned HTTP {status}: {body}"
+            )));
+        }
+        info!(
+            txid = %txid_hex,
             amount = request.amount_sats,
             fee = prepared.fee_sats,
             change = prepared.change_sats,
-            "bitcoin withdrawal prepared (broadcast not implemented)"
+            "bitcoin withdrawal broadcast"
         );
 
         Ok(prepared)
@@ -591,7 +614,7 @@ mod tests {
             .unwrap()
             .with_utxos(utxos);
 
-        let config = SenderConfig::new("tb1qchange...".to_owned());
+        let config = SenderConfig::new("tb1qchange...".to_owned(), "https://blockstream.info/testnet/api".to_owned());
         let sender = BitcoinWithdrawalSender::new(signer, config);
 
         let request = WithdrawalRequest::new(
@@ -616,7 +639,7 @@ mod tests {
             .unwrap()
             .with_utxos(utxos);
 
-        let config = SenderConfig::new("tb1qchange...".to_owned());
+        let config = SenderConfig::new("tb1qchange...".to_owned(), "https://blockstream.info/testnet/api".to_owned());
         let sender = BitcoinWithdrawalSender::new(signer, config);
 
         let request = WithdrawalRequest::new(
