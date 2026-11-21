@@ -1,22 +1,25 @@
 "use client"
 
+import { useState } from "react"
 import { AccountCard } from "@/components/app/AccountCard"
 import { AddBankAccountForm } from "@/components/app/AddBankAccountForm"
 import { PageHeader } from "@/components/app/PageHeader"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
-import { Copy } from "lucide-react"
+import { Copy, Download } from "lucide-react"
 import { useWallet } from "@/contexts/WalletContext"
 import { useStellarWallet } from "@/contexts/StellarWalletContext"
 import { stellarNetwork } from "@/lib/stellar"
 import { activeChain } from "@/lib/wagmi"
 import { shortenAddress } from "@/lib/payment-uri"
+import { exportData } from "@/lib/api-client"
 
 export default function SettingsPage() {
   const { evmAddress: walletAddress, walletName, disconnectWallet, connectWallet } = useWallet()
   const { stellarAddress, stellarWalletName, networkMismatch, disconnectStellar } = useStellarWallet()
   const { toast } = useToast()
+  const [isExporting, setIsExporting] = useState(false)
 
   const copyAddress = async (address: string | null = walletAddress) => {
     if (!address) return
@@ -25,6 +28,27 @@ export default function SettingsPage() {
       toast({ title: "Address copied" })
     } catch {
       toast({ title: "Could not copy the address", variant: "destructive" })
+    }
+  }
+
+  const downloadData = async () => {
+    setIsExporting(true)
+    try {
+      const data = await exportData()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = "my-data.json"
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      toast({ title: "Your data has been downloaded" })
+    } catch {
+      toast({ title: "Could not download your data", variant: "destructive" })
+    } finally {
+      setIsExporting(false)
     }
   }
 
@@ -106,6 +130,26 @@ export default function SettingsPage() {
               Connect a Stellar wallet
             </Button>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Your data</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Download a copy of your account data as a JSON file.
+          </p>
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={downloadData}
+            disabled={isExporting}
+          >
+            <Download className="mr-2 h-4 w-4" aria-hidden="true" />
+            {isExporting ? "Preparing download…" : "Download my data"}
+          </Button>
         </CardContent>
       </Card>
 
