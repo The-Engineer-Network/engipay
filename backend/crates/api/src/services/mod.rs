@@ -6,6 +6,7 @@ pub mod bank_name_check;
 pub mod buy;
 pub mod cooling_off;
 pub mod destination_screen;
+pub mod frozen;
 pub mod kyc_provider;
 pub mod limits;
 pub mod payment_envelope;

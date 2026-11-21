@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
+use crate::services::ledger::PostgresLedgerStore;
 
 /// Maximum CSV file size (5 MB).
 pub const MAX_CSV_SIZE: usize = 5 * 1024 * 1024;
@@ -301,6 +302,26 @@ pub async fn approve_batch(
             ));
         }
 
+        // APPROVER RULE (issue #626): only the co-approver designated at upload
+        // time may approve the batch. Any other user is forbidden.
+        let designated_approver: Option<Uuid> = sqlx::query_scalar(
+            "SELECT co_approver_id FROM batch_payments WHERE batch_id = $1",
+        )
+        .bind(batch_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch co-approver: {}", e)))?
+        .flatten();
+
+        match designated_approver {
+            Some(co) if co == approver_id.as_uuid() => {}
+            _ => {
+                return Err(ApiError::Forbidden(
+                    "only the designated co-approver may approve this batch".to_owned(),
+                ));
+            }
+        }
+
         sqlx::query(
             r#"
             UPDATE batch_payments
@@ -440,21 +461,39 @@ pub async fn execute_batch(
             continue;
         }
 
-        // Execute payment for this row
-        let execution_result = execute_row_payment(&destination, &asset, &amount).await;
+        // Execute payment for this row.
+        let execution_result =
+            execute_row_payment(&pool, user_id.as_uuid(), &destination, &asset, &amount).await;
 
         match execution_result {
-            Ok(hash) => {
-                let transfer_uuid = Uuid::new_v4();
+            Ok(RowExecution::LedgerTransfer { transfer_id }) => {
+                // EngiPay recipient: funds moved on the internal ledger.
+                // No chain tx_hash is written here.
                 sqlx::query(
                     r#"
                     UPDATE batch_payment_rows
-                    SET status = 'success'::row_status, tx_hash = $1, transfer_id = $2, error = NULL, updated_at = NOW()
-                    WHERE row_id = $3
+                    SET status = 'success'::row_status, transfer_id = $1, tx_hash = NULL, error = NULL, updated_at = NOW()
+                    WHERE row_id = $2
                     "#,
                 )
-                .bind(&hash)
-                .bind(transfer_uuid)
+                .bind(transfer_id)
+                .bind(row_id)
+                .execute(&pool)
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to update row {}: {}", row_number, e)))?;
+            }
+            Ok(RowExecution::Withdrawal { withdrawal_id }) => {
+                // External address: a withdrawal with a hold was created.
+                // The row stays `pending` until the chain worker settles it
+                // and writes the real tx_hash.
+                sqlx::query(
+                    r#"
+                    UPDATE batch_payment_rows
+                    SET withdrawal_id = $1, tx_hash = NULL, error = NULL, updated_at = NOW()
+                    WHERE row_id = $2
+                    "#,
+                )
+                .bind(withdrawal_id)
                 .bind(row_id)
                 .execute(&pool)
                 .await
@@ -513,32 +552,128 @@ pub async fn execute_batch(
     }))
 }
 
-/// Helper to simulate/execute a single payment row.
+/// Outcome of executing a single batch row.
+enum RowExecution {
+    /// EngiPay recipient: an internal ledger transfer was booked.
+    LedgerTransfer { transfer_id: Uuid },
+    /// External address: a withdrawal with a hold was created and awaits the
+    /// chain worker to settle it.
+    Withdrawal { withdrawal_id: Uuid },
+}
+
+/// Execute a single payment row.
+///
+/// Never fabricates a transaction hash. For an EngiPay recipient (tag or user)
+/// a ledger transfer is booked; for an external address a withdrawal with a
+/// hold is created and the row is left pending until the chain worker settles
+/// it. Only the chain worker may write a `tx_hash`.
 async fn execute_row_payment(
+    pool: &PgPool,
+    user_id: Uuid,
     destination: &str,
     asset: &str,
     amount: &str,
-) -> Result<String, String> {
+) -> Result<RowExecution, String> {
     if destination.is_empty() || amount.is_empty() {
         return Err("missing destination or amount".to_owned());
     }
 
-    // Deterministic transaction hash based on row attributes
-    let hash = format!(
-        "0x{:x}",
-        md5_or_simple_hash(format!("{}:{}:{}", destination, asset, amount).as_bytes())
-    );
-    Ok(hash)
+    let asset: Asset = asset
+        .parse()
+        .map_err(|_| "invalid asset".to_owned())?;
+    let money = Money::parse(asset, amount.trim()).map_err(|e| e.to_string())?;
+
+    // Resolve the destination to an EngiPay user, if any.
+    let recipient_user_id = resolve_engipay_recipient(pool, destination).await?;
+
+    if let Some(recipient_id) = recipient_user_id {
+        // EngiPay recipient: book a ledger transfer.
+        let ledger = PostgresLedgerStore::new(pool.clone());
+        let transfer_id = ledger
+            .transfer(user_id, recipient_id, money)
+            .await
+            .map_err(|e| format!("ledger transfer failed: {}", e))?;
+        return Ok(RowExecution::LedgerTransfer { transfer_id });
+    }
+
+    // External address: create a withdrawal with a hold.
+    let withdrawal_id = create_withdrawal_with_hold(pool, user_id, destination, asset, money)
+        .await
+        .map_err(|e| format!("withdrawal creation failed: {}", e))?;
+    Ok(RowExecution::Withdrawal { withdrawal_id })
 }
 
-fn md5_or_simple_hash(bytes: &[u8]) -> u128 {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let result = hasher.finalize();
-    let mut arr = [0u8; 16];
-    arr.copy_from_slice(&result[0..16]);
-    u128::from_be_bytes(arr)
+/// Resolve a destination string to an EngiPay user id, if it refers to one.
+///
+/// A destination is an EngiPay recipient when it is a tag (`@name` or a bare
+/// alphanumeric/underscore handle) that maps to a known user.
+async fn resolve_engipay_recipient(
+    pool: &PgPool,
+    destination: &str,
+) -> Result<Option<Uuid>, String> {
+    let dest = destination.trim();
+    let is_tag =
+        dest.starts_with('@') || dest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !is_tag {
+        return Ok(None);
+    }
+
+    let handle = dest.trim_start_matches('@');
+    let user_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+            .bind(handle)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("failed to resolve recipient: {}", e))?;
+    Ok(user_id)
+}
+
+/// Create a withdrawal with a hold for an external address.
+///
+/// Returns the withdrawal id. The row remains pending until the chain worker
+/// settles the withdrawal and records the on-chain transaction hash.
+async fn create_withdrawal_with_hold(
+    pool: &PgPool,
+    user_id: Uuid,
+    destination: &str,
+    asset: Asset,
+    money: Money,
+) -> Result<Uuid, String> {
+    let withdrawal_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO withdrawals (
+            withdrawal_id, user_id, destination, asset, amount, status, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, 'pending', NOW(), NOW())
+        "#,
+    )
+    .bind(withdrawal_id)
+    .bind(user_id)
+    .bind(destination.trim())
+    .bind(asset.to_string())
+    .bind(money.minor.to_string())
+    .execute(pool)
+    .await
+    .map_err(|e| format!("failed to insert withdrawal: {}", e))?;
+
+    // Place a hold on the user's balance for the withdrawal amount.
+    sqlx::query(
+        r#"
+        INSERT INTO balance_holds (
+            hold_id, user_id, asset, amount, reference_id, created_at
+        ) VALUES ($1, $2, $3, $4, $5, NOW())
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(user_id)
+    .bind(asset.to_string())
+    .bind(money.minor.to_string())
+    .bind(withdrawal_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("failed to place hold: {}", e))?;
+
+    Ok(withdrawal_id)
 }
 
 /// Get the status of a batch payment.
@@ -987,5 +1122,20 @@ GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5,XLM,10.5,Payment 1
         }
 
         assert_eq!(executed_indices, vec![1]);
+    }
+
+    #[test]
+    fn tag_destinations_are_recognized_as_engipay_recipients() {
+        // A tag destination is an EngiPay recipient; an address is not.
+        let is_tag = |dest: &str| {
+            dest.starts_with('@')
+                || dest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        };
+        assert!(is_tag("@alice"));
+        assert!(is_tag("alice"));
+        assert!(!is_tag(
+            "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+        ));
+        assert!(!is_tag("0x71C7656EC7ab88b098defB751B7401B5f6d8976F"));
     }
 }

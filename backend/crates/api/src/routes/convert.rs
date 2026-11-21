@@ -41,6 +41,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
+use crate::services::frozen::ensure_not_frozen;
 use crate::services::price_source::{PriceError, apply_price};
 
 pub fn routes() -> Router<AppState> {

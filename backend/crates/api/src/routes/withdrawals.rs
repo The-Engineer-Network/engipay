@@ -192,17 +192,8 @@ pub async fn create_withdrawal(
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
-    // Check if sender's account is frozen
-    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
-        .unwrap_or(false);
-
-    if is_frozen {
-        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
-    }
+    // Reject frozen accounts before any hold is placed.
+    crate::services::frozen::ensure_not_frozen(&pool, user_id).await?;
 
     // Check if withdrawal destination is in cooling-off period
     let cooling_off_decision =

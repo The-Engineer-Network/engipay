@@ -18,6 +18,10 @@ pub enum ApiError {
     Conflict(String),
     #[error("forbidden")]
     Forbidden,
+    /// The account is frozen and cannot move funds. Distinct from a validation
+    /// error so the app can tell the user their account is locked.
+    #[error("account is frozen and cannot move funds")]
+    AccountFrozen,
     #[error("{0}")]
     UnprocessableEntity(String),
     #[error("the database is not available")]
@@ -67,6 +71,7 @@ impl ApiError {
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             ApiError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             ApiError::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            ApiError::AccountFrozen => (StatusCode::FORBIDDEN, "account_frozen"),
             ApiError::UnprocessableEntity(_) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "unprocessable_entity")
             }
@@ -151,6 +156,13 @@ mod tests {
         let (status, code) = api_error.status_and_code();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(code, "bad_request");
+    }
+
+    #[test]
+    fn account_frozen_maps_to_forbidden_with_account_frozen_code() {
+        let (status, code) = ApiError::AccountFrozen.status_and_code();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(code, "account_frozen");
     }
 
     #[test]
