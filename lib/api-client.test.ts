@@ -20,7 +20,7 @@ import assert from "node:assert/strict"
 // use instanceof without worrying about module identity.
 import { ApiRequestError } from "./api.ts"
 import { isAccountFrozenError, isAccountFrozenResponse } from "./api-client.ts"
-import { getMe } from "./api-client.ts"
+import { getMe, getConvertQuote, executeConversion } from "./api-client.ts"
 
 // ── Helper: build a minimal Response ─────────────────────────────────────────
 
@@ -42,6 +42,36 @@ describe("getMe without a session", () => {
       assert.equal(err.code, "unauthorized")
       return true
     })
+  })
+})
+
+// ── Convert endpoints — authenticated (no session in test env) ────────────────
+
+describe("getConvertQuote without a session", () => {
+  it("throws 401 ApiRequestError when no session token is stored", async () => {
+    await assert.rejects(
+      () => getConvertQuote({ from_asset: "USDC", to_asset: "EURC", amount: "10" }),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiRequestError, `expected ApiRequestError, got ${String(err)}`)
+        assert.equal(err.status, 401)
+        assert.equal(err.code, "unauthorized")
+        return true
+      }
+    )
+  })
+})
+
+describe("executeConversion without a session", () => {
+  it("throws 401 ApiRequestError when no session token is stored", async () => {
+    await assert.rejects(
+      () => executeConversion({ from_asset: "USDC", to_asset: "EURC", amount: "10" }),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiRequestError, `expected ApiRequestError, got ${String(err)}`)
+        assert.equal(err.status, 401)
+        assert.equal(err.code, "unauthorized")
+        return true
+      }
+    )
   })
 })
 

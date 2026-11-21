@@ -1,8 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { PageHeader } from "@/components/app/PageHeader"
-import { PendingServiceNote } from "@/components/app/PendingServiceNote"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -18,14 +17,53 @@ import {
 import { ArrowDown } from "lucide-react"
 import { DISPLAY_ASSETS } from "@/lib/assets"
 import { decimalsForAsset, isPositiveAmount } from "@/lib/amountInput"
+import { getConvertQuote, type ConvertQuote } from "@/lib/api-client"
 
 export default function ConvertPage() {
   const [from, setFrom] = useState(DISPLAY_ASSETS[0]?.symbol ?? "ETH")
   const [to, setTo] = useState(DISPLAY_ASSETS[1]?.symbol ?? "USDC")
   const [amount, setAmount] = useState("")
+  const [quote, setQuote] = useState<ConvertQuote | null>(null)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+  const [quoteLoading, setQuoteLoading] = useState(false)
 
   const amountValid = amount === "" || isPositiveAmount(amount)
   const sameAsset = from === to
+  const canQuote = amount !== "" && amountValid && !sameAsset
+
+  useEffect(() => {
+    if (!canQuote) {
+      setQuote(null)
+      setQuoteError(null)
+      setQuoteLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setQuoteLoading(true)
+    setQuoteError(null)
+
+    const timer = setTimeout(() => {
+      getConvertQuote({ from, to, amount })
+        .then((result) => {
+          if (!cancelled) setQuote(result)
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setQuote(null)
+            setQuoteError(err instanceof Error ? err.message : "Could not fetch a quote.")
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setQuoteLoading(false)
+        })
+    }, 400)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [from, to, amount, canQuote])
 
   const flip = () => {
     setFrom(to)
@@ -88,7 +126,7 @@ export default function ConvertPage() {
             <div className="flex gap-2">
               <Input
                 id="convert-receive"
-                value=""
+                value={quote?.amountOut ?? ""}
                 readOnly
                 aria-readonly="true"
                 placeholder="0.00"
@@ -115,26 +153,32 @@ export default function ConvertPage() {
           <dl className="space-y-2 rounded-md border border-border p-4 text-sm">
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">Rate</dt>
-              <dd className="text-muted-foreground">—</dd>
+              <dd className="text-muted-foreground">{quote?.rate ?? "—"}</dd>
             </div>
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">Fee</dt>
-              <dd className="text-muted-foreground">—</dd>
+              <dd className="text-muted-foreground">{quote?.fee ?? "—"}</dd>
             </div>
             <div className="flex justify-between gap-4 border-t border-border pt-2 font-medium">
               <dt>You receive</dt>
-              <dd>—</dd>
+              <dd>{quote?.amountOut ?? "—"}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="text-muted-foreground">Expires</dt>
+              <dd className="text-muted-foreground">{quote?.expiresAt ?? "—"}</dd>
             </div>
           </dl>
+
+          {quoteLoading && (
+            <p className="text-xs text-muted-foreground">Fetching quote…</p>
+          )}
+          {quoteError && (
+            <p className="text-xs text-destructive">{quoteError}</p>
+          )}
 
           <Button type="button" className="h-12 w-full rounded-full text-base font-semibold" disabled>
             Convert
           </Button>
-
-          <PendingServiceNote>
-            Conversion needs the pricing and swap service, which is not built yet. The screen is
-            ready, so it starts working as soon as the backend is connected.
-          </PendingServiceNote>
         </CardContent>
       </Card>
     </div>

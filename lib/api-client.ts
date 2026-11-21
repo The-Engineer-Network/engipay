@@ -267,6 +267,64 @@ export async function cancelMoneyRequest(id: string): Promise<void> {
   })
 }
 
+// ── Convert (#676) ────────────────────────────────────────────────────────────
+
+export interface ConvertQuoteRequest {
+  from_asset: string
+  to_asset: string
+  amount: string
+}
+
+export interface ConvertQuoteResponse {
+  from_asset: string
+  to_asset: string
+  amount: string
+  rate: string
+  fee: string
+  amount_received: string
+  expires_at: string
+}
+
+export interface ExecuteConversionRequest {
+  from_asset: string
+  to_asset: string
+  amount: string
+  idempotency_key: string
+}
+
+export interface ExecuteConversionResponse {
+  id: string
+  from_asset: string
+  to_asset: string
+  amount: string
+  amount_received: string
+  status: string
+}
+
+/** POST /v1/convert/quote — fetch a live conversion quote. */
+export async function getConvertQuote(
+  req: ConvertQuoteRequest
+): Promise<ConvertQuoteResponse> {
+  const result = await apiRequest<ConvertQuoteResponse>("/v1/convert/quote", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a quote.")
+  return result
+}
+
+/** POST /v1/convert/execute — execute a conversion using a quote. */
+export async function executeConversion(
+  req: ExecuteConversionRequest
+): Promise<ExecuteConversionResponse> {
+  const result = await apiRequest<ExecuteConversionResponse>("/v1/convert/execute", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a conversion.")
+  return result
+}
+
 // ── Data export (#684) ────────────────────────────────────────────────────────
 
 /** GET /v1/export — the signed-in user's full data export. */
@@ -333,21 +391,6 @@ export interface RecordPaymentRequestInput {
   chain: string
   tx_hash?: string
   payer_address?: string
-  note?: string
-}
+  n
 
-export interface RecordPaymentResponse {
-  payment_id: string
-  payment_request_id: string
-  request_status: string
-  amount_paid: string
-  amount_remaining: string
-}
-
-// ── Public endpoints (no session required) ────────────────────────────────────
-
-/** GET /v1/assets — assets EngiPay supports, with their networks. */
-export async function getAssets(): Promise<AssetInfo[]> {
-  const result = await apiPublicRequest<AssetInfo[]>("/v1/assets")
-  return result ?? []
-}
+/* … truncated 486 chars — edit only what you need near the top … */
