@@ -14,12 +14,14 @@
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 
 pub mod create_wallet;
 pub mod estimate_fee;
+pub mod transaction_status;
 
 use crate::routes::estimate_fee::FeeOracle;
 
@@ -34,6 +36,10 @@ pub struct ChainHttpState {
     /// `None` means no credential is required — only acceptable when the
     /// listener is verified to be loopback-only before the server starts.
     pub internal_token: Option<Arc<str>>,
+    /// Optional database pool used by `/ready` to verify DB connectivity.
+    pub db: Option<sqlx::PgPool>,
+    /// Optional Stellar client for `/internal/transactions/stellar/{hash}`.
+    pub stellar: Option<std::sync::Arc<crate::stellar::StellarClient>>,
 }
 
 impl ChainHttpState {
@@ -41,6 +47,8 @@ impl ChainHttpState {
         Self {
             fees,
             internal_token: None,
+            db: None,
+            stellar: None,
         }
     }
 
@@ -48,6 +56,18 @@ impl ChainHttpState {
     /// carry a matching `X-Internal-Token` header, compared in constant time.
     pub fn with_token(mut self, token: impl Into<Arc<str>>) -> Self {
         self.internal_token = Some(token.into());
+        self
+    }
+
+    /// Attach a database pool so `/ready` can verify connectivity.
+    pub fn with_db(mut self, pool: sqlx::PgPool) -> Self {
+        self.db = Some(pool);
+        self
+    }
+
+    /// Attach a Stellar client for transaction status lookups.
+    pub fn with_stellar(mut self, client: crate::stellar::StellarClient) -> Self {
+        self.stellar = Some(std::sync::Arc::new(client));
         self
     }
 }
@@ -94,6 +114,23 @@ async fn auth(
         }
     }
     next.run(request).await
+}
+
+// ── Health handlers ───────────────────────────────────────────────────────────
+
+async fn live_handler() -> impl IntoResponse {
+    StatusCode::OK
+}
+
+async fn ready_handler(State(state): State<ChainHttpState>) -> impl IntoResponse {
+    if let Some(pool) = &state.db {
+        match sqlx::query("SELECT 1").execute(pool).await {
+            Ok(_) => StatusCode::OK,
+            Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    } else {
+        StatusCode::OK
+    }
 }
 
 // ── Metrics handler ───────────────────────────────────────────────────────────
@@ -154,14 +191,29 @@ pub fn router(fees: Arc<dyn FeeOracle>) -> Router {
 /// set.
 pub fn router_with_state(state: ChainHttpState) -> Router {
     Router::new()
+        .route("/live", get(live_handler))
         .route("/metrics", get(metrics_handler))
+        .merge(health_router(state.clone()))
         .merge(internal(state))
+}
+
+fn health_router(state: ChainHttpState) -> Router {
+    Router::new()
+        .route("/ready", get(ready_handler))
+        .with_state(state)
 }
 
 /// Routes only the API service may call.
 fn internal(state: ChainHttpState) -> Router {
+    let tx_state = transaction_status::TransactionStatusState {
+        stellar: state.stellar.clone(),
+    };
     Router::new()
         .route("/internal/estimate-fee", post(estimate_fee::estimate_fee))
+        .route(
+            "/internal/transactions/:chain/:hash",
+            get(transaction_status::get_transaction_status).with_state(tx_state),
+        )
         .merge(create_wallet::routes())
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
         .layer(axum::middleware::from_fn(track_request_metrics))

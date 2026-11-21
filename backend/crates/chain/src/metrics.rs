@@ -20,6 +20,12 @@ pub static DURATION_US_CREATE_WALLET: AtomicU64 = AtomicU64::new(0);
 /// Ledger sequence of the last batch processed by the deposit watcher.
 pub static LAST_PROCESSED_LEDGER: AtomicU64 = AtomicU64::new(0);
 
+/// Latest ledger reported by Horizon on the most recent watcher poll.
+pub static LATEST_HORIZON_LEDGER: AtomicU64 = AtomicU64::new(0);
+
+/// Lag in ledgers between the watcher cursor and Horizon's tip (tip − last processed).
+pub static WATCHER_LAG_LEDGERS: AtomicU64 = AtomicU64::new(0);
+
 /// Total deposits forwarded to the creditor since start.
 pub static DEPOSITS_CREDITED: AtomicU64 = AtomicU64::new(0);
 
@@ -65,6 +71,22 @@ pub fn render() -> String {
         "gauge",
         "Ledger sequence of the most recent batch processed by the deposit watcher.",
         LAST_PROCESSED_LEDGER.load(Relaxed),
+    );
+
+    write_simple(
+        &mut out,
+        "chain_latest_horizon_ledger",
+        "gauge",
+        "Latest ledger sequence reported by Horizon on the most recent watcher poll.",
+        LATEST_HORIZON_LEDGER.load(Relaxed),
+    );
+
+    write_simple(
+        &mut out,
+        "chain_watcher_lag_ledgers",
+        "gauge",
+        "Lag in ledgers between the watcher cursor and Horizon's tip.",
+        WATCHER_LAG_LEDGERS.load(Relaxed),
     );
 
     write_simple(

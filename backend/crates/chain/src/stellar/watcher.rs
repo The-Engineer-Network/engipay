@@ -150,6 +150,15 @@ impl StellarWatcher {
                 on_deposit(deposit).await;
             }
 
+            // Record lag metrics: how far behind the watcher cursor is.
+            {
+                use std::sync::atomic::Ordering;
+                crate::metrics::LATEST_HORIZON_LEDGER.store(tip, Ordering::Relaxed);
+                let lag = tip.saturating_sub(next_ledger);
+                crate::metrics::WATCHER_LAG_LEDGERS.store(lag, Ordering::Relaxed);
+                crate::metrics::LAST_PROCESSED_LEDGER.store(next_ledger, Ordering::Relaxed);
+            }
+
             // Advance the cursor to the tip.  Overlap-by-one: the *next* call
             // to `deposits_since(next_ledger)` will re-fetch from here, so any
             // deposit that arrived in this exact ledger but was not yet
