@@ -18,6 +18,9 @@ import {
   exportData,
   requestAccountDeletion,
   getDeletionRequest,
+  listBankAccounts,
+  removeBankAccount,
+  type BankAccount,
   type DeletionRequest,
 } from "@/lib/api-client"
 
@@ -32,6 +35,10 @@ export default function SettingsPage() {
   const [isLoadingDeletion, setIsLoadingDeletion] = useState(true)
   const [isRequestingDeletion, setIsRequestingDeletion] = useState(false)
   const [deletionConfirmation, setDeletionConfirmation] = useState("")
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
+  const [isLoadingBankAccounts, setIsLoadingBankAccounts] = useState(true)
+  const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -44,6 +51,23 @@ export default function SettingsPage() {
       })
       .finally(() => {
         if (!cancelled) setIsLoadingDeletion(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    listBankAccounts()
+      .then((accounts) => {
+        if (!cancelled) setBankAccounts(accounts)
+      })
+      .catch(() => {
+        if (!cancelled) setBankAccounts([])
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingBankAccounts(false)
       })
     return () => {
       cancelled = true
@@ -93,6 +117,20 @@ export default function SettingsPage() {
       toast({ title: "Could not request account deletion", variant: "destructive" })
     } finally {
       setIsRequestingDeletion(false)
+    }
+  }
+
+  const removeAccount = async (id: string) => {
+    setRemovingId(id)
+    try {
+      await removeBankAccount(id)
+      setBankAccounts((accounts) => accounts.filter((account) => account.id !== id))
+      setPendingRemovalId(null)
+      toast({ title: "Bank account removed" })
+    } catch {
+      toast({ title: "Could not remove the bank account", variant: "destructive" })
+    } finally {
+      setRemovingId(null)
     }
   }
 
@@ -179,6 +217,67 @@ export default function SettingsPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-base">Bank accounts</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {isLoadingBankAccounts ? (
+            <p className="text-sm text-muted-foreground">Loading bank accounts…</p>
+          ) : bankAccounts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No bank accounts added yet.</p>
+          ) : (
+            <ul className="space-y-3">
+              {bankAccounts.map((account) => (
+                <li
+                  key={account.id}
+                  className="flex items-center justify-between gap-4 rounded-md border p-3"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <p className="truncate text-sm font-medium">{account.bankName}</p>
+                    <p className="font-mono text-sm text-muted-foreground">
+                      {account.maskedAccountNumber}
+                    </p>
+                    <p className="truncate text-sm text-muted-foreground">
+                      {account.accountName}
+                    </p>
+                  </div>
+                  {pendingRemovalId === account.id ? (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => removeAccount(account.id)}
+                        disabled={removingId === account.id}
+                      >
+                        {removingId === account.id ? "Removing…" : "Confirm"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setPendingRemovalId(null)}
+                        disabled={removingId === account.id}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => setPendingRemovalId(account.id)}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle className="text-base">Your data</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -213,25 +312,17 @@ export default function SettingsPage() {
                 <span className="text-sm text-muted-foreground">Status</span>
                 <span className="text-sm font-medium capitalize">{deletionRequest.status}</span>
               </div>
-              {deletionRequest.requestedAt && (
-                <div className="flex items-center justify-between gap-4">
-                  <span className="text-sm text-muted-foreground">Requested</span>
-                  <span className="text-sm font-medium">
-                    {new Date(deletionRequest.requestedAt).toLocaleString()}
-                  </span>
-                </div>
-              )}
             </div>
           ) : (
-            <>
+            <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Requesting deletion permanently removes your account and data. This cannot be undone.
-                Type <span className="font-mono font-semibold">{DELETION_CONFIRMATION}</span> to confirm.
+                Request deletion of your account and all associated data. Type {DELETION_CONFIRMATION} to
+                confirm.
               </p>
               <Input
                 value={deletionConfirmation}
                 onChange={(event) => setDeletionConfirmation(event.target.value)}
-                placeholder={`Type ${DELETION_CONFIRMATION} to confirm`}
+                placeholder={DELETION_CONFIRMATION}
                 aria-label="Type DELETE to confirm account deletion"
               />
               <Button
@@ -239,19 +330,15 @@ export default function SettingsPage() {
                 className="w-full"
                 onClick={requestDeletion}
                 disabled={
-                  isRequestingDeletion || deletionConfirmation !== DELETION_CONFIRMATION
+                  deletionConfirmation !== DELETION_CONFIRMATION || isRequestingDeletion
                 }
               >
                 {isRequestingDeletion ? "Requesting…" : "Request account deletion"}
               </Button>
-            </>
+            </div>
           )}
         </CardContent>
       </Card>
-
-      <AccountCard />
-
-      <AddBankAccountForm />
     </div>
   )
 }
