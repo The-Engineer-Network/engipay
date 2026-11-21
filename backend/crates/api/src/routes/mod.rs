@@ -1,1 +1,54 @@
-﻿pub mod assets;pub mod auth;pub mod balances;pub mod bank_accounts;pub mod batch_payments;pub mod buy;pub mod convert;pub mod deletion;pub mod deposits;pub mod health;pub mod kyc;pub mod me;pub mod metrics;pub mod money_requests;pub mod naira;pub mod openapi;pub mod payment_requests;pub mod quotes;pub mod receipts;pub mod requests;pub mod settles;pub mod transactions;pub mod transfers;pub mod withdrawals;use axum::Router;use crate::AppState;/// Versioned routes. A breaking change becomes /v2 instead of surprising the app.pub fn v1() -> Router<AppState> {    Router::new()        .merge(assets::routes())        .merge(batch_payments::routes())        .merge(buy::routes())        .merge(bank_accounts::routes())        .merge(auth::routes())        .merge(balances::routes())        .merge(convert::routes())        .merge(deletion::routes())        .merge(deposits::routes())        .merge(kyc::routes())        .merge(me::routes())        .merge(naira::routes())        .merge(transactions::routes())        .merge(requests::routes())        .merge(payment_requests::routes())        .merge(money_requests::routes())        .merge(receipts::router())        .merge(transfers::routes())        .merge(withdrawals::router())        .merge(quotes::routes())        .merge(settles::routes())}
+pub mod assets;
+pub mod auth;
+pub mod balances;
+pub mod bank_accounts;
+pub mod batch_payments;
+pub mod buy;
+pub mod convert;
+pub mod deletion;
+pub mod deposits;
+pub mod health;
+pub mod kyc;
+pub mod me;
+pub mod metrics;
+pub mod money_requests;
+pub mod naira;
+pub mod openapi;
+pub mod payment_requests;
+pub mod quotes;
+pub mod receipts;
+pub mod requests;
+pub mod settles;
+pub mod transactions;
+pub mod transfers;
+pub mod withdrawals;
+
+use axum::Router;
+
+use crate::AppState;
+
+/// Versioned routes. A breaking change becomes /v2 instead of surprising the app.
+pub fn v1() -> Router<AppState> {
+    Router::new()
+        .merge(assets::routes())
+        .merge(batch_payments::routes())
+        .merge(buy::routes())
+        .merge(bank_accounts::routes())
+        .merge(auth::routes())
+        .merge(balances::routes())
+        .merge(convert::routes())
+        .merge(deletion::routes())
+        .merge(deposits::routes())
+        .merge(kyc::routes())
+        .merge(me::routes())
+        .merge(naira::routes())
+        .merge(transactions::routes())
+        .merge(requests::routes())
+        .merge(payment_requests::routes())
+        .merge(money_requests::routes())
+        .merge(receipts::router())
+        .merge(transfers::routes())
+        .merge(withdrawals::router())
+        .merge(quotes::routes())
+        .merge(settles::routes())
+}
