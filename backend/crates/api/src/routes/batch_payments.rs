@@ -124,6 +124,7 @@ pub async fn upload_batch(
                 .bytes()
                 .await
                 .map_err(|e| ApiError::BadRequest(format!("failed to read CSV: {}", e)))?;
+            crate::routes::batch_upload_limits::UploadLimits::from_env().check_size(data.len())?;
             if data.len() > MAX_CSV_SIZE {
                 return Err(ApiError::BadRequest(format!(
                     "CSV exceeds maximum size of {} bytes",
@@ -138,6 +139,9 @@ pub async fn upload_batch(
     if csv_data.is_empty() {
         return Err(ApiError::BadRequest("no CSV file provided".to_owned()));
     }
+
+    // Cap the row count from the raw line count before parsing every row.
+    crate::routes::batch_upload_limits::UploadLimits::from_env().check_rows(&csv_data)?;
 
     // Parse CSV rows.
     let rows = parse_csv(&csv_data)?;
