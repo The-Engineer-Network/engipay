@@ -20,6 +20,7 @@ import {
   ACCOUNT_FROZEN_ERROR_CODE,
   apiRequest,
   apiPublicRequest,
+  clearSessionToken,
 } from "./api.ts"
 
 /** Returns true only for the API's account-frozen error. */
@@ -266,6 +267,64 @@ export async function cancelMoneyRequest(id: string): Promise<void> {
   })
 }
 
+// ── Convert (#676) ────────────────────────────────────────────────────────────
+
+export interface ConvertQuoteRequest {
+  from_asset: string
+  to_asset: string
+  amount: string
+}
+
+export interface ConvertQuoteResponse {
+  from_asset: string
+  to_asset: string
+  amount: string
+  rate: string
+  fee: string
+  amount_received: string
+  expires_at: string
+}
+
+export interface ExecuteConversionRequest {
+  from_asset: string
+  to_asset: string
+  amount: string
+  idempotency_key: string
+}
+
+export interface ExecuteConversionResponse {
+  id: string
+  from_asset: string
+  to_asset: string
+  amount: string
+  amount_received: string
+  status: string
+}
+
+/** POST /v1/convert/quote — fetch a live conversion quote. */
+export async function getConvertQuote(
+  req: ConvertQuoteRequest
+): Promise<ConvertQuoteResponse> {
+  const result = await apiRequest<ConvertQuoteResponse>("/v1/convert/quote", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a quote.")
+  return result
+}
+
+/** POST /v1/convert/execute — execute a conversion using a quote. */
+export async function executeConversion(
+  req: ExecuteConversionRequest
+): Promise<ExecuteConversionResponse> {
+  const result = await apiRequest<ExecuteConversionResponse>("/v1/convert/execute", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a conversion.")
+  return result
+}
+
 // ── Data export (#684) ────────────────────────────────────────────────────────
 
 /** GET /v1/export — the signed-in user's full data export. */
@@ -273,6 +332,22 @@ export async function exportMyData(): Promise<unknown> {
   const result = await apiRequest<unknown>("/v1/export")
   if (result === undefined) throw new Error("API did not return an export.")
   return result
+}
+
+// ── Auth (#675) ───────────────────────────────────────────────────────────────
+
+/**
+ * POST /v1/auth/logout — revoke the current session token server-side.
+ *
+ * The local session token is cleared regardless of the server response so
+ * the UI always ends up signed out, even if the token was already invalid.
+ */
+export async function logout(): Promise<void> {
+  try {
+    await apiRequest<void>("/v1/auth/logout", { method: "POST" })
+  } finally {
+    clearSessionToken()
+  }
 }
 
 export interface InteractiveFlowResponse {
@@ -316,231 +391,6 @@ export interface RecordPaymentRequestInput {
   chain: string
   tx_hash?: string
   payer_address?: string
-  note?: string
-}
+  n
 
-export interface RecordPaymentResponse {
-  payment_id: string
-  payment_request_id: string
-  request_status: string
-  amount_paid: string
-  amount_remaining: string
-}
-
-// ── Public endpoints (no session required) ────────────────────────────────────
-
-/** GET /v1/assets — assets EngiPay supports, with their networks. */
-export async function getAssets(): Promise<AssetInfo[]> {
-  const result = await apiPublicRequest<AssetInfo[]>("/v1/assets")
-  return result ?? []
-}
-
-/** POST /v1/auth/nonce — issue a single-use nonce for wallet sign-in. */
-export async function requestNonce(): Promise<NonceResponse> {
-  const result = await apiPublicRequest<NonceResponse>("/v1/auth/nonce", {
-    method: "POST",
-  })
-  if (!result) throw new Error("API did not return a nonce.")
-  return result
-}
-
-/** POST /v1/auth/verify-evm — verify an EVM wallet sign-in. */
-export async function verifyEvmSignature(
-  address: string,
-  signature: string,
-  nonce: string
-): Promise<SessionResponse> {
-  const result = await apiPublicRequest<SessionResponse>("/v1/auth/verify-evm", {
-    method: "POST",
-    body: JSON.stringify({ address, signature, nonce }),
-  })
-  if (!result) throw new Error("API did not return a session.")
-  return result
-}
-
-/** POST /v1/auth/verify-stellar — verify a Stellar wallet sign-in. */
-export async function verifyStellarSignature(
-  address: string,
-  signature: string,
-  nonce: string
-): Promise<SessionResponse> {
-  const result = await apiPublicRequest<SessionResponse>("/v1/auth/verify-stellar", {
-    method: "POST",
-    body: JSON.stringify({ address, signature, nonce }),
-  })
-  if (!result) throw new Error("API did not return a session.")
-  return result
-}
-
-/** POST /v1/auth/stellar/challenge — build a SEP-10 challenge transaction. */
-export async function requestStellarChallenge(
-  address: string
-): Promise<StellarChallengeResponse> {
-  const result = await apiPublicRequest<StellarChallengeResponse>(
-    "/v1/auth/stellar/challenge",
-    {
-      method: "POST",
-      body: JSON.stringify({ address }),
-    }
-  )
-  if (!result) throw new Error("API did not return a challenge.")
-  return result
-}
-
-// ── Authenticated endpoints ───────────────────────────────────────────────────
-
-/** GET /v1/me — the signed-in user's tag, tier and daily limit. */
-export async function getMe(): Promise<MeResponse> {
-  const result = await apiRequest<MeResponse>("/v1/me")
-  if (!result) throw new Error("API did not return account info.")
-  return result
-}
-
-/** GET /v1/deposit-address — a deposit address for the given asset/chain. */
-export async function getDepositAddress(
-  asset: string,
-  chain: string
-): Promise<DepositAddress> {
-  const params = new URLSearchParams({ asset, chain })
-  const result = await apiRequest<DepositAddress>(
-    `/v1/deposit-address?${params.toString()}`
-  )
-  if (!result) throw new Error("API did not return a deposit address.")
-  return result
-}
-
-/** GET /v1/balances — available and held balances for the signed-in user. */
-export async function getBalances(): Promise<Balance[]> {
-  const result = await apiRequest<Balance[]>("/v1/balances")
-  return result ?? []
-}
-
-/** POST /v1/withdrawals — request a withdrawal to an external address. */
-export async function createWithdrawal(
-  req: WithdrawalRequest
-): Promise<WithdrawalResponse> {
-  const result = await apiRequest<WithdrawalResponse>("/v1/withdrawals", {
-    method: "POST",
-    body: JSON.stringify(req),
-  })
-  if (!result) throw new Error("API did not return a withdrawal.")
-  return result
-}
-
-/** POST /v1/transfers — send funds to another EngiPay tag. */
-export async function createTransfer(req: TransferRequest): Promise<void> {
-  await apiRequest<void>("/v1/transfers", {
-    method: "POST",
-    body: JSON.stringify(req),
-  })
-}
-
-/** GET /v1/transactions — recent transaction history for the signed-in user. */
-export async function listTransactions(): Promise<TransactionEntry[]> {
-  const result = await apiRequest<TransactionEntry[]>("/v1/transactions")
-  return result ?? []
-}
-
-/** POST /v1/payment-requests — create a shareable payment request. */
-export async function createPaymentRequest(
-  req: CreatePaymentRequestInput
-): Promise<CreatePaymentRequestResponse> {
-  const result = await apiRequest<CreatePaymentRequestResponse>(
-    "/v1/payment-requests",
-    {
-      method: "POST",
-      body: JSON.stringify(req),
-    }
-  )
-  if (!result) throw new Error("API did not return a payment request.")
-  return result
-}
-
-/** GET /v1/payment-requests — list the signed-in user's payment requests. */
-export async function listPaymentRequests(): Promise<PaymentRequestSummary[]> {
-  const result = await apiRequest<PaymentRequestSummary[]>("/v1/payment-requests")
-  return result ?? []
-}
-
-/** GET /v1/payment-requests/:id — full detail for a single payment request. */
-export async function getPaymentRequest(id: string): Promise<PaymentRequestDetail> {
-  const result = await apiRequest<PaymentRequestDetail>(`/v1/payment-requests/${id}`)
-  if (!result) throw new Error("API did not return a payment request.")
-  return result
-}
-
-/** POST /v1/payment-requests/:id/payments — record an on-chain payment. */
-export async function recordPayment(
-  id: string,
-  req: RecordPaymentRequestInput
-): Promise<RecordPaymentResponse> {
-  const result = await apiRequest<RecordPaymentResponse>(
-    `/v1/payment-requests/${id}/payments`,
-    {
-      method: "POST",
-      body: JSON.stringify(req),
-    }
-  )
-  if (!result) throw new Error("API did not return a payment record.")
-  return result
-}
-
-/** POST /v1/batch-payments — submit a batch of transfers. */
-export async function createBatchPayment(
-  rows: Array<{ destination: string; asset: string; amount: string }>
-): Promise<BatchPaymentStatus> {
-  const result = await apiRequest<BatchPaymentStatus>("/v1/batch-payments", {
-    method: "POST",
-    body: JSON.stringify({ rows }),
-  })
-  if (!result) throw new Error("API did not return a batch.")
-  return result
-}
-
-/** GET /v1/batch-payments/:id — status of a submitted batch. */
-export async function getBatchPayment(id: string): Promise<BatchPaymentStatus> {
-  const result = await apiRequest<BatchPaymentStatus>(`/v1/batch-payments/${id}`)
-  if (!result) throw new Error("API did not return a batch.")
-  return result
-}
-
-/** GET /v1/batch-payments/:id/rows — per-row results for a batch. */
-export async function getBatchPaymentRows(id: string): Promise<RowResult[]> {
-  const result = await apiRequest<RowResult[]>(`/v1/batch-payments/${id}/rows`)
-  return result ?? []
-}
-
-/** POST /v1/anchors/deposit — start a SEP-24 deposit flow. */
-export async function startDeposit(
-  req: StartDepositRequest
-): Promise<InteractiveFlowResponse> {
-  const result = await apiRequest<InteractiveFlowResponse>("/v1/anchors/deposit", {
-    method: "POST",
-    body: JSON.stringify(req),
-  })
-  if (!result) throw new Error("API did not return a deposit flow.")
-  return result
-}
-
-/** POST /v1/anchors/withdrawal — start a SEP-24 withdrawal flow. */
-export async function startWithdrawal(
-  req: StartWithdrawalRequest
-): Promise<InteractiveFlowResponse> {
-  const result = await apiRequest<InteractiveFlowResponse>("/v1/anchors/withdrawal", {
-    method: "POST",
-    body: JSON.stringify(req),
-  })
-  if (!result) throw new Error("API did not return a withdrawal flow.")
-  return result
-}
-
-/** GET /v1/anchors/transactions/:id — status of an anchor transaction. */
-export async function getAnchorTransaction(
-  id: string
-): Promise<AnchorTransactionStatus> {
-  const result = await apiRequest<AnchorTransactionStatus>(
-    `/v1/anchors/transactions/${id}`
-  )
-  if (!result) throw new Error("API did not return a transaction.")
-  return result
-}
+/* … truncated 486 chars — edit only what you need near the top … */
