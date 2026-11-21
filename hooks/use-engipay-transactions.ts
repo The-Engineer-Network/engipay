@@ -19,9 +19,9 @@ export interface EngiPayTransaction {
   tx_hash?: string
   /** Human-readable counterpart label, e.g. "@alice" or "Bank withdrawal" */
   description?: string
-  /** Transaction reference number */
+  /** Transaction reference number (for issue #728) */
   reference?: string
-  /** Counterparty information (e.g., recipient tag or address) */
+  /** Counterparty information (for issue #728) */
   counterparty?: string
 }
 
@@ -53,7 +53,7 @@ interface TransactionFilters {
  *
  * `limit` controls how many items are fetched per page.
  * Pass `maxItems` to cap the list (useful for the dashboard preview).
- * Pass `filters` to filter by kind and date range.
+ * Pass `filters` to filter by kind and date range (issue #727).
  */
 export function useEngiPayTransactions(options?: {
   limit?: number
