@@ -22,6 +22,12 @@ import {
   getConvertQuote,
   type ConvertQuote,
 } from "@/lib/api-client"
+import {
+  canRequestQuote,
+  isQuoteExpired,
+  msUntilExpiry,
+  scheduleQuote,
+} from "@/lib/convertQuote"
 
 export default function ConvertPage() {
   const [from, setFrom] = useState(DISPLAY_ASSETS[0]?.symbol ?? "ETH")
@@ -38,51 +44,29 @@ export default function ConvertPage() {
 
   const amountValid = amount === "" || isPositiveAmount(amount)
   const sameAsset = from === to
-  const canQuote = amount !== "" && amountValid && !sameAsset
+  const canQuote = canRequestQuote({ from, to, amount }, amountValid)
 
-  const expiresAtMs = quote ? Date.parse(quote.expiresAt) : NaN
-  const quoteExpired = quote !== null && !Number.isNaN(expiresAtMs) && expiresAtMs <= now
+  const quoteExpired = isQuoteExpired(quote, now)
   const quoteLive = quote !== null && !quoteExpired
 
   useEffect(() => {
-    if (!canQuote) {
-      setQuote(null)
-      setQuoteError(null)
-      setQuoteLoading(false)
-      return
-    }
-
-    let cancelled = false
-    setQuoteLoading(true)
-    setQuoteError(null)
-
-    const timer = setTimeout(() => {
-      getConvertQuote({ from, to, amount })
-        .then((result) => {
-          if (!cancelled) setQuote(result)
-        })
-        .catch((err: unknown) => {
-          if (!cancelled) {
-            setQuote(null)
-            setQuoteError(err instanceof Error ? err.message : "Could not fetch a quote.")
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setQuoteLoading(false)
-        })
-    }, 400)
-
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [from, to, amount, canQuote, refreshKey])
+    const controller = scheduleQuote(
+      { from, to, amount },
+      amountValid,
+      getConvertQuote,
+      (state) => {
+        setQuote(state.quote)
+        setQuoteError(state.error)
+        setQuoteLoading(state.loading)
+      },
+    )
+    return () => controller.cancel()
+  }, [from, to, amount, amountValid, refreshKey])
 
   useEffect(() => {
     if (!quote) return
-    const expiresAt = Date.parse(quote.expiresAt)
-    if (Number.isNaN(expiresAt)) return
-    const remaining = expiresAt - Date.now()
+    const remaining = msUntilExpiry(quote, Date.now())
+    if (remaining === null) return
     if (remaining <= 0) {
       setNow(Date.now())
       return
@@ -227,7 +211,9 @@ export default function ConvertPage() {
             </div>
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">Expires</dt>
-              <dd className="text-muted-foreground">{quote?.expiresAt ?? "—"}</dd>
+              <dd className="text-muted-foreground">
+                {quote ? (quoteExpired ? "Expired" : quote.expiresAt) : "—"}
+              </dd>
             </div>
           </dl>
 
@@ -238,34 +224,33 @@ export default function ConvertPage() {
             <p className="text-xs text-destructive">{quoteError}</p>
           )}
           {quoteExpired && (
-            <p className="text-xs text-destructive">This quote has expired. Refresh it to continue.</p>
+            <p className="text-xs text-destructive">This quote has expired. Refresh to get a new one.</p>
           )}
+
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={refreshQuote}
+              disabled={!canQuote || quoteLoading}
+            >
+              Refresh quote
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConvert}
+              disabled={!quoteLive || converting}
+              className="flex-1"
+            >
+              {converting ? "Converting…" : "Convert"}
+            </Button>
+          </div>
+
           {convertError && (
             <p className="text-xs text-destructive">{convertError}</p>
           )}
           {convertSuccess && (
             <p className="text-xs text-emerald-600">{convertSuccess}</p>
-          )}
-
-          {quoteExpired ? (
-            <Button
-              type="button"
-              variant="outline"
-              className="h-12 w-full rounded-full text-base font-semibold"
-              onClick={refreshQuote}
-              disabled={quoteLoading}
-            >
-              {quoteLoading ? "Refreshing…" : "Refresh quote"}
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              className="h-12 w-full rounded-full text-base font-semibold"
-              onClick={handleConvert}
-              disabled={!quoteLive || converting}
-            >
-              {converting ? "Converting…" : "Convert"}
-            </Button>
           )}
         </CardContent>
       </Card>
