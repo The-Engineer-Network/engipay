@@ -6,6 +6,7 @@
 
 pub mod confirmations;
 pub mod cursor;
+pub mod esplora;
 pub mod sender;
 pub mod utxo;
 
@@ -15,6 +16,7 @@ pub use sender::{
     BitcoinNetwork, BitcoinSenderError, BitcoinSigner, BitcoinWithdrawalSender, LocalTestSigner,
     PreparedTransaction, SenderConfig, Utxo, WithdrawalRequest,
 };
+pub use esplora::BitcoinEsploraClient;
 pub use utxo::{
     ConfirmedTransaction, DetectedUtxo, ScriptPubKey, TxOutput, Txid, UtxoWatchError, UtxoWatcher,
     sats_to_money,
