@@ -239,16 +239,7 @@ async fn create_transfer(
         .unwrap_or(0);
 
     // Check if sender's account is frozen
-    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
-        .bind(sender.as_uuid())
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
-        .unwrap_or(false);
-
-    if is_frozen {
-        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
-    }
+    crate::services::frozen::ensure_not_frozen(&pool, sender.as_uuid()).await?;
 
     // Check velocity limits before executing transfer
     check_velocity_limits(

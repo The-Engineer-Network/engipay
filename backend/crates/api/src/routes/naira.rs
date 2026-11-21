@@ -112,16 +112,7 @@ pub async fn start_deposit(
         .database
         .as_ref()
         .ok_or(ApiError::DatabaseUnavailable)?;
-    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
-        .bind(user_id.as_uuid())
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
-        .unwrap_or(false);
-
-    if is_frozen {
-        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
-    }
+    crate::services::frozen::ensure_not_frozen(pool, user_id.as_uuid()).await?;
 
     // Validate amount
     let amt: f64 = request
@@ -238,16 +229,7 @@ pub async fn start_withdrawal(
         .database
         .as_ref()
         .ok_or(ApiError::DatabaseUnavailable)?;
-    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
-        .bind(user_id.as_uuid())
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
-        .unwrap_or(false);
-
-    if is_frozen {
-        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
-    }
+    crate::services::frozen::ensure_not_frozen(pool, user_id.as_uuid()).await?;
 
     // Validate bank account: 10 digits NUBAN
     let account = request.bank_account.trim();

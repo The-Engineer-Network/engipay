@@ -290,7 +290,14 @@ async fn record_payment(
 
     let db_err = |e: sqlx::Error| ApiError::Internal(anyhow::anyhow!(e.to_string()));
 
-    // Fetch request, auto-expiring if necessary.
+    // Begin a transaction and lock the payment request row so that concurrent
+    // payments cannot both pass the outstanding-balance check.
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("begin tx: {e}")))?;
+
+    // Fetch and lock the request row, auto-expiring if necessary.
     let row = sqlx::query(
         r#"
         SELECT
@@ -306,10 +313,11 @@ async fn record_payment(
         LEFT JOIN payment_request_payments pp ON pp.payment_request_id = pr.id
         WHERE pr.id = $1
         GROUP BY pr.id
+        FOR UPDATE OF pr
         "#,
     )
     .bind(id)
-    .fetch_optional(&pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(db_err)?
     .ok_or(ApiError::NotFound)?;
@@ -327,9 +335,12 @@ async fn record_payment(
              WHERE id = $1 AND status IN ('pending', 'partially_paid') AND expires_at < now()",
         )
         .bind(id)
-        .execute(&pool)
+        .execute(&mut *tx)
         .await
         .map_err(db_err)?;
+        tx.commit()
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("commit: {e}")))?;
         return Err(ApiError::BadRequest(
             "payment request has expired".to_string(),
         ));
@@ -443,12 +454,9 @@ async fn record_payment(
         "partially_paid"
     };
 
-    // Insert payment and update request status atomically.
+    // Insert payment and update request status atomically within the same
+    // transaction that holds the row lock.
     let payment_id = Uuid::new_v4();
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("begin tx: {e}")))?;
 
     sqlx::query(
         r#"
