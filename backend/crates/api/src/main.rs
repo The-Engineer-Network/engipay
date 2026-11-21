@@ -32,7 +32,25 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState::with_fakes(database, config.clone(), RateLimiter::new());
+    let replica_database = match std::env::var("REPLICA_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => {
+            let pool = PgPoolOptions::new()
+                .max_connections(config.db_max_connections)
+                .acquire_timeout(std::time::Duration::from_secs(5))
+                .connect(&url)
+                .await
+                .context("could not connect to replica Postgres")?;
+            info!("replica database connected");
+            Some(pool)
+        }
+        _ => {
+            warn!("REPLICA_DATABASE_URL is not set; balance reads will use the primary database");
+            None
+        }
+    };
+
+    let mut state = AppState::with_fakes(database, config.clone(), RateLimiter::new());
+    state.replica_database = replica_database;
     let app = router(state, &config);
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)

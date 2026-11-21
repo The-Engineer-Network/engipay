@@ -271,7 +271,10 @@ mod tests {
         let result = create_token(user_id, wallet.clone(), secret);
         // Without fault injection, this should succeed
         // The test verifies the normal flow works
-        assert!(result.is_ok(), "create_token should succeed without fault injection");
+        assert!(
+            result.is_ok(),
+            "create_token should succeed without fault injection"
+        );
     }
 
     /// Test that crashing before token verification returns error
@@ -287,7 +290,10 @@ mod tests {
         let fi = FaultInjection::new().with_point(FaultInjectionPoint::BeforeVerify);
         // Without fault injection, verification should succeed
         let result = verify_token(&token, secret);
-        assert!(result.is_ok(), "verify_token should succeed without fault injection");
+        assert!(
+            result.is_ok(),
+            "verify_token should succeed without fault injection"
+        );
     }
 
     /// Test that crashing after verification doesn't corrupt state
@@ -301,7 +307,10 @@ mod tests {
 
         // Without fault injection, verification should succeed and return claims
         let result = verify_token(&token, secret);
-        assert!(result.is_ok(), "verify_token should succeed without fault injection");
+        assert!(
+            result.is_ok(),
+            "verify_token should succeed without fault injection"
+        );
         let claims = result.unwrap();
         assert_eq!(claims.sub, user_id);
         assert_eq!(claims.wallet, wallet);
