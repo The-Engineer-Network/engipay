@@ -1,6 +1,7 @@
 "use client"
 
 import { AccountCard } from "@/components/app/AccountCard"
+import { AddBankAccountForm } from "@/components/app/AddBankAccountForm"
 import { PageHeader } from "@/components/app/PageHeader"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -109,6 +110,8 @@ export default function SettingsPage() {
       </Card>
 
       <AccountCard />
+
+      <AddBankAccountForm />
     </div>
   )
 }
