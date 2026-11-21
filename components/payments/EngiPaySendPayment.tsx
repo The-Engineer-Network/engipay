@@ -14,6 +14,8 @@ import {
 import { useToast } from "@/hooks/use-toast"
 import { useEngiPayBalances } from "@/hooks/use-engipay-balances"
 import { Loader2, CheckCircle2, AlertCircle, ArrowUpRight, ShieldAlert } from "lucide-react"
+import { SendStatusAnnouncement } from "@/components/payments/SendStatusAnnouncement"
+import { getSendStatusAnnouncement, type SendPhase } from "@/lib/sendStatus"
 import { getMe } from "@/lib/api-client"
 
 const CUSTODIAL_ASSETS = ["USDC", "ETH", "XLM", "BTC"] as const
@@ -70,6 +72,19 @@ export function EngiPaySendPayment({
         // Not signed in or request failed — silently omit the limit display.
       })
   }, [])
+
+  let sendPhase: SendPhase = "idle"
+  let sendDetail: string | undefined
+  if (receipt) {
+    sendPhase = "success"
+  } else if (errorMessage) {
+    sendPhase = "error"
+    sendDetail = errorMessage
+  } else if (isSubmitting) {
+    sendPhase = "waiting"
+    sendDetail = "Please wait."
+  }
+  const sendAnnouncement = getSendStatusAnnouncement({ phase: sendPhase, detail: sendDetail })
 
   // Find user's available balance for this asset
   const assetBalance = balances.find((b) => b.asset.toUpperCase() === asset.toUpperCase())
@@ -203,6 +218,7 @@ export function EngiPaySendPayment({
         >
           Send another payment
         </Button>
+        <SendStatusAnnouncement message={sendAnnouncement} />
       </div>
     )
   }
@@ -305,6 +321,7 @@ export function EngiPaySendPayment({
           </>
         )}
       </Button>
+      <SendStatusAnnouncement message={sendAnnouncement} />
     </form>
   )
 }
