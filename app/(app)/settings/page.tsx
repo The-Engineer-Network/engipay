@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { AccountCard } from "@/components/app/AccountCard"
 import { AddBankAccountForm } from "@/components/app/AddBankAccountForm"
 import { PageHeader } from "@/components/app/PageHeader"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"
 import { Copy, Download } from "lucide-react"
 import { useWallet } from "@/contexts/WalletContext"
@@ -13,13 +14,41 @@ import { useStellarWallet } from "@/contexts/StellarWalletContext"
 import { stellarNetwork } from "@/lib/stellar"
 import { activeChain } from "@/lib/wagmi"
 import { shortenAddress } from "@/lib/payment-uri"
-import { exportData } from "@/lib/api-client"
+import {
+  exportData,
+  requestAccountDeletion,
+  getDeletionRequest,
+  type DeletionRequest,
+} from "@/lib/api-client"
+
+const DELETION_CONFIRMATION = "DELETE"
 
 export default function SettingsPage() {
   const { evmAddress: walletAddress, walletName, disconnectWallet, connectWallet } = useWallet()
   const { stellarAddress, stellarWalletName, networkMismatch, disconnectStellar } = useStellarWallet()
   const { toast } = useToast()
   const [isExporting, setIsExporting] = useState(false)
+  const [deletionRequest, setDeletionRequest] = useState<DeletionRequest | null>(null)
+  const [isLoadingDeletion, setIsLoadingDeletion] = useState(true)
+  const [isRequestingDeletion, setIsRequestingDeletion] = useState(false)
+  const [deletionConfirmation, setDeletionConfirmation] = useState("")
+
+  useEffect(() => {
+    let cancelled = false
+    getDeletionRequest()
+      .then((request) => {
+        if (!cancelled) setDeletionRequest(request)
+      })
+      .catch(() => {
+        if (!cancelled) setDeletionRequest(null)
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingDeletion(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const copyAddress = async (address: string | null = walletAddress) => {
     if (!address) return
@@ -49,6 +78,21 @@ export default function SettingsPage() {
       toast({ title: "Could not download your data", variant: "destructive" })
     } finally {
       setIsExporting(false)
+    }
+  }
+
+  const requestDeletion = async () => {
+    if (deletionConfirmation !== DELETION_CONFIRMATION) return
+    setIsRequestingDeletion(true)
+    try {
+      const request = await requestAccountDeletion()
+      setDeletionRequest(request)
+      setDeletionConfirmation("")
+      toast({ title: "Account deletion requested" })
+    } catch {
+      toast({ title: "Could not request account deletion", variant: "destructive" })
+    } finally {
+      setIsRequestingDeletion(false)
     }
   }
 
@@ -150,6 +194,58 @@ export default function SettingsPage() {
             <Download className="mr-2 h-4 w-4" aria-hidden="true" />
             {isExporting ? "Preparing download…" : "Download my data"}
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="border-destructive/50">
+        <CardHeader>
+          <CardTitle className="text-base text-destructive">Danger zone</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {isLoadingDeletion ? (
+            <p className="text-sm text-muted-foreground">Checking deletion request status…</p>
+          ) : deletionRequest ? (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                Your account deletion request has been received.
+              </p>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-sm text-muted-foreground">Status</span>
+                <span className="text-sm font-medium capitalize">{deletionRequest.status}</span>
+              </div>
+              {deletionRequest.requestedAt && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-muted-foreground">Requested</span>
+                  <span className="text-sm font-medium">
+                    {new Date(deletionRequest.requestedAt).toLocaleString()}
+                  </span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Requesting deletion permanently removes your account and data. This cannot be undone.
+                Type <span className="font-mono font-semibold">{DELETION_CONFIRMATION}</span> to confirm.
+              </p>
+              <Input
+                value={deletionConfirmation}
+                onChange={(event) => setDeletionConfirmation(event.target.value)}
+                placeholder={`Type ${DELETION_CONFIRMATION} to confirm`}
+                aria-label="Type DELETE to confirm account deletion"
+              />
+              <Button
+                variant="destructive"
+                className="w-full"
+                onClick={requestDeletion}
+                disabled={
+                  isRequestingDeletion || deletionConfirmation !== DELETION_CONFIRMATION
+                }
+              >
+                {isRequestingDeletion ? "Requesting…" : "Request account deletion"}
+              </Button>
+            </>
+          )}
         </CardContent>
       </Card>
 
