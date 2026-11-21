@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useId, useTransition } from "react"
+import { useState, useEffect, useId } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -13,9 +13,10 @@ import {
 } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
 import { useEngiPayBalances } from "@/hooks/use-engipay-balances"
-import { Loader2, CheckCircle2, AlertCircle, ArrowUpRight } from "lucide-react"
+import { Loader2, CheckCircle2, AlertCircle, ArrowUpRight, ShieldAlert } from "lucide-react"
 import { SendStatusAnnouncement } from "@/components/payments/SendStatusAnnouncement"
 import { getSendStatusAnnouncement, type SendPhase } from "@/lib/sendStatus"
+import { getMe } from "@/lib/api-client"
 
 const CUSTODIAL_ASSETS = ["USDC", "ETH", "XLM", "BTC"] as const
 type CustodialAsset = (typeof CUSTODIAL_ASSETS)[number]
@@ -24,6 +25,17 @@ interface EngiPaySendPaymentProps {
   initialRecipient?: string
   initialAmount?: string
   initialAsset?: string
+}
+
+/**
+ * Parse a daily_limit string such as "500 USDC" or "0.05 BTC".
+ * Returns the numeric part, or null if parsing fails.
+ */
+function parseLimitAmount(limit: string): number | null {
+  const match = limit.match(/^([\d.]+)/)
+  if (!match) return null
+  const n = parseFloat(match[1])
+  return isNaN(n) ? null : n
 }
 
 export function EngiPaySendPayment({
@@ -50,6 +62,17 @@ export function EngiPaySendPayment({
     asset: string
   } | null>(null)
 
+  // Daily limit from /v1/me
+  const [dailyLimit, setDailyLimit] = useState<string | null>(null)
+
+  useEffect(() => {
+    getMe()
+      .then((me) => setDailyLimit(me.daily_limit))
+      .catch(() => {
+        // Not signed in or request failed — silently omit the limit display.
+      })
+  }, [])
+
   let sendPhase: SendPhase = "idle"
   let sendDetail: string | undefined
   if (receipt) {
@@ -66,6 +89,16 @@ export function EngiPaySendPayment({
   // Find user's available balance for this asset
   const assetBalance = balances.find((b) => b.asset.toUpperCase() === asset.toUpperCase())
   const availableAmount = assetBalance?.available ?? "0"
+
+  // Warn when the entered amount exceeds the daily limit for this asset.
+  const limitNumber = dailyLimit ? parseLimitAmount(dailyLimit) : null
+  const enteredNumber = amount ? parseFloat(amount) : 0
+  const exceedsLimit =
+    limitNumber !== null &&
+    enteredNumber > 0 &&
+    // Only compare when the limit string contains the current asset symbol.
+    dailyLimit?.toUpperCase().includes(asset.toUpperCase()) &&
+    enteredNumber > limitNumber
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -100,7 +133,6 @@ export function EngiPaySendPayment({
 
     setIsSubmitting(true)
 
-    // Generate client-side UUID idempotency reference
     const idempotencyRef =
       typeof crypto !== "undefined" && crypto.randomUUID
         ? crypto.randomUUID()
@@ -249,7 +281,26 @@ export function EngiPaySendPayment({
             value={amount}
             onChange={(e) => setAmount(e.target.value.trim())}
             disabled={isSubmitting}
+            aria-describedby="daily-limit-hint"
           />
+
+          {/* Daily limit display */}
+          <p
+            id="daily-limit-hint"
+            className={`flex items-center gap-1 text-[11px] tabular-nums ${
+              exceedsLimit ? "text-destructive" : "text-muted-foreground"
+            }`}
+            aria-live="polite"
+          >
+            {exceedsLimit ? (
+              <>
+                <ShieldAlert className="h-3 w-3 shrink-0" aria-hidden="true" />
+                Amount exceeds your daily limit of {dailyLimit}.
+              </>
+            ) : dailyLimit ? (
+              <>Daily limit: {dailyLimit}</>
+            ) : null}
+          </p>
         </div>
       </div>
 

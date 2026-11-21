@@ -17,7 +17,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --no-warnings --test \"lib/**/*.test.ts\"",
+    "test": "node --experimental-strip-types --no-warnings --import ./lib/test-alias-register.mjs --test \"lib/**/*.test.ts\"",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -69,6 +69,8 @@
   "overrides": {
     "postcss": "$postcss",
     "ws@^8": "^8.21.3",
-    "uuid": "^11.1.1"
+    "uuid": "^11.1.1",
+    "sharp": "^0.35.5",
+    "source-map-js": "^1.2.2"
   }
 }

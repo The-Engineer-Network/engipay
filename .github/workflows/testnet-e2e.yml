@@ -33,22 +33,45 @@ jobs:
       JWT_SECRET: ci-testnet-jwt-not-a-secret
 
     steps:
+      # ── Preflight: skip cleanly when testnet secrets are not configured ────
+      - name: Check testnet secrets
+        id: secrets-check
+        env:
+          STELLAR_CUSTODY_ACCOUNT: ${{ secrets.TESTNET_CUSTODY_ACCOUNT }}
+          STELLAR_SIGNING_KEY: ${{ secrets.TESTNET_SIGNING_KEY }}
+          STELLAR_TESTNET_SECRET: ${{ secrets.TESTNET_SECRET }}
+        run: |
+          missing=""
+          [ -z "${STELLAR_CUSTODY_ACCOUNT}" ] && missing="${missing} TESTNET_CUSTODY_ACCOUNT"
+          [ -z "${STELLAR_SIGNING_KEY}" ] && missing="${missing} TESTNET_SIGNING_KEY"
+          [ -z "${STELLAR_TESTNET_SECRET}" ] && missing="${missing} TESTNET_SECRET"
+          if [ -n "${missing}" ]; then
+            echo "::notice::Skipping testnet E2E: missing secrets:${missing}"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
-        uses: actions/checkout@v4
+        if: steps.secrets-check.outputs.configured == 'true'
+        uses: actions/checkout@v5
         with:
           persist-credentials: false
 
       # ── Rust build cache ──────────────────────────────────────────────────
       - name: Set up Rust toolchain
+        if: steps.secrets-check.outputs.configured == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore Rust build cache
+        if: steps.secrets-check.outputs.configured == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
 
       # ── Build backend images ───────────────────────────────────────────────
       - name: Build backend Docker images
+        if: steps.secrets-check.outputs.configured == 'true'
         working-directory: backend
         run: |
           echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" > .env
@@ -57,6 +80,7 @@ jobs:
 
       # ── Start the full stack ───────────────────────────────────────────────
       - name: Start postgres, api, and chain services
+        if: steps.secrets-check.outputs.configured == 'true'
         working-directory: backend
         env:
           STELLAR_CUSTODY_ACCOUNT: ${{ secrets.TESTNET_CUSTODY_ACCOUNT }}
@@ -78,6 +102,7 @@ jobs:
 
       # ── Run database migrations ────────────────────────────────────────────
       - name: Run migrations
+        if: steps.secrets-check.outputs.configured == 'true'
         working-directory: backend
         run: |
           docker compose \
@@ -89,10 +114,12 @@ jobs:
 
       # ── Install Python stellar-sdk for the harness script ──────────────────
       - name: Install stellar-sdk (Python)
+        if: steps.secrets-check.outputs.configured == 'true'
         run: pip install stellar-sdk --quiet
 
       # ── Run the testnet harness ────────────────────────────────────────────
       - name: Run testnet e2e harness
+        if: steps.secrets-check.outputs.configured == 'true'
         env:
           STELLAR_NETWORK: testnet
           API_BASE_URL: ${{ env.API_BASE_URL }}
@@ -102,7 +129,7 @@ jobs:
 
       # ── Collect logs on failure ────────────────────────────────────────────
       - name: Dump service logs on failure
-        if: failure()
+        if: failure() && steps.secrets-check.outputs.configured == 'true'
         working-directory: backend
         run: |
           echo "=== postgres logs ===" && docker compose logs postgres || true
@@ -111,7 +138,7 @@ jobs:
 
       # ── Tear down ─────────────────────────────────────────────────────────
       - name: Tear down stack
-        if: always()
+        if: always() && steps.secrets-check.outputs.configured == 'true'
         working-directory: backend
         run: |
           docker compose \

@@ -5,6 +5,7 @@ import { DashboardHeader } from "@/components/dashboard/DashboardHeader"
 import { AppNav } from "@/components/app/AppNav"
 import { BottomNav } from "@/components/app/BottomNav"
 import { ConnectWalletButton } from "@/components/wallet/ConnectWalletButton"
+import { AccountFrozenBanner } from "@/components/app/AccountFrozenBanner"
 import { useWallet } from "@/contexts/WalletContext"
 import { Wallet } from "lucide-react"
 
@@ -25,6 +26,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     <div className="min-h-screen bg-background text-foreground">
       <DashboardHeader />
       <AppNav />
+      <AccountFrozenBanner />
 
       {/* Extra bottom padding on phones so the bottom bar never covers content. */}
       <main className="container py-8 pb-28 md:pb-8">

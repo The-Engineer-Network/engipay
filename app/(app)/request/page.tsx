@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { createMoneyRequest } from "@/lib/api-client"
+import { MyPaymentRequests } from "@/components/payments/MyPaymentRequests"
 import { HandCoins, CheckCircle2, ArrowRight } from "lucide-react"
 
 const ASSETS = ["USDC", "XLM"] as const
@@ -245,6 +246,8 @@ export default function RequestMoneyPage() {
           </Link>
         </div>
       </div>
+
+      <MyPaymentRequests />
     </div>
   )
 }

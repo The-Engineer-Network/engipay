@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -147,11 +147,11 @@ jobs:
     needs: scan-config
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -192,7 +192,7 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -231,7 +231,7 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -245,6 +245,21 @@ jobs:
         run: |
           echo "POSTGRES_PASSWORD=ci-only-not-a-secret" > .env
           docker compose up -d --wait postgres
+
+      - name: Reject reused migration numbers
+        run: |
+          set -euo pipefail
+          cd migrations
+          duplicates=$(ls -1 *.sql | sed -E 's/^([0-9]+).*/\1/' | sort | uniq -d)
+          if [ -n "$duplicates" ]; then
+            echo "FAIL: migration files share a numeric prefix:"
+            for prefix in $duplicates; do
+              echo "  version $prefix:"
+              ls -1 "${prefix}"_*.sql | sed 's/^/    /'
+            done
+            exit 1
+          fi
+          echo "All migration versions are unique."
 
       - name: Verify migrations are idempotent
         run: bash ./scripts/verify-migrations.sh

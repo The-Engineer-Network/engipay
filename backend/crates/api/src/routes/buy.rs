@@ -283,3 +283,216 @@ async fn get_order(
 fn db_error(error: sqlx::Error) -> ApiError {
     ApiError::Internal(anyhow::anyhow!("buy database error: {error}"))
 }
+
+// ── HTTP tests (#644) ─────────────────────────────────────────────────────────
+//
+// Drive the real router in memory. The 401 tests need no database. The rest
+// need DATABASE_URL pointing at a database with every migration applied, so
+// they are ignored by default; run them with:
+//   DATABASE_URL=postgres://... cargo test -p engipay-api --lib routes::buy -- --include-ignored
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
+    use crate::{AppState, router};
+
+    /// ₦1,500 per USDC, 1% fee.
+    const KOBO_PER_USDC: i128 = 150_000;
+    const FEE_BPS: u32 = 100;
+
+    fn config() -> Config {
+        let mut config = Config::for_tests();
+        config.buy_kobo_per_usdc = Some(KOBO_PER_USDC);
+        config.buy_fee_bps = Some(FEE_BPS);
+        config
+    }
+
+    fn app(pool: Option<sqlx::PgPool>) -> axum::Router {
+        let config = config();
+        router(
+            AppState::with_fakes(pool, config.clone(), RateLimiter::new()),
+            &config,
+        )
+    }
+
+    async fn db_app() -> (axum::Router, sqlx::PgPool) {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        (app(Some(pool.clone())), pool)
+    }
+
+    async fn user(pool: &sqlx::PgPool) -> String {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id) VALUES ($1)")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        crate::auth::jwt::create_token(id, String::new(), config().jwt_secret.as_bytes()).unwrap()
+    }
+
+    async fn post(
+        app: &axum::Router,
+        path: &str,
+        token: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    // ── 401 ───────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_quote_without_a_token_is_401() {
+        let (status, body) = post(
+            &app(None),
+            "/v1/buy/quotes",
+            None,
+            json!({ "naira_amount": "5000", "asset": "USDC" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn a_quote_with_a_bad_token_is_401() {
+        let (status, body) = post(
+            &app(None),
+            "/v1/buy/quotes",
+            Some("not-a-jwt"),
+            json!({ "naira_amount": "5000", "asset": "USDC" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn an_order_without_a_token_is_401() {
+        let (status, body) = post(
+            &app(None),
+            "/v1/buy/orders",
+            None,
+            json!({ "quote_id": Uuid::new_v4() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn an_order_with_a_bad_token_is_401() {
+        let (status, body) = post(
+            &app(None),
+            "/v1/buy/orders",
+            Some("not-a-jwt"),
+            json!({ "quote_id": Uuid::new_v4() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    // ── Invalid amount ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn an_invalid_naira_amount_is_400() {
+        let (app, pool) = db_app().await;
+        let token = user(&pool).await;
+
+        for amount in ["", "abc", "-5000", "5000.505", "0"] {
+            let (status, body) = post(
+                &app,
+                "/v1/buy/quotes",
+                Some(&token),
+                json!({ "naira_amount": amount, "asset": "USDC" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "amount {amount:?}: {body}");
+            assert_eq!(body["error"]["code"], "bad_request", "amount {amount:?}");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn an_amount_too_small_to_buy_anything_is_400() {
+        let (app, pool) = db_app().await;
+        let token = user(&pool).await;
+
+        // One kobo cannot buy a single smallest unit of USDC after the fee.
+        let (status, body) = post(
+            &app,
+            "/v1/buy/quotes",
+            Some(&token),
+            json!({ "naira_amount": "0.01", "asset": "USDC" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    // ── Quote then order ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn a_quote_then_an_order_succeeds() {
+        let (app, pool) = db_app().await;
+        let token = user(&pool).await;
+
+        let (status, quote) = post(
+            &app,
+            "/v1/buy/quotes",
+            Some(&token),
+            json!({ "naira_amount": "5,000", "asset": "USDC" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{quote}");
+        assert_eq!(quote["asset"], "USDC");
+        assert_eq!(quote["naira_kobo"], "500000");
+        assert_eq!(quote["fee_kobo"], "5000");
+        assert_eq!(quote["receive"], "3.3000000");
+        assert_eq!(quote["kobo_per_unit"], KOBO_PER_USDC.to_string());
+        assert!(quote["expires_at"].as_str().is_some_and(|s| !s.is_empty()));
+        let quote_id = quote["id"].as_str().unwrap().to_owned();
+
+        let (status, order) = post(
+            &app,
+            "/v1/buy/orders",
+            Some(&token),
+            json!({ "quote_id": quote_id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{order}");
+        assert_eq!(order["quote_id"], quote_id);
+        assert_eq!(order["status"], "awaiting_partner");
+        assert!(order["id"].as_str().is_some());
+        assert!(order["receipt"].is_object(), "{order}");
+    }
+}

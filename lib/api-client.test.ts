@@ -19,6 +19,7 @@ import assert from "node:assert/strict"
 // Import ApiRequestError from the stable, already-loaded api.ts so we can
 // use instanceof without worrying about module identity.
 import { ApiRequestError } from "./api.ts"
+import { isAccountFrozenError, isAccountFrozenResponse } from "./api-client.ts"
 import { getMe } from "./api-client.ts"
 
 // ── Helper: build a minimal Response ─────────────────────────────────────────
@@ -58,6 +59,25 @@ describe("ApiRequestError", () => {
 
   it("is an instance of Error", () => {
     assert.ok(new ApiRequestError(500, "internal", "oops") instanceof Error)
+  })
+
+  it("identifies only account_frozen errors", () => {
+    assert.equal(
+      isAccountFrozenError(new ApiRequestError(403, "account_frozen", "frozen")),
+      true
+    )
+    assert.equal(
+      isAccountFrozenError(new ApiRequestError(403, "limit_exceeded", "limited")),
+      false
+    )
+    assert.equal(isAccountFrozenError(new Error("frozen")), false)
+  })
+
+  it("identifies only account_frozen response bodies", () => {
+    assert.equal(isAccountFrozenResponse({ error: { code: "account_frozen" } }), true)
+    assert.equal(isAccountFrozenResponse({ error: { code: "limit_exceeded" } }), false)
+    assert.equal(isAccountFrozenResponse({ error: "account_frozen" }), false)
+    assert.equal(isAccountFrozenResponse(null), false)
   })
 })
 

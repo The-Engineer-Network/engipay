@@ -9,6 +9,11 @@
 //! outcome is written to `kyc_sessions` as an audit trail. A `failed` or
 //! `pending` outcome leaves the tier unchanged but is still audited.
 //!
+//! ## GET /v1/kyc/session
+//! Returns the caller's latest KYC session: its outcome, the tier it
+//! grants, and when it was created. Returns 404 when the caller has no
+//! session yet.
+//!
 //! ## Security
 //! - No identity document numbers, images, or biometric data are written to
 //!   the audit trail or to logs.
@@ -24,8 +29,9 @@
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::AppState;
@@ -34,7 +40,10 @@ use crate::routes::auth::AuthUser;
 use crate::services::kyc_provider::{KycError, VerificationOutcome, is_valid_tier};
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/kyc/session", post(create_session))
+    Router::new().route(
+        "/kyc/session",
+        get(get_latest_session).post(create_session),
+    )
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -49,6 +58,20 @@ pub struct SessionResponse {
     pub tier: i32,
     /// "verified", "failed", or "pending".
     pub outcome: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LatestSessionResponse {
+    /// Opaque provider reference. Not a document number; safe to log.
+    pub provider_ref: String,
+    /// "verified", "failed", or "pending".
+    pub outcome: String,
+    /// The tier this session grants (the tier after the session ran).
+    pub tier: i32,
+    /// The tier the user had before this session ran.
+    pub tier_before: i32,
+    /// When the session was recorded.
+    pub created_at: DateTime<Utc>,
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -146,4 +169,39 @@ async fn create_session(
             outcome: outcome_str.to_string(),
         }),
     ))
+}
+
+// ── Latest session handler ────────────────────────────────────────────────────
+
+async fn get_latest_session(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<LatestSessionResponse>, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
+    let db = state
+        .database
+        .as_ref()
+        .ok_or(ApiError::DatabaseUnavailable)?;
+
+    let row: Option<(String, String, i32, i32, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT provider_ref, outcome, tier_after, tier_before, created_at \
+         FROM kyc_sessions \
+         WHERE user_id = $1 \
+         ORDER BY created_at DESC \
+         LIMIT 1",
+    )
+    .bind(user_id.as_uuid())
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to load KYC session: {e}")))?;
+
+    let (provider_ref, outcome, tier, tier_before, created_at) = row.ok_or(ApiError::NotFound)?;
+
+    Ok(Json(LatestSessionResponse {
+        provider_ref,
+        outcome,
+        tier,
+        tier_before,
+        created_at,
+    }))
 }
