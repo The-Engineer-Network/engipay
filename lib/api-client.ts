@@ -548,3 +548,28 @@ export async function getNairaWithdrawalStatus(transactionId: string): Promise<A
   return result
 }
 
+
+// ── Receipt verification ──────────────────────────────────────────────────────
+
+/**
+ * A signed receipt as the API accepts it.
+ * Supports both the route-level shape {key_id, payload, signature} and the
+ * service-level shape {receipt: {...}, signature}.
+ */
+export type ReceiptBlob =
+  | { key_id: string; payload: unknown; signature: string }
+  | { receipt: { receipt_id: string; receipt_type: string; ledger_transaction_id: string; amount_minor: string; asset: string; timestamp: string; key_id: string; metadata?: Record<string, string> }; signature: string }
+
+export interface VerifyReceiptResponse {
+  valid: boolean
+}
+
+/** POST /v1/receipts/verify */
+export async function verifyReceipt(receipt: ReceiptBlob): Promise<VerifyReceiptResponse> {
+  const result = await apiPublicRequest<VerifyReceiptResponse>("/v1/receipts/verify", {
+    method: "POST",
+    body: JSON.stringify({ receipt }),
+  })
+  if (!result) throw new Error("API did not return a verification response.")
+  return result
+}
