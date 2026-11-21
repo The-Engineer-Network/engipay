@@ -19,6 +19,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 
+pub mod balances;
 pub mod create_wallet;
 pub mod estimate_fee;
 pub mod transaction_status;
@@ -40,6 +41,8 @@ pub struct ChainHttpState {
     pub db: Option<sqlx::PgPool>,
     /// Optional Stellar client for `/internal/transactions/stellar/{hash}`.
     pub stellar: Option<std::sync::Arc<crate::stellar::StellarClient>>,
+    /// Optional state for `GET /internal/balances`.
+    pub balances: Option<balances::BalancesState>,
 }
 
 impl ChainHttpState {
@@ -49,6 +52,7 @@ impl ChainHttpState {
             internal_token: None,
             db: None,
             stellar: None,
+            balances: None,
         }
     }
 
@@ -68,6 +72,12 @@ impl ChainHttpState {
     /// Attach a Stellar client for transaction status lookups.
     pub fn with_stellar(mut self, client: crate::stellar::StellarClient) -> Self {
         self.stellar = Some(std::sync::Arc::new(client));
+        self
+    }
+
+    /// Attach custody-balance state so `GET /internal/balances` works.
+    pub fn with_balances(mut self, state: balances::BalancesState) -> Self {
+        self.balances = Some(state);
         self
     }
 }
@@ -208,11 +218,19 @@ fn internal(state: ChainHttpState) -> Router {
     let tx_state = transaction_status::TransactionStatusState {
         stellar: state.stellar.clone(),
     };
+    let balances_state = state
+        .balances
+        .clone()
+        .unwrap_or_else(balances::BalancesState::new);
     Router::new()
         .route("/internal/estimate-fee", post(estimate_fee::estimate_fee))
         .route(
             "/internal/transactions/:chain/:hash",
             get(transaction_status::get_transaction_status).with_state(tx_state),
+        )
+        .route(
+            "/internal/balances",
+            get(balances::get_balances).with_state(balances_state),
         )
         .merge(create_wallet::routes())
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -341,5 +359,50 @@ mod tests {
         let app = router_with_state(state);
         let status = post_estimate_fee(app, Some("correct-secret")).await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn balances_requires_token_when_configured() {
+        let state = ChainHttpState::new(Arc::new(FakeStellarOracle))
+            .with_token("secret")
+            .with_balances(balances::BalancesState::new());
+        let app = router_with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/internal/balances")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn balances_with_no_clients_returns_empty_list() {
+        let state = ChainHttpState::new(Arc::new(FakeStellarOracle))
+            .with_token("secret")
+            .with_balances(balances::BalancesState::new());
+        let app = router_with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/internal/balances")
+                    .header("x-internal-token", "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["balances"], serde_json::json!([]));
+        assert_eq!(body["errors"], serde_json::json!([]));
     }
 }

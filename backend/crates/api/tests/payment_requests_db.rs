@@ -729,3 +729,69 @@ async fn payment_without_funds_is_rejected() {
     assert_eq!(payment_count(&pool, &id).await, 0);
     assert_eq!(balance(&pool, payer_id).await, 0);
 }
+
+// ── #647: Concurrent payments cannot overpay ─────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn concurrent_payments_cannot_overpay_a_payment_request() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
+
+    // Create a payment request for exactly 10 USDC.
+    let (status, body) = create_request(
+        &app,
+        &token,
+        json!({
+            "asset": "USDC",
+            "amount": "10.0000000",
+            "allow_partial": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // Give the payer enough for every attempt so only the overpay guard can reject.
+    fund(&pool, payer_id, 200_000_000).await;
+
+    // Fire 5 concurrent payments of 4 USDC each (total 20 USDC > 10 USDC limit).
+    let handles: Vec<_> = (0..5)
+        .map(|_| {
+            let app = app.clone();
+            let id = id.clone();
+            let payer_token = payer_token.clone();
+            tokio::spawn(async move {
+                pay(
+                    &app,
+                    &id,
+                    &payer_token,
+                    json!({ "amount": "4.0000000", "chain": "internal" }),
+                )
+                .await
+            })
+        })
+        .collect();
+
+    let mut paid_count = 0u32;
+    let mut rejected_count = 0u32;
+    for h in handles {
+        let (status, _) = h.await.unwrap();
+        if status.is_success() {
+            paid_count += 1;
+        } else {
+            rejected_count += 1;
+        }
+    }
+
+    // At least one payment must have been rejected to prevent overpay.
+    assert!(
+        rejected_count >= 1,
+        "expected at least one rejection but all {paid_count} payments succeeded"
+    );
+
+    // The payer must not have been charged more than the 10 USDC requested.
+    let spent = 200_000_000 - balance(&pool, payer_id).await;
+    assert!(spent <= 100_000_000, "overpaid: payer was charged {spent} minor units");
+}

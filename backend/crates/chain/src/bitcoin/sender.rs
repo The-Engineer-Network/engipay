@@ -444,15 +444,62 @@ impl<S: BitcoinSigner> BitcoinWithdrawalSender<S> {
 
     /// Checks if a transaction has reached 2 confirmations.
     ///
+    /// Queries Esplora for the transaction's inclusion height and the current
+    /// tip height, then delegates to [`is_bitcoin_confirmed`].
+    ///
     /// # Returns
     ///
     /// `true` if the transaction has 2+ confirmations, `false` otherwise.
-    pub async fn is_confirmed(&self, _txid: &Txid) -> Result<bool, BitcoinSenderError> {
-        // Placeholder: Real implementation would query block height and
-        // transaction confirmation count via RPC or block explorer API
-        Err(BitcoinSenderError::RpcError(
-            "confirmation tracking not implemented".to_owned(),
-        ))
+    pub async fn is_confirmed(&self, txid: &Txid) -> Result<bool, BitcoinSenderError> {
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        struct TxStatus {
+            confirmed: bool,
+            block_height: Option<u64>,
+        }
+        #[derive(Deserialize)]
+        struct TxResp {
+            status: TxStatus,
+        }
+
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|e| BitcoinSenderError::RpcError(e.to_string()))?;
+
+        let base = self.config.esplora_url.trim_end_matches('/');
+        let txid_hex = hex::encode(txid.as_bytes());
+
+        // Fetch transaction status from Esplora.
+        let tx_resp: TxResp = http
+            .get(format!("{base}/tx/{txid_hex}"))
+            .send()
+            .await
+            .map_err(|e| BitcoinSenderError::RpcError(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| BitcoinSenderError::RpcError(e.to_string()))?;
+
+        let Some(tx_height) = tx_resp.status.block_height.filter(|_| tx_resp.status.confirmed) else {
+            return Ok(false);
+        };
+
+        // Fetch current chain tip height.
+        let tip_text = http
+            .get(format!("{base}/blocks/tip/height"))
+            .send()
+            .await
+            .map_err(|e| BitcoinSenderError::RpcError(e.to_string()))?
+            .text()
+            .await
+            .map_err(|e| BitcoinSenderError::RpcError(e.to_string()))?;
+        let current_height = tip_text
+            .trim()
+            .parse::<u64>()
+            .map_err(|e| BitcoinSenderError::RpcError(format!("unexpected tip response: {e}")))?;
+
+        Ok(super::confirmations::is_bitcoin_confirmed(tx_height, current_height))
     }
 }
 
@@ -630,6 +677,97 @@ mod tests {
         assert!(prepared.fee_sats > 0);
         // 80_000 in, 60_000 out, so the change is 20_000 less the fee.
         assert!(prepared.change_sats < 20_000);
+    }
+
+    // ── is_confirmed ─────────────────────────────────────────────────────────
+
+    async fn make_sender_with_esplora(esplora_url: &str) -> BitcoinWithdrawalSender<LocalTestSigner> {
+        let signer = LocalTestSigner::new(BitcoinNetwork::Testnet).unwrap();
+        let config = SenderConfig::new("tb1qchange...".to_owned(), esplora_url.to_owned());
+        BitcoinWithdrawalSender::new(signer, config)
+    }
+
+    #[tokio::test]
+    async fn is_confirmed_returns_false_for_unconfirmed_tx() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let txid = Txid::from_bytes([1; 32]);
+        let txid_hex = hex::encode(txid.as_bytes());
+
+        Mock::given(method("GET"))
+            .and(path(format!("/tx/{txid_hex}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "txid": txid_hex,
+                "status": { "confirmed": false, "block_height": null }
+            })))
+            .mount(&server)
+            .await;
+
+        let sender = make_sender_with_esplora(&server.uri()).await;
+        let result = sender.is_confirmed(&txid).await.unwrap();
+        assert!(!result, "unconfirmed tx should return false");
+    }
+
+    #[tokio::test]
+    async fn is_confirmed_returns_false_for_one_confirmation() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let txid = Txid::from_bytes([2; 32]);
+        let txid_hex = hex::encode(txid.as_bytes());
+        let tx_height: u64 = 850_000;
+        let tip_height: u64 = 850_000; // same block = 1 confirmation, not enough
+
+        Mock::given(method("GET"))
+            .and(path(format!("/tx/{txid_hex}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "txid": txid_hex,
+                "status": { "confirmed": true, "block_height": tx_height }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/blocks/tip/height"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(tip_height.to_string()))
+            .mount(&server)
+            .await;
+
+        let sender = make_sender_with_esplora(&server.uri()).await;
+        let result = sender.is_confirmed(&txid).await.unwrap();
+        assert!(!result, "1 confirmation should return false (need >= 2)");
+    }
+
+    #[tokio::test]
+    async fn is_confirmed_returns_true_for_two_confirmations() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let txid = Txid::from_bytes([3; 32]);
+        let txid_hex = hex::encode(txid.as_bytes());
+        let tx_height: u64 = 850_000;
+        let tip_height: u64 = 850_001; // one block on top = 2 confirmations
+
+        Mock::given(method("GET"))
+            .and(path(format!("/tx/{txid_hex}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "txid": txid_hex,
+                "status": { "confirmed": true, "block_height": tx_height }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/blocks/tip/height"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(tip_height.to_string()))
+            .mount(&server)
+            .await;
+
+        let sender = make_sender_with_esplora(&server.uri()).await;
+        let result = sender.is_confirmed(&txid).await.unwrap();
+        assert!(result, "2 confirmations should return true");
     }
 
     #[tokio::test]
