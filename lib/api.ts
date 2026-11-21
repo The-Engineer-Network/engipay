@@ -10,6 +10,12 @@ export const ACCOUNT_FROZEN_ERROR_CODE = "account_frozen"
 /** Browser event emitted when the API reports that the current account is frozen. */
 export const ACCOUNT_FROZEN_EVENT = "engipay:account-frozen"
 
+/** Browser event emitted when an expired session is cleared and the user must sign in again. */
+export const SESSION_EXPIRED_EVENT = "engipay:session-expired"
+
+/** Message shown to the user when an expired session is cleared. */
+export const SESSION_EXPIRED_MESSAGE = "Your session expired. Sign in again."
+
 /** A failed API call. `code` is the stable error code the API returns. */
 export class ApiRequestError extends Error {
   readonly status: number
@@ -69,7 +75,13 @@ async function send<T>(path: string, init: RequestInit, token: string | null): P
   }
 
   // An expired or revoked session: forget it, so the screen asks to sign in again.
-  if (response.status === 401 && token) clearSessionToken()
+  if (response.status === 401 && token) {
+    clearSessionToken()
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT))
+    }
+    throw new ApiRequestError(401, "session_expired", SESSION_EXPIRED_MESSAGE)
+  }
 
   let code = "request_failed"
   let message = `The request failed (${response.status}).`
