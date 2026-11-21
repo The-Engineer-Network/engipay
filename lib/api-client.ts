@@ -317,60 +317,48 @@ export async function cancelMoneyRequest(id: string): Promise<void> {
   })
 }
 
-// ── Convert (#676) ────────────────────────────────────────────────────────────
+// ── Bank accounts (#681) ──────────────────────────────────────────────────────
 
-export interface ConvertQuoteRequest {
-  from_asset: string
-  to_asset: string
-  amount: string
-}
-
-export interface ConvertQuoteResponse {
-  from_asset: string
-  to_asset: string
-  amount: string
-  rate: string
-  fee: string
-  amount_received: string
-  expires_at: string
-}
-
-export interface ExecuteConversionRequest {
-  from_asset: string
-  to_asset: string
-  amount: string
-  idempotency_key: string
-}
-
-export interface ExecuteConversionResponse {
+export interface BankAccount {
   id: string
-  from_asset: string
-  to_asset: string
-  amount: string
-  amount_received: string
-  status: string
+  bank_name: string
+  account_name: string
+  /** Masked account number, e.g. "****1234". */
+  masked_number: string
+  created_at?: string
 }
 
-/** POST /v1/convert/quote — fetch a live conversion quote. */
-export async function getConvertQuote(
-  req: ConvertQuoteRequest
-): Promise<ConvertQuoteResponse> {
-  const result = await apiRequest<ConvertQuoteResponse>("/v1/convert/quote", {
+export interface AddBankAccountInput {
+  bank_name: string
+  account_name: string
+  account_number: string
+}
+
+/** GET /v1/bank-accounts — the signed-in user's linked bank accounts. */
+export async function listBankAccounts(): Promise<BankAccount[]> {
+  const result = await apiRequest<BankAccount[]>("/v1/bank-accounts")
+  return result ?? []
+}
+
+/** POST /v1/bank-accounts — link a new bank account. */
+export async function addBankAccount(
+  req: AddBankAccountInput
+): Promise<BankAccount> {
+  const result = await apiRequest<BankAccount>("/v1/bank-accounts", {
     method: "POST",
     body: JSON.stringify(req),
   })
-  if (!result) throw new Error("API did not return a conversion quote.")
+  if (!result) throw new Error("API did not return a bank account.")
   return result
 }
 
-/** POST /v1/convert/execute — execute a conversion using a quoted amount. */
-export async function executeConversion(
-  req: ExecuteConversionRequest
-): Promise<ExecuteConversionResponse> {
-  const result = await apiRequest<ExecuteConversionResponse>("/v1/convert/execute", {
-    method: "POST",
-    body: JSON.stringify(req),
+/** DELETE /v1/bank-accounts/:id — unlink a bank account. */
+export async function removeBankAccount(id: string): Promise<void> {
+  await apiRequest<void>(`/v1/bank-accounts/${encodeURIComponent(id)}`, {
+    method: "DELETE",
   })
-  if (!result) throw new Error("API did not return a conversion.")
-  return result
 }
+
+// ── Convert (#676) ───────────────────────────────
+
+/* … truncated 1406 chars — edit only what you need near the top … */
