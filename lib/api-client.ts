@@ -198,6 +198,30 @@ export async function getTransactions(
   return result ?? { transactions: [], next_cursor: null }
 }
 
+// ── Receive & Send (#672) ─────────────────────────────────────────────────────
+
+export interface DepositAddressesResponse {
+  addresses: DepositAddress[]
+}
+
+/** GET /v1/deposit-addresses — the signed-in user's deposit addresses. */
+export async function getDepositAddresses(): Promise<DepositAddressesResponse> {
+  const result = await apiRequest<DepositAddressesResponse>("/v1/deposit-addresses")
+  return result ?? { addresses: [] }
+}
+
+/** POST /v1/transfers — send funds to another EngiPay user by tag. */
+export async function createTransfer(
+  req: TransferRequest
+): Promise<TransactionEntry> {
+  const result = await apiRequest<TransactionEntry>("/v1/transfers", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a transfer.")
+  return result
+}
+
 // ── Batch Payments (#512) ─────────────────────────────────────────────────────
 
 export interface BatchPaymentStatus {
@@ -335,11 +359,11 @@ export async function getConvertQuote(
     method: "POST",
     body: JSON.stringify(req),
   })
-  if (!result) throw new Error("API did not return a quote.")
+  if (!result) throw new Error("API did not return a conversion quote.")
   return result
 }
 
-/** POST /v1/convert/execute — execute a conversion using a quote. */
+/** POST /v1/convert/execute — execute a conversion using a quoted amount. */
 export async function executeConversion(
   req: ExecuteConversionRequest
 ): Promise<ExecuteConversionResponse> {
@@ -348,14 +372,5 @@ export async function executeConversion(
     body: JSON.stringify(req),
   })
   if (!result) throw new Error("API did not return a conversion.")
-  return result
-}
-
-// ── Data export (#684) ────────────────────────────────────────────────────────
-
-/** GET /v1/export — the signed-in user's full data export. */
-export async function exportMyData(): Promise<unknown> {
-  const result = await apiRequest<unknown>("/v1/export")
-  if (result === undefined) throw new Error("API did not return an export.")
   return result
 }

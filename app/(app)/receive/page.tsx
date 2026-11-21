@@ -24,17 +24,12 @@ import { stellarNetwork } from "@/lib/stellar"
 import { STELLAR_AMOUNT, buildPaymentUri, shortenAddress } from "@/lib/payment-uri"
 import { NetworkTabs, networkPanelId, networkTabId } from "@/components/app/NetworkTabs"
 import { cn } from "@/lib/utils"
+import { ApiError, getDepositAddresses, type DepositAddress } from "@/lib/api-client"
 
 const NATIVE = "native"
 
 type DestinationChoice = "wallet" | "engipay"
 type Network = "base" | "stellar" | "bitcoin"
-
-interface DepositAddressResponse {
-  chain: string
-  address: string
-  qr_uri: string
-}
 
 export default function ReceivePage() {
   const { evmAddress, stellarAddress, connectWallet } = useWallet()
@@ -55,7 +50,7 @@ export default function ReceivePage() {
   const [qrDataUrl, setQrDataUrl] = useState("")
 
   // Custodial deposit address state
-  const [depositAddress, setDepositAddress] = useState<DepositAddressResponse | null>(null)
+  const [depositAddress, setDepositAddress] = useState<DepositAddress | null>(null)
   const [isLoadingDeposit, setIsLoadingDeposit] = useState(false)
   const [depositError, setDepositError] = useState<string | null>(null)
 
@@ -74,20 +69,7 @@ export default function ReceivePage() {
     setIsLoadingDeposit(true)
     setDepositError(null)
 
-    fetch(`/api/v1/deposit-address?chain=${network}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(async (res) => {
-        if (res.status === 503) {
-          throw new Error(
-            `${network === "stellar" ? "Stellar" : network === "base" ? "Base" : "Bitcoin"} deposit service is currently undergoing scheduled maintenance. Please check back shortly.`
-          )
-        }
-        if (!res.ok) {
-          throw new Error(`Failed to load deposit address (HTTP ${res.status})`)
-        }
-        return res.json() as Promise<DepositAddressResponse>
-      })
+    getDepositAddresses(network)
       .then((data) => {
         if (!cancelled) {
           setDepositAddress(data)
@@ -96,9 +78,15 @@ export default function ReceivePage() {
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setDepositError(
-            err instanceof Error ? err.message : "Failed to load deposit address"
-          )
+          if (err instanceof ApiError && err.status === 503) {
+            setDepositError(
+              `${network === "stellar" ? "Stellar" : network === "base" ? "Base" : "Bitcoin"} deposit service is currently undergoing scheduled maintenance. Please check back shortly.`
+            )
+          } else {
+            setDepositError(
+              err instanceof Error ? err.message : "Failed to load deposit address"
+            )
+          }
           setDepositAddress(null)
           setIsLoadingDeposit(false)
         }
@@ -245,157 +233,123 @@ export default function ReceivePage() {
                 )}
               >
                 <Wallet className="h-3.5 w-3.5" />
-                My Wallet
+                External Wallet
               </button>
             </div>
           </div>
 
           <NetworkTabs
-            className={cn(
-              "grid gap-1 rounded-full border border-border bg-background/60 p-1",
-              destination === "engipay" ? "grid-cols-3" : "grid-cols-2"
-            )}
-            idPrefix="receive"
-            value={network}
-            onChange={(val) => setNetwork(val as Network)}
             options={networkOptions}
+            value={network}
+            onChange={(value) => setNetwork(value as Network)}
+            tabId={networkTabId}
+            panelId={networkPanelId}
           />
 
-          <div
-            role="tabpanel"
-            id={networkPanelId("receive", network)}
-            aria-labelledby={networkTabId("receive", network)}
-            className="flex flex-col items-center gap-4"
-          >
-            {destination === "engipay" && isLoadingDeposit ? (
-              <div className="flex h-[280px] w-[280px] flex-col items-center justify-center gap-3 rounded-lg border border-border bg-card p-6">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                <p className="text-xs text-muted-foreground">Provisioning deposit address...</p>
+          <div id={networkPanelId} role="tabpanel" aria-labelledby={networkTabId}>
+            {destination === "engipay" && isLoadingDeposit && (
+              <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading deposit address…
               </div>
-            ) : destination === "engipay" && depositError ? (
-              <div className="flex h-[280px] w-[280px] flex-col items-center justify-center gap-3 rounded-lg border border-destructive/30 bg-destructive/10 p-6 text-center">
-                <AlertCircle className="h-8 w-8 text-destructive" />
-                <p className="text-xs font-medium text-destructive">{depositError}</p>
+            )}
+
+            {destination === "engipay" && !isLoadingDeposit && depositError && (
+              <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{depositError}</span>
               </div>
-            ) : qrDataUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={qrDataUrl}
-                alt="QR code containing your payment details"
-                className="h-[280px] w-[280px] rounded-lg bg-white p-2"
-              />
-            ) : (
-              <div className="flex h-[280px] w-[280px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-                {network === "stellar"
-                  ? "Connect a Stellar wallet to show your Stellar code"
-                  : "Connect an EVM wallet to show your Base code"}
-                <Button size="sm" variant="outline" className="rounded-full" onClick={connectWallet}>
-                  Connect wallet
-                </Button>
+            )}
+
+            {destination === "wallet" && !address && (
+              <div className="space-y-3 py-4 text-center">
+                <p className="text-sm text-muted-foreground">
+                  Connect a wallet to show your receive address.
+                </p>
+                <Button onClick={() => connectWallet()}>Connect wallet</Button>
               </div>
             )}
 
             {address && (
-              <div className="flex flex-col items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => copy(address, "Address")}
-                  className="flex items-center gap-2 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  {shortenAddress(address, 10, 8)}
-                  <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
-                <span className="text-[11px] text-muted-foreground">Click address to copy full text</span>
+              <div className="space-y-4">
+                {qrDataUrl && (
+                  <div className="flex justify-center">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={qrDataUrl}
+                      alt="Receive QR code"
+                      className="h-[280px] w-[280px] rounded-lg bg-white p-2"
+                    />
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <Label>Address</Label>
+                  <div className="flex items-center gap-2">
+                    <Input readOnly value={shortenAddress(address)} />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => copy(address, "Address")}
+                      aria-label="Copy address"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+
+                {destination === "wallet" && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="amount">Amount (optional)</Label>
+                      <Input
+                        id="amount"
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        value={amount}
+                        onChange={(e) => setAmount(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Asset</Label>
+                      <Select value={asset} onValueChange={setAsset}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NATIVE}>Native</SelectItem>
+                          {network === "base" &&
+                            TRACKED_TOKENS.map((t) => (
+                              <SelectItem key={t.address} value={t.address}>
+                                {t.symbol}
+                              </SelectItem>
+                            ))}
+                          {network === "stellar" && (
+                            <SelectItem value="USDC">USDC</SelectItem>
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => copy(paymentUri, "Payment link")}
+                  >
+                    <Copy className="mr-2 h-4 w-4" />
+                    Copy link
+                  </Button>
+                  <Button className="flex-1" onClick={share}>
+                    <Share2 className="mr-2 h-4 w-4" />
+                    Share
+                  </Button>
+                </div>
               </div>
             )}
           </div>
-
-          {destination === "wallet" && (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="receive-asset">Asset</Label>
-                <Select value={asset} onValueChange={setAsset}>
-                  <SelectTrigger id="receive-asset">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {network === "base" ? (
-                      <>
-                        <SelectItem value={NATIVE}>{activeChain.nativeCurrency.symbol}</SelectItem>
-                        {TRACKED_TOKENS.map((t) => (
-                          <SelectItem key={t.address} value={t.address}>
-                            {t.symbol}
-                          </SelectItem>
-                        ))}
-                      </>
-                    ) : (
-                      <>
-                        <SelectItem value={NATIVE}>XLM</SelectItem>
-                        <SelectItem value="USDC">USDC</SelectItem>
-                      </>
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="receive-amount">Amount (optional)</Label>
-                <Input
-                  id="receive-amount"
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={amount}
-                  onChange={(event) => setAmount(event.target.value.trim())}
-                  aria-invalid={!amountValid}
-                />
-                {!amountValid && (
-                  <p className="text-xs text-destructive">Enter an amount greater than zero.</p>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              className="flex-1"
-              onClick={() => copy(paymentUri, destination === "engipay" ? "Deposit URI" : "Payment link")}
-              disabled={!paymentUri}
-            >
-              <Copy className="mr-2 h-4 w-4" aria-hidden="true" />
-              Copy link
-            </Button>
-            <Button type="button" className="flex-1" onClick={share} disabled={!paymentUri}>
-              <Share2 className="mr-2 h-4 w-4" aria-hidden="true" />
-              Share
-            </Button>
-          </div>
-
-          {/* Stellar Muxed Address Notice */}
-          {destination === "engipay" && network === "stellar" && (
-            <div className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-xs leading-relaxed text-foreground">
-              <strong>Notice:</strong> Your Stellar deposit address starts with <code>M...</code> (a multiplexed address). You must send directly to this exact <code>M...</code> address without changing or stripping the prefix so funds are instantly credited to your EngiPay balance.
-            </div>
-          )}
-
-          {destination === "wallet" && network === "stellar" && stellarAddress && stellarBalances && !stellarBalances.funded && (
-            <p className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs">
-              This Stellar account is new. Its first payment must be at least 1 XLM, which opens it
-              on the network.
-            </p>
-          )}
-          {destination === "wallet" && network === "stellar" && asset === "USDC" && stellarBalances?.funded && stellarBalances.usdc === null && (
-            <p className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs">
-              Add USDC in Freighter before sharing this code. Until then, USDC payments to you fail.
-            </p>
-          )}
-
-          <p className="text-xs text-muted-foreground">
-            {destination === "engipay"
-              ? "Funds sent to this deposit address will automatically be credited to your custodial EngiPay balance once confirmed."
-              : `This code follows the standard payment format, so any compatible wallet can pay it.`}
-          </p>
         </CardContent>
       </Card>
     </div>
