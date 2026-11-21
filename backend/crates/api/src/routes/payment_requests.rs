@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+﻿use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -11,7 +11,7 @@ use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 
-// ── Shared types ──────────────────────────────────────────────────────────────
+// â”€â”€ Shared types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// A single payment recorded against a payment request.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -69,16 +69,20 @@ pub struct PaymentRequestSummary {
     pub created_at: String,
 }
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/payment-requests", post(create_payment_request))
         .route("/payment-requests/{id}", get(get_payment_request))
+        .route("/payment-requests/{id}/pay", post(record_payment))
+        .route("/payment-requests", get(list_payment_requests))
+}", get(get_payment_request))
         .route("/payment-requests/{id}/pay", post(record_payment))
         .route("/payment-requests", get(list_payment_requests))
 }
 
-// ── GET /v1/payment-requests/{id} ────────────────────────────────────────────
+// â”€â”€ GET /v1/payment-requests/{id} â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Get a payment request by ID with current status and all recorded payments.
 /// No authentication required so external payers can inspect invoice details.
@@ -228,7 +232,7 @@ pub(crate) async fn load_payment_request_detail(
     })
 }
 
-// ── POST /v1/payment-requests/{id}/pay ───────────────────────────────────────
+// â”€â”€ POST /v1/payment-requests/{id}/pay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Request body for recording a payment against a payment request.
 #[derive(Debug, Deserialize)]
@@ -513,7 +517,7 @@ async fn record_payment(
     ))
 }
 
-// ── GET /v1/payment-requests ──────────────────────────────────────────────────
+// â”€â”€ GET /v1/payment-requests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// GET /v1/payment-requests
 ///
@@ -617,6 +621,110 @@ async fn list_payment_requests(
     Ok(Json(summaries))
 }
 
+
+// ── Types for POST /v1/payment-requests (moved from routes/requests.rs) ───────
+
+/// Request body for creating a payment request (invoice).
+#[derive(Debug, Deserialize)]
+pub struct CreatePaymentRequest {
+    pub asset: String,
+    pub amount: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default = "default_expiry_minutes")]
+    pub expiry_minutes: i64,
+    #[serde(default)]
+    pub allow_partial: bool,
+    #[serde(default)]
+    pub min_amount: Option<String>,
+    #[serde(default)]
+    pub max_amount: Option<String>,
+}
+
+fn default_expiry_minutes() -> i64 { 60 }
+
+fn validate_expiry_minutes(minutes: i64) -> Result<(), ApiError> {
+    if !(1..=525_600).contains(&minutes) {
+        return Err(ApiError::BadRequest("expiry_minutes must be between 1 and 525600".to_string()));
+    }
+    Ok(())
+}
+
+/// Response returned after a payment request is created.
+#[derive(Debug, Serialize)]
+pub struct CreatePaymentRequestResponse {
+    pub id: String,
+    pub uri: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// POST /v1/payment-requests
+pub async fn create_payment_request(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(payload): Json<CreatePaymentRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
+    let pool = state.database.clone().ok_or(ApiError::DatabaseUnavailable)?;
+
+    let is_frozen: bool = sqlx::query_scalar("SELECT frozen FROM user_profiles WHERE id = $1")
+        .bind(user_id.as_uuid())
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to check freeze status: {}", e)))?
+        .unwrap_or(false);
+    if is_frozen {
+        return Err(ApiError::BadRequest("account is frozen and cannot move funds".to_string()));
+    }
+
+    let asset_str = payload.asset.trim().to_uppercase();
+    let asset: engipay_core::Asset = asset_str.parse()
+        .map_err(|_| ApiError::BadRequest("unsupported asset".to_string()))?;
+    let money = engipay_core::Money::parse(asset, payload.amount.trim())
+        .map_err(|_| ApiError::BadRequest("amount must be a positive value".to_string()))?;
+    if money.minor <= 0 {
+        return Err(ApiError::BadRequest("amount must be greater than zero".to_string()));
+    }
+    if payload.expiry_minutes <= 0 {
+        return Err(ApiError::BadRequest("expiry_minutes must be greater than zero".to_string()));
+    }
+    validate_expiry_minutes(payload.expiry_minutes)?;
+
+    let min_amount_minor: Option<i128> = payload.min_amount.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        .map(|s| {
+            let m = engipay_core::Money::parse(asset, s).map_err(|_| ApiError::BadRequest("min_amount must be a positive value".to_string()))?;
+            if m.minor <= 0 { return Err(ApiError::BadRequest("min_amount must be greater than zero".to_string())); }
+            if m.minor > money.minor { return Err(ApiError::BadRequest("min_amount must not exceed the requested amount".to_string())); }
+            Ok(m.minor)
+        }).transpose()?;
+    let max_amount_minor: Option<i128> = payload.max_amount.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        .map(|s| {
+            let m = engipay_core::Money::parse(asset, s).map_err(|_| ApiError::BadRequest("max_amount must be a positive value".to_string()))?;
+            if m.minor <= 0 { return Err(ApiError::BadRequest("max_amount must be greater than zero".to_string())); }
+            Ok(m.minor)
+        }).transpose()?;
+    if let (Some(min), Some(max)) = (min_amount_minor, max_amount_minor) {
+        if max < min { return Err(ApiError::BadRequest("max_amount must be >= min_amount".to_string())); }
+    }
+    if let Some(max) = max_amount_minor {
+        if max > money.minor { return Err(ApiError::BadRequest("max_amount must not exceed the requested amount".to_string())); }
+    }
+
+    let id = uuid::Uuid::new_v4();
+    let expires_at = chrono::Utc::now() + chrono::Duration::minutes(payload.expiry_minutes);
+    let uri = format!("engipay:{}?asset={}&amount={}", id, asset.symbol(), money.minor);
+
+    sqlx::query(
+        "INSERT INTO payment_requests (id, user_id, asset, amount, note, uri, expires_at, recipient_id, requested_amount, allow_partial, min_amount, max_amount) VALUES ($1, $2, $3, $4, $5, $6, $7, $2, $4, $8, $9, $10)",
+    )
+    .bind(id).bind(user_id.as_uuid()).bind(asset.symbol()).bind(money.minor.to_string())
+    .bind(payload.note.as_deref()).bind(&uri).bind(expires_at)
+    .bind(payload.allow_partial).bind(min_amount_minor.map(|v| v.to_string())).bind(max_amount_minor.map(|v| v.to_string()))
+    .execute(&pool).await.map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    Ok((StatusCode::CREATED, Json(CreatePaymentRequestResponse { id: id.to_string(), uri, expires_at })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,4 +773,21 @@ mod tests {
         let remaining = requested.saturating_sub(paid).max(0);
         assert_eq!(remaining, 0);
     }
-}
+
+
+    #[test]
+    fn default_expiry_is_one_hour() { assert_eq!(default_expiry_minutes(), 60); }
+
+    #[test]
+    fn rejects_non_positive_expiry() {
+        assert!(validate_expiry_minutes(0).is_err());
+        assert!(validate_expiry_minutes(-5).is_err());
+    }
+
+    #[test]
+    fn accepts_expiry_within_bounds() {
+        assert!(validate_expiry_minutes(1).is_ok());
+        assert!(validate_expiry_minutes(60).is_ok());
+        assert!(validate_expiry_minutes(525_600).is_ok());
+        assert!(validate_expiry_minutes(525_601).is_err());
+    }}
