@@ -5,12 +5,14 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use engipay_core::{Asset, Chain};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     AppState,
     error::{ApiError, LedgerError},
+    middleware::auth::AuthUser,
     services::cooling_off,
     services::destination_screen::ScreenResult,
     services::receipts::{Receipt, ReceiptType, SignedReceipt},
@@ -29,6 +31,71 @@ pub struct CreateWithdrawalRequest {
     pub amount: i64,
     pub estimated_network_fee: i64,
     pub destination: String,
+    /// Asset to withdraw, e.g. `USDC`, `XLM`, `ETH`, `BTC`.
+    pub asset: String,
+    /// Chain the withdrawal is sent on, e.g. `stellar`, `base`, `bitcoin`.
+    pub chain: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WithdrawalDetailResponse {
+    pub id: Uuid,
+    pub amount: i64,
+    pub estimated_network_fee: i64,
+    pub destination: String,
+    pub status: String,
+    pub cooling_off_until: Option<chrono::DateTime<chrono::Utc>>,
+    pub tx_hash: Option<String>,
+}
+
+/// Parses the requested asset/chain pair, returning `400 Bad Request` when
+/// either value is unknown or the pair is not supported.
+fn parse_asset_chain(asset: &str, chain: &str) -> Result<(Asset, Chain), ApiError> {
+    let asset = asset
+        .trim()
+        .parse::<Asset>()
+        .map_err(|_| ApiError::BadRequest(format!("unsupported asset: {asset}")))?;
+    let chain = chain
+        .trim()
+        .parse::<Chain>()
+        .map_err(|_| ApiError::BadRequest(format!("unsupported chain: {chain}")))?;
+    if !asset.is_on(chain) {
+        return Err(ApiError::BadRequest(format!(
+            "asset {} is not supported on chain {}",
+            asset.symbol(),
+            chain
+        )));
+    }
+    Ok((asset, chain))
+}
+
+/// Validates that `destination` is a well-formed address for `chain`.
+fn validate_destination_for_chain(destination: &str, chain: Chain) -> Result<(), ApiError> {
+    let dest = destination.trim();
+    if dest.is_empty() {
+        return Err(ApiError::from(LedgerError::InvalidDestination));
+    }
+    let valid = match chain {
+        Chain::Stellar => {
+            dest.len() == 56
+                && dest.starts_with('G')
+                && dest.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        Chain::Base => {
+            dest.len() == 42
+                && dest.starts_with("0x")
+                && dest[2..].chars().all(|c| c.is_ascii_hexdigit())
+        }
+        Chain::Bitcoin => {
+            dest.starts_with("bc1")
+                || dest.starts_with('1')
+                || dest.starts_with('3')
+        }
+    };
+    if !valid {
+        return Err(ApiError::from(LedgerError::InvalidDestination));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -89,6 +156,11 @@ pub async fn create_withdrawal(
         return Err(ApiError::from(LedgerError::InvalidAmount));
     }
 
+    // Validate the requested asset/chain pair and the destination for that
+    // chain before any hold is placed.
+    let (asset, chain) = parse_asset_chain(&payload.asset, &payload.chain)?;
+    validate_destination_for_chain(&payload.destination, chain)?;
+
     // Screen the destination against the block list *before* any hold is
     // placed. A blocked address is rejected with 400 Bad Request so no funds
     // are ever locked for a disallowed destination.
@@ -135,11 +207,13 @@ pub async fn create_withdrawal(
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("cooling off check failed: {}", e)))?;
 
-    // Check if withdrawal requires manual review
-    let review_config = withdrawal_review::ReviewConfig::from_env()
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
+    // Check if withdrawal requires manual review. The threshold is parsed once
+    // at startup and read from the shared config here.
+    let review_config = withdrawal_review::ReviewConfig::new(
+        state.config.withdrawal_review_threshold_usdc,
+    );
     let review_decision = withdrawal_review::check_withdrawal(
-        engipay_core::Money::from_minor(engipay_core::Asset::Usdc, i128::from(payload.amount)),
+        engipay_core::Money::from_minor(asset, i128::from(payload.amount)),
         &review_config,
     );
 
@@ -157,13 +231,15 @@ pub async fn create_withdrawal(
 
     // Store the withdrawal with its hold reference
     sqlx::query(
-        "INSERT INTO withdrawals (id, user_id, amount, estimated_network_fee, destination, hold_reference, status, cooling_off_until)          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+        "INSERT INTO withdrawals (id, user_id, amount, estimated_network_fee, destination, asset, chain, hold_reference, status, cooling_off_until)          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
     )
     .bind(withdrawal_id)
     .bind(payload.user_id)
     .bind(payload.amount)
     .bind(payload.estimated_network_fee)
     .bind(&payload.destination)
+    .bind(asset.symbol())
+    .bind(chain.to_string())
     .bind(&hold_ref)
     .bind(&status)
     .bind(cooling_off_until)
@@ -178,7 +254,7 @@ pub async fn create_withdrawal(
         hold_ref.clone(),
         payload.amount,
         Some(payload.estimated_network_fee),
-        "USDC",
+        asset.symbol(),
         chrono::Utc::now(),
         state.receipt_signer.key_id().to_owned(),
     );
@@ -202,16 +278,56 @@ pub async fn create_withdrawal(
 
 pub async fn get_withdrawal(
     State(state): State<AppState>,
+    AuthUser(user): AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<axum::response::Response, ApiError> {
-    let _db = state
+    let pool = state
         .database
         .as_ref()
         .ok_or(ApiError::DatabaseUnavailable)?;
-    // TODO: query the database for the withdrawal record once the postgres
-    // ledger layer exposes get_withdrawal.
-    let _ = id;
-    Err(ApiError::NotFound)
+
+    let row: Option<(
+        Uuid,
+        Uuid,
+        i64,
+        i64,
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT id, user_id, amount, estimated_network_fee, destination, status, cooling_off_until, tx_hash FROM withdrawals WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to load withdrawal: {}", e)))?;
+
+    let (id, user_id, amount, estimated_network_fee, destination, status, cooling_off_until, tx_hash) =
+        match row {
+            Some(row) => row,
+            None => return Err(ApiError::NotFound),
+        };
+
+    // Withdrawals belonging to another user are indistinguishable from missing
+    // ones so their existence is not leaked.
+    if user_id != user.id {
+        return Err(ApiError::NotFound);
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(WithdrawalDetailResponse {
+            id,
+            amount,
+            estimated_network_fee,
+            destination,
+            status,
+            cooling_off_until,
+            tx_hash,
+        }),
+    )
+        .into_response())
 }
 
 #[cfg(test)]
