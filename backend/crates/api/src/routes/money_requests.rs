@@ -81,6 +81,8 @@ pub struct MoneyRequestRow {
     pub status: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    /// True when the caller created this request (so they may cancel it).
+    pub sent_by_me: bool,
 }
 
 /// Response after creating a money request.
@@ -97,6 +99,10 @@ pub fn routes() -> Router<AppState> {
         .route("/money-requests", post(create).get(list))
         .route("/money-requests/{id}/accept", post(accept))
         .route("/money-requests/{id}/decline", post(decline))
+        .route(
+            "/money-requests/{id}/cancel",
+            post(crate::routes::money_request_cancel::cancel),
+        )
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -207,7 +213,8 @@ pub async fn list(
             mr.note,
             mr.status,
             mr.expires_at,
-            mr.created_at
+            mr.created_at,
+            (mr.requester_id = $1) AS sent_by_me
          FROM p2p_money_requests mr
          JOIN users ru ON ru.id = mr.requester_id
          WHERE mr.recipient_id = $1 OR mr.requester_id = $1
@@ -425,6 +432,7 @@ struct MoneyRequestRecord {
     status: String,
     expires_at: DateTime<Utc>,
     created_at: DateTime<Utc>,
+    sent_by_me: bool,
 }
 
 impl From<MoneyRequestRecord> for MoneyRequestRow {
@@ -436,9 +444,14 @@ impl From<MoneyRequestRecord> for MoneyRequestRow {
             asset: r.asset,
             amount: r.amount,
             note: r.note,
-            status: r.status,
+            status: crate::routes::money_request_status::effective_status(
+                &r.status,
+                r.expires_at,
+                Utc::now(),
+            ),
             expires_at: r.expires_at,
             created_at: r.created_at,
+            sent_by_me: r.sent_by_me,
         }
     }
 }

@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod auth;
 pub mod balances;
+pub mod bank_account_cap;
 pub mod bank_accounts;
 pub mod batch_payments;
 pub mod buy;
@@ -11,7 +12,10 @@ pub mod health;
 pub mod kyc;
 pub mod me;
 pub mod metrics;
+pub mod money_request_cancel;
+pub mod money_request_status;
 pub mod money_requests;
+pub mod transfer_note;
 pub mod naira;
 pub mod openapi;
 pub mod payment_request_cancel;
