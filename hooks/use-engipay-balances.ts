@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { getEngiPayBalances } from "@/lib/api-client"
 
 /** One asset entry from GET /v1/balances. */
 export interface EngiPayAssetBalance {
@@ -46,13 +47,7 @@ export function useEngiPayBalances(): UseEngiPayBalancesResult {
     setIsLoading(true)
     setError(null)
 
-    fetch("/api/v1/balances", {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return res.json() as Promise<{ balances: EngiPayAssetBalance[] }>
-      })
+    getEngiPayBalances(token)
       .then((data) => {
         if (!cancelled) {
           setBalances(data.balances ?? [])
