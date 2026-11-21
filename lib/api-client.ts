@@ -172,6 +172,56 @@ export interface PaymentRequestSummary {
   created_at: string
 }
 
+// ── Balances & transactions (#671) ────────────────────────────────────────────
+
+export interface BalancesResponse {
+  balances: Balance[]
+}
+
+export interface TransactionsResponse {
+  transactions: TransactionEntry[]
+  next_cursor?: string | null
+}
+
+/** GET /v1/balances — the signed-in user's balances. */
+export async function getBalances(): Promise<BalancesResponse> {
+  const result = await apiRequest<BalancesResponse>("/v1/balances")
+  return result ?? { balances: [] }
+}
+
+/** GET /v1/transactions — paginated transaction history with an optional cursor. */
+export async function getTransactions(
+  cursor?: string | null
+): Promise<TransactionsResponse> {
+  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""
+  const result = await apiRequest<TransactionsResponse>(`/v1/transactions${query}`)
+  return result ?? { transactions: [], next_cursor: null }
+}
+
+// ── Receive & Send (#672) ─────────────────────────────────────────────────────
+
+export interface DepositAddressesResponse {
+  addresses: DepositAddress[]
+}
+
+/** GET /v1/deposit-addresses — the signed-in user's deposit addresses. */
+export async function getDepositAddresses(): Promise<DepositAddressesResponse> {
+  const result = await apiRequest<DepositAddressesResponse>("/v1/deposit-addresses")
+  return result ?? { addresses: [] }
+}
+
+/** POST /v1/transfers — send funds to another EngiPay user by tag. */
+export async function createTransfer(
+  req: TransferRequest
+): Promise<TransactionEntry> {
+  const result = await apiRequest<TransactionEntry>("/v1/transfers", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a transfer.")
+  return result
+}
+
 // ── Batch Payments (#512) ─────────────────────────────────────────────────────
 
 export interface BatchPaymentStatus {
@@ -309,11 +359,11 @@ export async function getConvertQuote(
     method: "POST",
     body: JSON.stringify(req),
   })
-  if (!result) throw new Error("API did not return a quote.")
+  if (!result) throw new Error("API did not return a conversion quote.")
   return result
 }
 
-/** POST /v1/convert/execute — execute a conversion using a quote. */
+/** POST /v1/convert/execute — execute a conversion using a quoted amount. */
 export async function executeConversion(
   req: ExecuteConversionRequest
 ): Promise<ExecuteConversionResponse> {
@@ -324,73 +374,3 @@ export async function executeConversion(
   if (!result) throw new Error("API did not return a conversion.")
   return result
 }
-
-// ── Data export (#684) ────────────────────────────────────────────────────────
-
-/** GET /v1/export — the signed-in user's full data export. */
-export async function exportMyData(): Promise<unknown> {
-  const result = await apiRequest<unknown>("/v1/export")
-  if (result === undefined) throw new Error("API did not return an export.")
-  return result
-}
-
-// ── Auth (#675) ───────────────────────────────────────────────────────────────
-
-/**
- * POST /v1/auth/logout — revoke the current session token server-side.
- *
- * The local session token is cleared regardless of the server response so
- * the UI always ends up signed out, even if the token was already invalid.
- */
-export async function logout(): Promise<void> {
-  try {
-    await apiRequest<void>("/v1/auth/logout", { method: "POST" })
-  } finally {
-    clearSessionToken()
-  }
-}
-
-export interface InteractiveFlowResponse {
-  transaction_id: string
-  sep24_id: string
-  interactive_url: string
-  status: string
-}
-
-export interface AnchorTransactionStatus {
-  transaction_id: string
-  sep24_id: string
-  direction: "deposit" | "withdrawal"
-  status: string
-  amount_requested: string
-  amount_in?: string | null
-  amount_out?: string | null
-  amount_fee?: string | null
-  stellar_tx_hash?: string | null
-  status_message?: string | null
-  started_at: string
-  completed_at?: string | null
-  deposit_transfer_id?: string | null
-  withdrawal_id?: string | null
-}
-
-export interface StartDepositRequest {
-  amount: string
-  memo?: string
-}
-
-export interface StartWithdrawalRequest {
-  amount: string
-  bank_account: string
-  bank_code: string
-  account_name: string
-}
-
-export interface RecordPaymentRequestInput {
-  amount: string
-  chain: string
-  tx_hash?: string
-  payer_address?: string
-  n
-
-/* … truncated 486 chars — edit only what you need near the top … */

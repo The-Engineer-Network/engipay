@@ -18,6 +18,7 @@ import { BalanceHero } from "@/components/app/BalanceHero"
 import { AssetList } from "@/components/app/AssetList"
 import { Reveal } from "@/components/marketing/Reveal"
 import { useWallet } from "@/contexts/WalletContext"
+import { useSession } from "@/contexts/SessionContext"
 import { useEngiPayBalances } from "@/hooks/use-engipay-balances"
 import { useEngiPayTransactions } from "@/hooks/use-engipay-transactions"
 import type { Balance } from "@/types/dashboard"
@@ -67,10 +68,7 @@ export default function HomePage() {
   const { balances: walletBalances, isLoadingBalances: isLoadingWallet } = useWallet()
   const { balances: engipayBalances, isLoading: isLoadingEngiPay } = useEngiPayBalances()
   const { transactions, isLoading: isLoadingTx } = useEngiPayTransactions({ maxItems: 5 })
-
-  // Check if user has an active session token for custodial balance
-  const hasToken =
-    typeof window !== "undefined" ? Boolean(localStorage.getItem("engipay-token")) : false
+  const { signedIn: hasToken } = useSession()
 
   const [source, setSource] = useState<BalanceSource>(hasToken ? "custodial" : "wallet")
 
@@ -212,85 +210,6 @@ export default function HomePage() {
             </h2>
             <Link
               href="/activity"
-              className="flex items-center gap-1 text-sm text-primary transition-opacity hover:opacity-80"
-            >
-              See all
-              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
-            </Link>
-          </div>
+              className="flex items-center gap-1 text-sm
 
-          {isLoadingTx ? (
-            <div className="space-y-2">
-              {[0, 1].map((i) => (
-                <div key={i} className="h-16 animate-pulse rounded-lg border border-border bg-card" />
-              ))}
-            </div>
-          ) : transactions.length > 0 ? (
-            <ul className="space-y-2">
-              {transactions.map((tx) => (
-                <li
-                  key={tx.id}
-                  className="lift-card glass-panel flex items-center justify-between p-4"
-                >
-                  <div className="flex items-center gap-3">
-                    <span
-                      className={cn(
-                        "flex h-9 w-9 items-center justify-center rounded-full text-sm",
-                        tx.direction === "credit"
-                          ? "bg-success/15 text-success"
-                          : "bg-muted text-muted-foreground"
-                      )}
-                    >
-                      {tx.direction === "credit" ? (
-                        <ArrowDownLeft className="h-4 w-4" />
-                      ) : (
-                        <ArrowUpRight className="h-4 w-4" />
-                      )}
-                    </span>
-                    <div>
-                      <span className="block text-sm font-medium capitalize">
-                        {tx.description ?? tx.type}
-                      </span>
-                      <span className="block text-xs text-muted-foreground">
-                        {new Date(tx.created_at).toLocaleDateString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span
-                      className={cn(
-                        "block font-semibold tabular-nums",
-                        tx.direction === "credit" ? "text-success" : ""
-                      )}
-                    >
-                      {tx.direction === "credit" ? "+" : "-"}
-                      {tx.amount} {tx.asset}
-                    </span>
-                    <span className="block text-[11px] capitalize text-muted-foreground">
-                      {tx.status}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="glass-panel flex flex-col items-center gap-3 p-10 text-center">
-              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                <Receipt className="h-5 w-5" aria-hidden="true" />
-              </span>
-              <p className="text-sm font-medium">No activity yet</p>
-              <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-                Payments, conversions and Naira transfers will appear here as you make them.
-              </p>
-            </div>
-          )}
-        </section>
-      </Reveal>
-    </div>
-  )
-}
+/* … truncated 3358 chars — edit only what you need near the top … */

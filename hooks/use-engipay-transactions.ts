@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { apiClient } from "@/lib/api-client"
 
 /** One transaction entry from GET /v1/transactions. */
 export interface EngiPayTransaction {
@@ -77,15 +78,9 @@ export function useEngiPayTransactions(options?: {
     setIsLoading(true)
     setError(null)
 
-    const params = new URLSearchParams({ limit: String(limit) })
-    fetch(`/api/v1/transactions?${params}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return res.json() as Promise<TransactionPage>
-      })
-      .then((page) => {
+    apiClient
+      .getTransactions({ limit }, token)
+      .then((page: TransactionPage) => {
         if (cancelled) return
         const items = maxItems ? page.items.slice(0, maxItems) : page.items
         setTransactions(items)
@@ -118,15 +113,9 @@ export function useEngiPayTransactions(options?: {
 
     setIsLoadingMore(true)
 
-    const params = new URLSearchParams({ limit: String(limit), cursor })
-    fetch(`/api/v1/transactions?${params}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return res.json() as Promise<TransactionPage>
-      })
-      .then((page) => {
+    apiClient
+      .getTransactions({ limit, cursor }, token)
+      .then((page: TransactionPage) => {
         setTransactions((prev) => {
           const next = [...prev, ...page.items]
           return maxItems ? next.slice(0, maxItems) : next
