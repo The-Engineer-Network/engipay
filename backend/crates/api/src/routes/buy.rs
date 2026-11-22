@@ -170,6 +170,8 @@ async fn create_order(
         .as_ref()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
+    crate::services::frozen::ensure_not_frozen(db, user_id).await?;
+
     // One transaction: lock the quote, check it is live and unused, then record
     // the order. Returning early drops the transaction and rolls it back.
     let mut tx = db.begin().await.map_err(db_error)?;

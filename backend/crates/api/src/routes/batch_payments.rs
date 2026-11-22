@@ -113,6 +113,10 @@ pub async fn upload_batch(
 ) -> Result<impl IntoResponse, ApiError> {
     let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
 
+    if let Some(ref pool) = state.database {
+        crate::services::frozen::ensure_not_frozen(pool, user_id.as_uuid()).await?;
+    }
+
     // Extract CSV file from multipart request.
     let mut csv_data = Vec::new();
     while let Some(field) = multipart
@@ -354,6 +358,8 @@ pub async fn execute_batch(
         .database
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
+
+    crate::services::frozen::ensure_not_frozen(&pool, user_id.as_uuid()).await?;
 
     // Fetch batch
     let batch = sqlx::query_as::<_, (Uuid, String, i32, i32, i32, i32, bool, Option<Uuid>)>(

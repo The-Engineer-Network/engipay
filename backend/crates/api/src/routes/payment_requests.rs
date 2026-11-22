@@ -296,6 +296,8 @@ async fn record_payment(
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
+    crate::services::frozen::ensure_not_frozen(&pool, payer_id.as_uuid()).await?;
+
     let db_err = |e: sqlx::Error| ApiError::Internal(anyhow::anyhow!(e.to_string()));
 
     // Reject on-chain claims through this endpoint. On-chain payments must be
