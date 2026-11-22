@@ -13,3 +13,4 @@
 - [ ] No secrets, keys or `.env` files are included
 - [ ] Money is handled as exact integers or decimal strings, never floating point
 - [ ] Lockfile changes are intentional and explained above
+- [ ] This PR addresses one issue and only touches files the issue requires

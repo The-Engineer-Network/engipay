@@ -42,6 +42,14 @@ docker compose build toolbox
 docker compose run --rm toolbox cargo test
 ```
 
+#### Database migrations
+
+Migrations live in `backend/migrations/` and use sequential numbering. When adding a new migration:
+
+- **Rebase first**, then take the next free number after the latest migration in `main`.
+- **Never edit a merged migration.** Once a migration has landed in `main`, it is permanent. A change needs a new migration with a new number.
+- **Check for conflicts** before opening the pull request: if someone else merged a migration while you were working, rebase and renumber yours.
+
 ## 🌿 Branching & Pull Request Workflow
 
 ### Development Branch: `main`
@@ -87,6 +95,15 @@ docker compose run --rm toolbox cargo test --workspace
 ```
 
 Keep pull requests small and about one thing. Fill in the template, including how you tested. For anything that sends a transaction, say which testnet transaction you checked it with.
+
+## Pull request scope
+
+- **One issue per pull request.** If you are fixing two unrelated things, open two pull requests.
+- **Only touch files the issue names**, unless you discussed a different approach in the issue first. Expanding scope mid-review slows everything down.
+- **No drive-by refactors or formatting.** If the code around your change needs improvement, open a separate issue after this one lands.
+- **Found something else?** Open a new issue instead of fixing it in this pull request.
+
+These rules keep review fast and low-risk. A pull request that changes things outside its issue will be asked to split or will be closed.
 
 ## The rules that matter
 

@@ -86,3 +86,28 @@ bash ./scripts/test-db-guarantees.sh
 1. **Every Issue Requires a Test**: No code is merged without unit or integration tests verifying expected behavior and edge cases.
 2. **Zero Floating Point**: Use `Money` (integer minor units in `i128`).
 3. **No Plaintext Secrets**: Never commit `.env` files or keys.
+
+---
+
+## 💸 Money-Moving Endpoint Checklist
+
+Every endpoint that moves money (send, withdraw, buy, convert) **must** implement all of these:
+
+1. **`AuthUser` extractor**: Reject unauthenticated requests.
+2. **User ID from session only**: Never take the user ID from the request body or query string. Always read it from the authenticated session.
+3. **Frozen check**: Refuse to proceed if the user account is frozen. Use the account status check helper.
+4. **Velocity limits**: Enforce transaction frequency and amount limits to prevent abuse. Apply rate-limiting middleware or helpers.
+5. **Hold before external effects**: Place a hold on the user's balance before calling external APIs or signing blockchain transactions. Only release the hold after success or permanent failure.
+6. **Idempotency key**: Accept and enforce an idempotency key so retries do not create duplicate transactions.
+7. **One transaction**: Wrap all ledger updates in a single database transaction that rolls back on error.
+8. **Exact `Money` type**: Use `engipay_core::Money` (integer smallest units in `i128`) for all amounts. No floating point, no rounding.
+9. **Tests**: Include unit tests for success, insufficient balance, frozen account, and idempotency key reuse.
+
+For implementation details, see:
+- Authentication: `engipay_api::extractors::AuthUser`
+- Frozen check: `engipay_ledger::accounts::is_frozen`
+- Holds: `engipay_ledger::holds`
+- Idempotency: `engipay_ledger::idempotency`
+- Money type: `engipay_core::Money`
+
+Endpoints that skip any of these steps will be rejected in review.
