@@ -30,6 +30,7 @@ use crate::services::kyc_provider::{FakeKycProvider, KycProvider};
 use crate::services::price_source::{FakePriceSource, PriceSource};
 use crate::services::receipts::ReceiptSigner;
 
+
 #[derive(Clone)]
 pub struct AppState {
     /// `None` only in local development without Postgres. Endpoints that need
@@ -51,12 +52,16 @@ pub struct AppState {
     pub destination_screen: Arc<dyn DestinationScreen>,
     /// Ed25519 signer used to issue verifiable transaction receipts.
     pub receipt_signer: Arc<ReceiptSigner>,
+    /// Names of providers that are fakes. Non-empty only when `with_fakes` was
+    /// used. Checked at startup in production mode.
+    pub fake_provider_names: Vec<&'static str>,
 }
 
 impl AppState {
     /// Convenience constructor used in tests and `main.rs` when no real
     /// provider credentials are configured.
     pub fn with_fakes(database: Option<PgPool>, config: Config, rate_limiter: RateLimiter) -> Self {
+        let receipt_signer = Arc::new(ReceiptSigner::from_config_or_test(&config));
         Self {
             database,
             replica_database: None,
@@ -66,7 +71,12 @@ impl AppState {
             kyc_provider: Arc::new(FakeKycProvider),
             bank_name_check: Arc::new(FakeBankNameCheck),
             destination_screen: Arc::new(StaticBlockList::empty()),
-            receipt_signer: Arc::new(ReceiptSigner::from_config_or_test(&config)),
+            receipt_signer,
+            fake_provider_names: vec![
+                "price_source (FakePriceSource)",
+                "kyc_provider (FakeKycProvider)",
+                "bank_name_check (FakeBankNameCheck)",
+            ],
         }
     }
 }
@@ -156,4 +166,39 @@ fn cors(config: &Config) -> CorsLayer {
             // Allow browser clients to include the idempotency key header.
             HeaderName::from_static(middleware::IDEMPOTENCY_KEY_HEADER),
         ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::middleware::rate_limit::RateLimiter;
+
+    #[test]
+    fn with_fakes_reports_all_three_fake_providers() {
+        let state = AppState::with_fakes(None, Config::for_tests(), RateLimiter::new());
+        assert_eq!(state.fake_provider_names.len(), 3);
+        let all = state.fake_provider_names.join(", ");
+        assert!(all.contains("FakePriceSource"), "{all}");
+        assert!(all.contains("FakeKycProvider"), "{all}");
+        assert!(all.contains("FakeBankNameCheck"), "{all}");
+    }
+
+    #[test]
+    fn production_mode_with_fakes_would_be_rejected() {
+        // Simulate what main() does: check fake_provider_names when in production.
+        let mut config = Config::for_tests();
+        config.production_mode = true;
+        let state = AppState::with_fakes(None, config.clone(), RateLimiter::new());
+        assert!(
+            config.production_mode && !state.fake_provider_names.is_empty(),
+            "production mode with fakes must be caught at startup"
+        );
+        let msg = format!(
+            "refusing to start in production mode with fake providers: {}",
+            state.fake_provider_names.join(", ")
+        );
+        assert!(msg.contains("FakePriceSource"));
+        assert!(msg.contains("FakeKycProvider"));
+        assert!(msg.contains("FakeBankNameCheck"));
+    }
 }

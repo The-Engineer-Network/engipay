@@ -47,6 +47,9 @@ pub struct Config {
     /// Withdrawal amount (in USDC minor units, 7 decimals) at or above which a
     /// withdrawal is flagged for manual review (`WITHDRAWAL_REVIEW_THRESHOLD_USDC`).
     pub withdrawal_review_threshold_minor: i128,
+    /// Set `ENGIPAY_ENV=production` to enable production mode. In production
+    /// the API refuses to start when any provider is still a fake.
+    pub production_mode: bool,
     /// Shared bearer token that internal workers present on internal-only
     /// routes such as settling holds (`INTERNAL_API_TOKEN`). When unset those
     /// routes reject every request.
@@ -202,6 +205,8 @@ impl Config {
             stellar_anchor_home_domain: env::var("STELLAR_ANCHOR_HOME_DOMAIN")
                 .unwrap_or_else(|_| "testanchor.stellar.org".to_owned()),
             withdrawal_review_threshold_minor,
+            production_mode: env::var("ENGIPAY_ENV")
+                .is_ok_and(|v| v.trim().eq_ignore_ascii_case("production")),
             internal_api_token: env::var("INTERNAL_API_TOKEN")
                 .ok()
                 .filter(|token| !token.trim().is_empty())
@@ -237,6 +242,7 @@ impl Config {
             stellar_anchor_url: "https://testanchor.stellar.org".to_owned(),
             stellar_anchor_home_domain: "testanchor.stellar.org".to_owned(),
             withdrawal_review_threshold_minor: DEFAULT_REVIEW_THRESHOLD_MINOR,
+            production_mode: false,
             internal_api_token: Some("test-internal-token-do-not-use-in-production".to_owned()),
         }
     }

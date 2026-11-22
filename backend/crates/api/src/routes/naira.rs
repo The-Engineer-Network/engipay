@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use engipay_core::{Asset, Money};
+
 use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
@@ -114,13 +116,10 @@ pub async fn start_deposit(
         .ok_or(ApiError::DatabaseUnavailable)?;
     crate::services::frozen::ensure_not_frozen(pool, user_id.as_uuid()).await?;
 
-    // Validate amount
-    let amt: f64 = request
-        .amount
-        .trim()
-        .parse()
-        .map_err(|_| ApiError::BadRequest("invalid deposit amount".to_owned()))?;
-    if amt <= 0.0 {
+    // Validate amount: parse with exact decimal arithmetic, reject too-precise amounts
+    let parsed_amt = Money::parse(Asset::Usdc, request.amount.trim())
+        .map_err(|e| ApiError::BadRequest(format!("invalid deposit amount: {e}")))?;
+    if !parsed_amt.is_positive() {
         return Err(ApiError::BadRequest(
             "deposit amount must be positive".to_owned(),
         ));
@@ -245,13 +244,10 @@ pub async fn start_withdrawal(
         return Err(ApiError::BadRequest("invalid bank_code".to_owned()));
     }
 
-    // Validate amount
-    let amt: f64 = request
-        .amount
-        .trim()
-        .parse()
-        .map_err(|_| ApiError::BadRequest("invalid withdrawal amount".to_owned()))?;
-    if amt <= 0.0 {
+    // Validate amount: parse with exact decimal arithmetic, reject too-precise amounts
+    let parsed_amt = Money::parse(Asset::Usdc, request.amount.trim())
+        .map_err(|e| ApiError::BadRequest(format!("invalid withdrawal amount: {e}")))?;
+    if !parsed_amt.is_positive() {
         return Err(ApiError::BadRequest(
             "withdrawal amount must be positive".to_owned(),
         ));
@@ -563,6 +559,19 @@ async fn fetch_anchor_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn amount_finer_than_usdc_precision_is_rejected() {
+        // USDC has 7 decimal places; 8 decimals must be refused with an error,
+        // not silently rounded to a different amount.
+        let err = Money::parse(Asset::Usdc, "0.00000001").unwrap_err();
+        assert!(
+            matches!(err, engipay_core::MoneyError::TooPrecise { .. }),
+            "expected TooPrecise, got {err:?}"
+        );
+        // 7 decimal places is the maximum and must be accepted.
+        assert!(Money::parse(Asset::Usdc, "0.0000001").is_ok());
+    }
 
     #[test]
     fn deposit_request_deserializes() {

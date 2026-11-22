@@ -106,12 +106,40 @@ pub async fn rate_limit_middleware(
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(addr)| addr.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let is_authenticated = req.headers().contains_key("authorization");
-    let _state = state; // Placeholder for future use (will extract rate_limiter from state)
 
-    // Use the rate limiter from state
-    let limiter = RateLimiter::new();
-    limiter.check_rate_limit(&ip, is_authenticated).await?;
+    // A request is authenticated only when the bearer token actually verifies;
+    // a junk Authorization header gets the stricter public limit.
+    let is_authenticated = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|token| {
+            crate::auth::jwt::verify_token(token, state.config.jwt_secret.as_bytes()).is_ok()
+        })
+        .unwrap_or(false);
+
+    // Key authenticated buckets by user id so a single user cannot exhaust
+    // multiple IP buckets by rotating addresses.
+    let bucket_key = if is_authenticated {
+        req.headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .and_then(|token| {
+                crate::auth::jwt::verify_token(token, state.config.jwt_secret.as_bytes())
+                    .ok()
+                    .map(|claims| format!("user:{}", claims.sub))
+            })
+            .unwrap_or_else(|| ip.clone())
+    } else {
+        ip
+    };
+
+    state
+        .rate_limiter
+        .check_rate_limit(&bucket_key, is_authenticated)
+        .await?;
 
     Ok(next.run(req).await)
 }

@@ -12,7 +12,9 @@ mod user;
 pub use user::AuthUser;
 
 use crate::AppState;
+use crate::error::ApiError;
 use axum::Router;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 
@@ -24,12 +26,32 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/logout", post(logout))
 }
 
-/// POST /v1/auth/logout - revoke the current session token
-async fn logout(_auth: AuthUser) -> StatusCode {
-    // TODO: Implement token revocation
-    // For now, logout is a stateless operation since JWTs have no server-side state.
-    // A future implementation would:
-    // 1. Store the token's jti in a revocation list
-    // 2. Check revocation list in AuthUser::verify
-    StatusCode::NO_CONTENT
+/// POST /v1/auth/logout — add the token's `jti` to the revocation list.
+///
+/// After this call the same bearer token will be rejected with 401 on every
+/// subsequent authenticated request, regardless of its remaining lifetime.
+async fn logout(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<StatusCode, ApiError> {
+    let claims = auth.verify(state.config.jwt_secret.as_bytes())?;
+
+    if let (Some(jti), Some(ref pool)) = (claims.jti, state.database.as_ref()) {
+        // Prune already-expired rows on each insert to avoid unbounded growth.
+        sqlx::query("DELETE FROM revoked_tokens WHERE expires_at < NOW()")
+            .execute(pool)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("revocation cleanup failed: {e}")))?;
+
+        let expires_at = chrono::DateTime::<chrono::Utc>::from_timestamp(claims.exp, 0)
+            .unwrap_or_else(chrono::Utc::now);
+        sqlx::query("INSERT INTO revoked_tokens (jti, expires_at) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(jti.to_string())
+            .bind(expires_at)
+            .execute(pool)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("token revocation failed: {e}")))?;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }

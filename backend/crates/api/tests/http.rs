@@ -511,3 +511,122 @@ async fn money_moving_endpoints_return_401_without_a_token() {
         );
     }
 }
+
+#[tokio::test]
+async fn rate_limiter_uses_shared_state_and_returns_429_with_retry_after() {
+    // Build a single app instance so the shared RateLimiter state is reused
+    // across all requests (the default RateLimiter has a public burst of 60).
+    let config = Config::for_tests();
+    let shared_app = router(
+        AppState::with_fakes(None, config.clone(), RateLimiter::new()),
+        &config,
+    );
+
+    let mut last_status = StatusCode::OK;
+    let mut retry_after_present = false;
+
+    for _ in 0..200 {
+        let response = shared_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        last_status = response.status();
+        if last_status == StatusCode::TOO_MANY_REQUESTS {
+            let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let body = String::from_utf8_lossy(&body_bytes);
+            retry_after_present = body.contains("Retry-After");
+            break;
+        }
+    }
+
+    assert_eq!(
+        last_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate limiter never returned 429 after 200 requests"
+    );
+    assert!(retry_after_present, "429 response missing Retry-After");
+}
+
+#[tokio::test]
+async fn junk_authorization_header_gets_public_rate_limit_not_authenticated() {
+    // A request with a non-verifying Authorization header must not be treated
+    // as authenticated (it must not get the higher auth rate limit).
+    let config = Config::for_tests();
+    let shared_app = router(
+        AppState::with_fakes(None, config.clone(), RateLimiter::new()),
+        &config,
+    );
+
+    let mut hit_429 = false;
+    for _ in 0..200 {
+        let response = shared_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .header(header::AUTHORIZATION, "Bearer not-a-real-jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            hit_429 = true;
+            break;
+        }
+    }
+
+    assert!(
+        hit_429,
+        "junk auth header should not give unlimited requests"
+    );
+}
+
+#[tokio::test]
+async fn logout_returns_no_content_with_a_valid_token() {
+    let config = Config::for_tests();
+    let user_id = uuid::Uuid::new_v4();
+    let token =
+        engipay_api::auth::jwt::create_token(user_id, "wallet".to_string(), config.jwt_secret.as_bytes())
+            .unwrap();
+
+    let response = router(
+        AppState::with_fakes(None, config.clone(), RateLimiter::new()),
+        &config,
+    )
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/auth/logout")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    // Without a database the token jti cannot be persisted, but the endpoint
+    // must still succeed (stateless path is acceptable).
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn logout_requires_a_bearer_token() {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/logout")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
