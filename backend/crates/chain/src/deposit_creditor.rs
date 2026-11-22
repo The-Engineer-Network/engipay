@@ -25,6 +25,15 @@
 //! money. This makes the creditor safe to call multiple times for the same
 //! deposit.
 //!
+//! # Ordering Guarantees
+//!
+//! Deposits are processed sequentially in the order observed from chain ledgers.
+//! Per-user balance updates are serialized by the ledger store via transactional
+//! row-level locking on the user's ledger account. Since on-chain deposits arrive
+//! in strictly increasing ledger sequence order, credits are committed in FIFO order
+//! per user, and duplicate or out-of-order deliveries are deduplicated idempotently
+//! by reference.
+//!
 //! # Crash safety
 //!
 //! The two side effects — crediting the ledger and persisting the cursor —

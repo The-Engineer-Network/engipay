@@ -53,13 +53,59 @@ fn user_muxed(id: u64) -> String {
 }
 
 /// Builds a [`StellarClient`] pointed at the provided mock server.
+///
+/// Both the Horizon URL and the Stellar RPC URL are pointed at the same mock
+/// server so tests never make outbound network calls.
 async fn client(server: &MockServer) -> StellarClient {
-    let config =
-        StellarConfig::new(StellarNetwork::Testnet, Some(server.uri()), &custody()).unwrap();
+    let config = StellarConfig::new_with_rpc(
+        StellarNetwork::Testnet,
+        Some(server.uri()),
+        Some(server.uri()),
+        &custody(),
+    )
+    .unwrap();
     StellarClient::new(config).unwrap()
 }
 
+/// Mounts an empty Stellar RPC `getEvents` response. Most tests only care
+/// about Horizon deposits; this stub prevents the RPC call from failing or
+/// reaching the real internet.
+async fn mount_empty_rpc(server: &MockServer) {
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "events": [],
+                "latestLedger": 0
+            }
+        })))
+        .mount(server)
+        .await;
+}
+
+/// Mounts a Stellar RPC `getEvents` response returning the given events.
+async fn mount_rpc_events(server: &MockServer, events: serde_json::Value) {
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "events": events,
+                "latestLedger": 0
+            }
+        })))
+        .mount(server)
+        .await;
+}
+
 /// Mounts the standard `GET /` (root) handler returning `latest_ledger`.
+///
+/// Also mounts a stub Stellar RPC `POST` handler that returns an empty events
+/// list, so tests that only care about Horizon do not make outbound requests or
+/// fail when the RPC path is hit. Tests that need specific Soroban events
+/// should mount [`mount_rpc_events`] *before* calling this function, because
+/// wiremock matches the first registered mock.
 async fn mount_root(server: &MockServer, latest_ledger: u64) {
     Mock::given(method("GET"))
         .and(path("/"))
@@ -69,6 +115,8 @@ async fn mount_root(server: &MockServer, latest_ledger: u64) {
         )
         .mount(server)
         .await;
+
+    mount_empty_rpc(server).await;
 }
 
 /// Mounts the payments page for `custody()` with a single-page `records` list.
@@ -720,4 +768,308 @@ async fn deposit_references_are_unique_across_transactions() {
         assert!(!parts[1].is_empty(), "tx hash must not be empty");
         assert!(!parts[2].is_empty(), "paging token must not be empty");
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 14–19. Soroban USDC SAC transfer detection
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These tests verify that Soroban contract transfer events emitted by the
+// USDC Stellar Asset Contract are merged into the deposit list alongside
+// classic Horizon payments.
+
+/// The USDC SAC contract ID for testnet (computed deterministically).
+fn usdc_contract() -> String {
+    StellarNetwork::Testnet.usdc_contract_id()
+}
+
+/// Builds a synthetic Stellar RPC `getEvents` result containing a single
+/// transfer event to custody.
+fn rpc_transfer_event(overrides: serde_json::Value) -> serde_json::Value {
+    let sender = account(2);
+    let mut base = serde_json::json!({
+        "id": "0000000017408937983-0000000001",
+        "contractId": usdc_contract(),
+        "ledger": 200u64,
+        "topic": [
+            { "symbol": "transfer" },
+            { "address": sender },
+            { "address": custody() }
+        ],
+        "value": { "i128": { "hi": 0, "lo": 100_000_000u64 } }
+    });
+
+    if let (Some(base_obj), Some(patch)) = (base.as_object_mut(), overrides.as_object()) {
+        for (k, v) in patch {
+            base_obj.insert(k.clone(), v.clone());
+        }
+    }
+    base
+}
+
+// ─── 14: Soroban transfer credited alongside Horizon payments ────────────────
+
+/// A Soroban USDC transfer to custody must be returned as an `ObservedDeposit`
+/// with a `soroban:` reference prefix.
+#[tokio::test]
+async fn soroban_usdc_transfer_is_credited() {
+    let server = MockServer::start().await;
+
+    // Soroban events must be mounted before mount_root, because wiremock
+    // matches the first registered mock.
+    mount_rpc_events(
+        &server,
+        serde_json::json!([rpc_transfer_event(serde_json::json!({}))]),
+    )
+    .await;
+
+    // Horizon: no classic payments this poll.
+    mount_root(&server, 210).await;
+    mount_payments(&server, 200, serde_json::json!([])).await;
+
+    let deposits = client(&server).await.deposits_since(200).await.unwrap();
+
+    assert_eq!(
+        deposits.len(),
+        1,
+        "Soroban transfer must produce one deposit"
+    );
+    let dep = &deposits[0];
+
+    assert_eq!(
+        dep.money,
+        Money::from_minor(Asset::Usdc, 100_000_000),
+        "10 USDC = 100_000_000 stroops"
+    );
+    assert_eq!(dep.address, custody(), "bare custody when no muxed ID");
+    assert!(
+        dep.reference.starts_with("soroban:"),
+        "reference must have soroban: prefix, got {}",
+        dep.reference
+    );
+    // latest=210, ledger=200 → confirmations = 11
+    assert_eq!(dep.confirmations, 11);
+}
+
+// ─── 15: Soroban transfer with muxed ID routes to the correct user ────────────
+
+/// When the Soroban event data contains a `to_muxed_id`, the deposit must be
+/// addressed to the corresponding `M...` address so it credits the right user.
+#[tokio::test]
+async fn soroban_transfer_with_muxed_id_routes_to_user() {
+    let server = MockServer::start().await;
+
+    let event = rpc_transfer_event(serde_json::json!({
+        "value": {
+            "map": [
+                {
+                    "key": { "symbol": "amount" },
+                    "val": { "i128": { "hi": 0, "lo": 50_000_000u64 } }
+                },
+                {
+                    "key": { "symbol": "to_muxed_id" },
+                    "val": { "u64": 77u64 }
+                }
+            ]
+        }
+    }));
+
+    mount_rpc_events(&server, serde_json::json!([event])).await;
+    mount_root(&server, 210).await;
+    mount_payments(&server, 200, serde_json::json!([])).await;
+
+    let deposits = client(&server).await.deposits_since(200).await.unwrap();
+
+    assert_eq!(deposits.len(), 1);
+    assert_eq!(
+        deposits[0].address,
+        user_muxed(77),
+        "muxed ID 77 must produce the M... address for user 77"
+    );
+    assert_eq!(
+        deposits[0].money,
+        Money::from_minor(Asset::Usdc, 50_000_000)
+    );
+}
+
+// ─── 16: Non-USDC contract events are refused ────────────────────────────────
+
+/// A contract transfer event from a contract that is NOT Circle's USDC SAC
+/// must be ignored even if it looks like a valid transfer.
+#[tokio::test]
+async fn soroban_non_usdc_contract_is_not_credited() {
+    let server = MockServer::start().await;
+
+    let event = rpc_transfer_event(serde_json::json!({
+        // A different (fake) contract ID
+        "contractId": account(42)
+    }));
+
+    mount_rpc_events(&server, serde_json::json!([event])).await;
+    mount_root(&server, 210).await;
+    mount_payments(&server, 200, serde_json::json!([])).await;
+
+    let deposits = client(&server).await.deposits_since(200).await.unwrap();
+    assert!(
+        deposits.is_empty(),
+        "transfers from non-USDC contracts must not be credited"
+    );
+}
+
+// ─── 17: Soroban transfer to a different recipient is skipped ─────────────────
+
+/// A Soroban USDC transfer whose `to` address is not the custody account must
+/// not be included in the deposit list.
+#[tokio::test]
+async fn soroban_transfer_to_other_account_is_not_credited() {
+    let server = MockServer::start().await;
+
+    let event = rpc_transfer_event(serde_json::json!({
+        "topic": [
+            { "symbol": "transfer" },
+            { "address": account(2) },
+            { "address": account(3) }   // ← someone else, not custody
+        ]
+    }));
+
+    mount_rpc_events(&server, serde_json::json!([event])).await;
+    mount_root(&server, 210).await;
+    mount_payments(&server, 200, serde_json::json!([])).await;
+
+    let deposits = client(&server).await.deposits_since(200).await.unwrap();
+    assert!(
+        deposits.is_empty(),
+        "Soroban transfer to a different account must not be credited"
+    );
+}
+
+// ─── 18: Soroban and Horizon deposits are merged ─────────────────────────────
+
+/// When both a Horizon payment and a Soroban event arrive in the same poll,
+/// both must be returned as distinct deposits.
+#[tokio::test]
+async fn soroban_and_horizon_deposits_are_both_credited() {
+    let server = MockServer::start().await;
+
+    // A Soroban event for a different user in the same window.
+    let event = rpc_transfer_event(serde_json::json!({
+        "id": "0000000017408937983-0000000099",
+        "topic": [
+            { "symbol": "transfer" },
+            { "address": account(2) },
+            { "address": custody() }
+        ],
+        "value": {
+            "map": [
+                {
+                    "key": { "symbol": "amount" },
+                    "val": { "i128": { "hi": 0, "lo": 20_000_000u64 } }
+                },
+                {
+                    "key": { "symbol": "to_muxed_id" },
+                    "val": { "u64": 8u64 }
+                }
+            ]
+        }
+    }));
+
+    // Mount the Soroban RPC events before mount_root so wiremock matches them
+    // first (the empty RPC stub inside mount_root is registered later).
+    mount_rpc_events(&server, serde_json::json!([event])).await;
+    mount_root(&server, 310).await;
+    mount_payments(
+        &server,
+        300,
+        serde_json::json!([{
+            "paging_token": "1288490188801",
+            "type": "payment",
+            "transaction_hash": "aabb000011223344aabb000011223344aabb000011223344aabb000011223344",
+            "transaction_successful": true,
+            "to": custody(),
+            "to_muxed": user_muxed(5),
+            "asset_type": "credit_alphanum4",
+            "asset_code": "USDC",
+            "asset_issuer": StellarNetwork::Testnet.usdc_issuer(),
+            "amount": "10.0000000",
+            "transaction": { "ledger": 305, "successful": true }
+        }]),
+    )
+    .await;
+
+    let deposits = client(&server).await.deposits_since(300).await.unwrap();
+
+    assert_eq!(
+        deposits.len(),
+        2,
+        "one Horizon and one Soroban deposit must both be credited"
+    );
+
+    let horizon_dep = deposits
+        .iter()
+        .find(|d| d.reference.starts_with("stellar:"))
+        .expect("must have a stellar: deposit");
+    let soroban_dep = deposits
+        .iter()
+        .find(|d| d.reference.starts_with("soroban:"))
+        .expect("must have a soroban: deposit");
+
+    assert_eq!(
+        horizon_dep.money,
+        Money::from_minor(Asset::Usdc, 100_000_000)
+    );
+    assert_eq!(horizon_dep.address, user_muxed(5));
+
+    assert_eq!(
+        soroban_dep.money,
+        Money::from_minor(Asset::Usdc, 20_000_000)
+    );
+    assert_eq!(soroban_dep.address, user_muxed(8));
+}
+
+// ─── 19: RPC unavailability does not block Horizon deposits ──────────────────
+
+/// If the Stellar RPC is down (503), `deposits_since` must still return the
+/// Horizon deposits. The Soroban path failing must only produce a warning, not
+/// an error.
+#[tokio::test]
+async fn soroban_rpc_failure_does_not_block_horizon_deposits() {
+    let server = MockServer::start().await;
+
+    // The 503 RPC mock must be mounted before mount_root so wiremock matches
+    // it first (the empty RPC stub inside mount_root is registered later).
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    // Horizon works fine.
+    mount_root(&server, 410).await;
+    mount_payments(
+        &server,
+        400,
+        serde_json::json!([{
+            "paging_token": "1717986918401",
+            "type": "payment",
+            "transaction_hash": "ccdd000011223344ccdd000011223344ccdd000011223344ccdd000011223344",
+            "transaction_successful": true,
+            "to": custody(),
+            "to_muxed": user_muxed(99),
+            "asset_type": "native",
+            "amount": "2.0000000",
+            "transaction": { "ledger": 405, "successful": true }
+        }]),
+    )
+    .await;
+
+    let deposits = client(&server).await.deposits_since(400).await.unwrap();
+
+    assert_eq!(
+        deposits.len(),
+        1,
+        "Horizon deposit must still be returned when RPC is down"
+    );
+    assert!(
+        deposits[0].reference.starts_with("stellar:"),
+        "the deposit must come from Horizon, not Soroban"
+    );
 }

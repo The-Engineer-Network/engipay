@@ -1,6 +1,10 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+
 use anyhow::Context;
-use engipay_api::{AppState, config::Config, router};
 use engipay_api::middleware::rate_limit::RateLimiter;
+use engipay_api::services::destination_screen::StaticBlockList;
+use engipay_api::{AppState, config::Config, router};
 use sqlx::postgres::PgPoolOptions;
 use tracing::{info, warn};
 
@@ -30,11 +34,48 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState {
-        database,
-        config: config.clone(),
-        rate_limiter: RateLimiter::new(),
+    let replica_database = match std::env::var("REPLICA_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => {
+            let pool = PgPoolOptions::new()
+                .max_connections(config.db_max_connections)
+                .acquire_timeout(std::time::Duration::from_secs(5))
+                .connect(&url)
+                .await
+                .context("could not connect to replica Postgres")?;
+            info!("replica database connected");
+            Some(pool)
+        }
+        _ => {
+            warn!("REPLICA_DATABASE_URL is not set; balance reads will use the primary database");
+            None
+        }
     };
+
+    let mut state = AppState::with_fakes(database, config.clone(), RateLimiter::new());
+    state.replica_database = replica_database;
+
+    if config.production_mode && !state.fake_provider_names.is_empty() {
+        let fakes = state.fake_provider_names.join(", ");
+        anyhow::bail!(
+            "refusing to start in production mode with fake providers: {fakes}. \
+             Configure real provider credentials or unset ENGIPAY_ENV=production."
+        );
+    }
+
+    // Load withdrawal destination block list from BLOCK_LIST_PATH if set.
+    if let Ok(path) = std::env::var("BLOCK_LIST_PATH") {
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("could not read BLOCK_LIST_PATH={path:?}"))?;
+        let entries: Vec<&str> = content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        let count = entries.len();
+        state.destination_screen = Arc::new(StaticBlockList::new(entries));
+        info!(count, path = %path, "withdrawal destination block list loaded");
+    }
+
     let app = router(state, &config);
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)
@@ -42,10 +83,13 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("could not bind {}", config.bind_addr))?;
     info!(address = %config.bind_addr, "engipay api listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server error")?;
     Ok(())
 }
 

@@ -70,6 +70,20 @@ pub fn deposit_from_transaction(
     })
 }
 
+/// Whether `tx` can be an incoming deposit at all — its `to` is one of
+/// `deposit_addresses` (which must be normalized).
+///
+/// Used to skip the `eth_getBlockReceipts` call for blocks that cannot hold a
+/// deposit. It deliberately does *not* check `value` or the receipt: a
+/// zero-value call still gets its warn from [`deposit_from_transaction`] rather
+/// than being dropped silently here.
+pub fn touches_deposit_address(tx: &Transaction, deposit_addresses: &HashSet<String>) -> bool {
+    tx.to
+        .as_deref()
+        .and_then(normalize_address)
+        .is_some_and(|to| deposit_addresses.contains(&to))
+}
+
 /// Every ETH deposit in `block`. Transactions without a successful receipt are
 /// never credited.
 // ponytail: top-level transfers only; ETH forwarded by contracts (internal

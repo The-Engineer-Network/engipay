@@ -16,6 +16,8 @@
 #[cfg(feature = "postgres")]
 pub mod postgres;
 
+pub mod outbox;
+
 use std::collections::HashMap;
 
 use engipay_core::{Asset, Money, UserId};

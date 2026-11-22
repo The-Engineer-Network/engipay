@@ -1,8 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { PageHeader } from "@/components/app/PageHeader"
-import { PendingServiceNote } from "@/components/app/PendingServiceNote"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -18,18 +17,103 @@ import {
 import { ArrowDown } from "lucide-react"
 import { DISPLAY_ASSETS } from "@/lib/assets"
 import { decimalsForAsset, isPositiveAmount } from "@/lib/amountInput"
+import {
+  executeConversion,
+  getConvertQuote,
+  type ConvertQuote,
+} from "@/lib/api-client"
+import {
+  canRequestQuote,
+  isQuoteExpired,
+  msUntilExpiry,
+  scheduleQuote,
+} from "@/lib/convertQuote"
 
 export default function ConvertPage() {
   const [from, setFrom] = useState(DISPLAY_ASSETS[0]?.symbol ?? "ETH")
   const [to, setTo] = useState(DISPLAY_ASSETS[1]?.symbol ?? "USDC")
   const [amount, setAmount] = useState("")
+  const [quote, setQuote] = useState<ConvertQuote | null>(null)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+  const [quoteLoading, setQuoteLoading] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
+  const [converting, setConverting] = useState(false)
+  const [convertError, setConvertError] = useState<string | null>(null)
+  const [convertSuccess, setConvertSuccess] = useState<string | null>(null)
 
   const amountValid = amount === "" || isPositiveAmount(amount)
   const sameAsset = from === to
+  const canQuote = canRequestQuote({ from, to, amount }, amountValid)
+
+  const quoteExpired = isQuoteExpired(quote, now)
+  const quoteLive = quote !== null && !quoteExpired
+
+  useEffect(() => {
+    const controller = scheduleQuote(
+      { from, to, amount },
+      amountValid,
+      getConvertQuote,
+      (state) => {
+        setQuote(state.quote)
+        setQuoteError(state.error)
+        setQuoteLoading(state.loading)
+      },
+    )
+    return () => controller.cancel()
+  }, [from, to, amount, amountValid, refreshKey])
+
+  useEffect(() => {
+    if (!quote) return
+    const remaining = msUntilExpiry(quote, Date.now())
+    if (remaining === null) return
+    if (remaining <= 0) {
+      setNow(Date.now())
+      return
+    }
+    const timer = setTimeout(() => setNow(Date.now()), remaining + 50)
+    return () => clearTimeout(timer)
+  }, [quote])
 
   const flip = () => {
     setFrom(to)
     setTo(from)
+  }
+
+  const refreshQuote = () => {
+    setConvertError(null)
+    setConvertSuccess(null)
+    setRefreshKey((key) => key + 1)
+  }
+
+  const handleConvert = async () => {
+    if (!quote || !quoteLive || converting) return
+    setConverting(true)
+    setConvertError(null)
+    setConvertSuccess(null)
+    try {
+      const idempotencyKey =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const result = await executeConversion({
+        from,
+        to,
+        amount,
+        idempotencyKey,
+      })
+      setConvertSuccess(
+        result?.amountOut
+          ? `Converted ${amount} ${from} to ${result.amountOut} ${to}.`
+          : `Converted ${amount} ${from} to ${to}.`,
+      )
+      setQuote(null)
+      setRefreshKey((key) => key + 1)
+    } catch (err: unknown) {
+      setConvertError(err instanceof Error ? err.message : "Could not complete the conversion.")
+    } finally {
+      setConverting(false)
+    }
   }
 
   return (
@@ -88,7 +172,7 @@ export default function ConvertPage() {
             <div className="flex gap-2">
               <Input
                 id="convert-receive"
-                value=""
+                value={quote?.amountOut ?? ""}
                 readOnly
                 aria-readonly="true"
                 placeholder="0.00"
@@ -115,26 +199,59 @@ export default function ConvertPage() {
           <dl className="space-y-2 rounded-md border border-border p-4 text-sm">
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">Rate</dt>
-              <dd className="text-muted-foreground">—</dd>
+              <dd className="text-muted-foreground">{quote?.rate ?? "—"}</dd>
             </div>
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">Fee</dt>
-              <dd className="text-muted-foreground">—</dd>
+              <dd className="text-muted-foreground">{quote?.fee ?? "—"}</dd>
             </div>
             <div className="flex justify-between gap-4 border-t border-border pt-2 font-medium">
               <dt>You receive</dt>
-              <dd>—</dd>
+              <dd>{quote?.amountOut ?? "—"}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="text-muted-foreground">Expires</dt>
+              <dd className="text-muted-foreground">
+                {quote ? (quoteExpired ? "Expired" : quote.expiresAt) : "—"}
+              </dd>
             </div>
           </dl>
 
-          <Button type="button" className="h-12 w-full rounded-full text-base font-semibold" disabled>
-            Convert
-          </Button>
+          {quoteLoading && (
+            <p className="text-xs text-muted-foreground">Fetching quote…</p>
+          )}
+          {quoteError && (
+            <p className="text-xs text-destructive">{quoteError}</p>
+          )}
+          {quoteExpired && (
+            <p className="text-xs text-destructive">This quote has expired. Refresh to get a new one.</p>
+          )}
 
-          <PendingServiceNote>
-            Conversion needs the pricing and swap service, which is not built yet. The screen is
-            ready, so it starts working as soon as the backend is connected.
-          </PendingServiceNote>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={refreshQuote}
+              disabled={!canQuote || quoteLoading}
+            >
+              Refresh quote
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConvert}
+              disabled={!quoteLive || converting}
+              className="flex-1"
+            >
+              {converting ? "Converting…" : "Convert"}
+            </Button>
+          </div>
+
+          {convertError && (
+            <p className="text-xs text-destructive">{convertError}</p>
+          )}
+          {convertSuccess && (
+            <p className="text-xs text-emerald-600">{convertSuccess}</p>
+          )}
         </CardContent>
       </Card>
     </div>

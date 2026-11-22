@@ -16,10 +16,21 @@ pub enum ApiError {
     NotFound,
     #[error("{0}")]
     Conflict(String),
+    #[error("forbidden")]
+    Forbidden,
+    /// The account is frozen and cannot move funds. Distinct from a validation
+    /// error so the app can tell the user their account is locked.
+    #[error("account is frozen and cannot move funds")]
+    AccountFrozen,
+    #[error("{0}")]
+    UnprocessableEntity(String),
     #[error("the database is not available")]
     DatabaseUnavailable,
     #[error("{0}")]
     LimitExceeded(String),
+    /// A feature is not available yet (for example, pricing is not configured).
+    #[error("{0}")]
+    Unavailable(String),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -59,10 +70,16 @@ impl ApiError {
             ApiError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             ApiError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            ApiError::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            ApiError::AccountFrozen => (StatusCode::FORBIDDEN, "account_frozen"),
+            ApiError::UnprocessableEntity(_) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "unprocessable_entity")
+            }
             ApiError::DatabaseUnavailable => {
                 (StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
             }
             ApiError::LimitExceeded(_) => (StatusCode::FORBIDDEN, "limit_exceeded"),
+            ApiError::Unavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }
@@ -139,6 +156,13 @@ mod tests {
         let (status, code) = api_error.status_and_code();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(code, "bad_request");
+    }
+
+    #[test]
+    fn account_frozen_maps_to_forbidden_with_account_frozen_code() {
+        let (status, code) = ApiError::AccountFrozen.status_and_code();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(code, "account_frozen");
     }
 
     #[test]

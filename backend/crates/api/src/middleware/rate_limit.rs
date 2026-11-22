@@ -20,6 +20,7 @@ const MAX_BUCKETS: usize = 10_000;
 const BUCKET_IDLE_TIMEOUT: u64 = 60; // evict buckets idle longer than refill window
 
 /// Global rate limiter for all IPs
+#[derive(Clone)]
 pub struct RateLimiter {
     buckets: Arc<RwLock<HashMap<String, TokenBucket>>>,
     public_rate: f64,
@@ -50,7 +51,8 @@ impl RateLimiter {
 
         // Evict idle buckets to prevent memory growth
         if buckets.len() > MAX_BUCKETS / 2 {
-            buckets.retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
+            buckets
+                .retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
         }
 
         let rate = if is_authenticated {
@@ -92,19 +94,52 @@ impl Default for RateLimiter {
 }
 
 /// Rate limiting middleware for global IP-based rate limiting
-pub async fn rate_limit_middleware<S>(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    axum::extract::State(state): axum::extract::State<S>,
+pub async fn rate_limit_middleware(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
     req: Request<Body>,
     next: Next,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let ip = addr.ip().to_string();
-    let is_authenticated = req.headers().contains_key("authorization");
-    let _state = state; // Placeholder for future use (will extract rate_limiter from state)
+    // The client address is absent when the app is served without connect
+    // info (in-memory tests); such requests share one "unknown" bucket.
+    let ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
 
-    // Use the rate limiter from state
-    let limiter = RateLimiter::new();
-    limiter.check_rate_limit(&ip, is_authenticated).await?;
+    // A request is authenticated only when the bearer token actually verifies;
+    // a junk Authorization header gets the stricter public limit.
+    let is_authenticated = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|token| {
+            crate::auth::jwt::verify_token(token, state.config.jwt_secret.as_bytes()).is_ok()
+        })
+        .unwrap_or(false);
+
+    // Key authenticated buckets by user id so a single user cannot exhaust
+    // multiple IP buckets by rotating addresses.
+    let bucket_key = if is_authenticated {
+        req.headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .and_then(|token| {
+                crate::auth::jwt::verify_token(token, state.config.jwt_secret.as_bytes())
+                    .ok()
+                    .map(|claims| format!("user:{}", claims.sub))
+            })
+            .unwrap_or_else(|| ip.clone())
+    } else {
+        ip
+    };
+
+    state
+        .rate_limiter
+        .check_rate_limit(&bucket_key, is_authenticated)
+        .await?;
 
     Ok(next.run(req).await)
 }
@@ -132,7 +167,8 @@ impl VelocityLimiter {
 
         // Evict idle buckets to prevent memory growth
         if buckets.len() > MAX_BUCKETS / 2 {
-            buckets.retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
+            buckets
+                .retain(|_, bucket| now.saturating_sub(bucket.last_refill) < BUCKET_IDLE_TIMEOUT);
         }
 
         let rate = 5.0 / 60.0;

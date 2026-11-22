@@ -36,7 +36,7 @@ impl FromRequestParts<AppState> for AuthUser {
 
     async fn from_request_parts(
         parts: &mut Parts,
-        _state: &AppState,
+        state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let value = parts
             .headers
@@ -50,8 +50,29 @@ impl FromRequestParts<AppState> for AuthUser {
             .filter(|token| !token.trim().is_empty())
             .ok_or_else(|| ApiError::Unauthorized("expected Bearer token".to_string()))?;
 
-        Ok(Self {
+        let auth = Self {
             token: token.to_string(),
-        })
+        };
+
+        // Check the revocation list when a database is configured. Tokens
+        // without a jti (issued before revocation was introduced) are accepted.
+        if let Some(ref pool) = state.database {
+            let claims = auth.verify(state.config.jwt_secret.as_bytes())?;
+            if let Some(jti) = claims.jti {
+                let revoked: Option<(String,)> =
+                    sqlx::query_as("SELECT jti FROM revoked_tokens WHERE jti = $1 AND expires_at > NOW()")
+                        .bind(jti.to_string())
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(|e| {
+                            ApiError::Internal(anyhow::anyhow!("revocation check failed: {e}"))
+                        })?;
+                if revoked.is_some() {
+                    return Err(ApiError::Unauthorized("token has been revoked".to_string()));
+                }
+            }
+        }
+
+        Ok(auth)
     }
 }

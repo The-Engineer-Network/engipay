@@ -12,12 +12,15 @@ use crate::AppState;
 use crate::error::ApiError;
 use crate::routes::auth::AuthUser;
 use crate::services::limits::check_velocity_limits;
+use crate::services::receipts::{Receipt, ReceiptKind, SignedReceipt};
+use crate::services::recipient::resolve_recipient;
 
 /// A validated request to transfer funds between two EngiPay users.
 ///
 /// Money is never a floating point value: `amount` stays a decimal string until
 /// [`Money::parse`] turns it into integer minor units for the asset.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransferRequest {
     /// Recipient's user id (`uuid`). The sender is always the authenticated
     /// caller, so a client cannot move money out of someone else's account.
@@ -25,6 +28,9 @@ pub struct TransferRequest {
     pub asset: Asset,
     pub amount: String,
     pub reference: String,
+    /// Optional note shown to the receiver, at most 140 characters.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// Validation failures for a [`TransferRequest`].
@@ -35,6 +41,7 @@ pub enum TransferRequestError {
     NonPositiveAmount,
     OverPreciseAmount,
     InvalidReference,
+    InvalidNote,
 }
 
 impl TransferRequest {
@@ -50,14 +57,10 @@ impl TransferRequest {
             return Err(TransferRequestError::InvalidReference);
         }
 
-        Ok(())
-    }
+        crate::routes::transfer_note::validate_note(self.note.as_deref())
+            .map_err(|_| TransferRequestError::InvalidNote)?;
 
-    /// The recipient's user id, parsed.
-    pub fn recipient_id(&self) -> Result<UserId, TransferRequestError> {
-        let raw = Uuid::parse_str(self.recipient.trim())
-            .map_err(|_| TransferRequestError::InvalidRecipient)?;
-        Ok(UserId::from_uuid(raw))
+        Ok(())
     }
 
     /// The amount as exact integer minor units for this request's asset.
@@ -138,6 +141,9 @@ pub struct TransferReceipt {
     pub amount: String,
     pub created_at: String,
     pub status: TransferStatus,
+    /// The sender's optional note, when one was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Terminal status of a successfully executed transfer.
@@ -152,6 +158,7 @@ impl TransferReceipt {
     pub fn completed(
         transaction_id: String,
         sender_tag: String,
+        recipient_tag: String,
         request: &TransferRequest,
         amount_minor_units: i128,
         created_at: String,
@@ -160,11 +167,12 @@ impl TransferReceipt {
             transaction_id,
             reference: request.reference.trim().to_string(),
             sender_tag,
-            recipient_tag: request.recipient.trim().to_string(),
+            recipient_tag,
             asset: request.asset,
             amount: amount_minor_units.to_string(),
             created_at,
             status: TransferStatus::Completed,
+            note: crate::routes::transfer_note::normalize_note(request.note.as_deref()),
         }
     }
 }
@@ -183,9 +191,6 @@ async fn create_transfer(
         .map_err(|_| ApiError::BadRequest("invalid transfer request".to_string()))?;
 
     let sender = auth.user_id(state.config.jwt_secret.as_bytes())?;
-    let recipient = request
-        .recipient_id()
-        .map_err(|_| ApiError::BadRequest("invalid recipient".to_string()))?;
     let money = request
         .money()
         .map_err(|_| ApiError::BadRequest("invalid amount".to_string()))?;
@@ -194,39 +199,135 @@ async fn create_transfer(
         .database
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
+
+    // Resolve recipient by tag (@alice), email, UUID, or wallet address
+    let recipient = resolve_recipient(&pool, request.recipient.trim())
+        .await
+        .map_err(|err| match err {
+            crate::services::recipient::RecipientError::EmptyInput => {
+                ApiError::BadRequest("recipient identifier cannot be empty".to_string())
+            }
+            crate::services::recipient::RecipientError::NotFound => {
+                ApiError::BadRequest("recipient not found".to_string())
+            }
+            crate::services::recipient::RecipientError::Database(msg) => {
+                ApiError::Internal(anyhow::anyhow!("recipient lookup failed: {}", msg))
+            }
+        })?;
+
     let ledger = PostgresLedgerStore::new(pool.clone());
 
+    // Get recipient tag for receipt display
+    let recipient_tag: Option<String> =
+        sqlx::query_scalar("SELECT tag FROM user_profiles WHERE id = $1 LIMIT 1")
+            .bind(recipient)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| {
+                ApiError::Internal(anyhow::anyhow!("failed to fetch recipient tag: {}", e))
+            })?
+            .flatten();
+
+    let recipient_tag = recipient_tag.unwrap_or_else(|| recipient.to_string());
+
     // Get user's tier for velocity limit check
-    let tier: i32 = sqlx::query_scalar(
-        "SELECT COALESCE(tier, 0) FROM user_profiles WHERE id = $1"
-    )
-    .bind(sender.as_uuid())
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch user tier: {}", e)))?
-    .unwrap_or(0);
+    let tier: i32 = sqlx::query_scalar("SELECT COALESCE(tier, 0) FROM user_profiles WHERE id = $1")
+        .bind(sender.as_uuid())
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to fetch user tier: {}", e)))?
+        .unwrap_or(0);
+
+    // Check if sender's account is frozen
+    crate::services::frozen::ensure_not_frozen(&pool, sender.as_uuid()).await?;
 
     // Check velocity limits before executing transfer
-    check_velocity_limits(&pool, sender, tier, money, state.config.tier_0_daily_limit_minor)
-        .await?;
+    check_velocity_limits(
+        &pool,
+        sender,
+        tier,
+        money,
+        state.config.tier_0_daily_limit_minor,
+    )
+    .await?;
 
     // The idempotency reference is the caller-supplied `reference`, so a retry
     // of the same request replays instead of double-spending.
     let receipt = ledger
-        .transfer(sender, recipient, money, request.reference.trim())
+        .transfer(
+            sender,
+            UserId::from_uuid(recipient),
+            money,
+            request.reference.trim(),
+        )
         .await
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
 
+    let created_at = now_iso8601();
+    let sender_tag = sender.as_uuid().to_string();
+
+    // Store the optional note against the ledger transaction (#696).
+    if let Some(note) = crate::routes::transfer_note::normalize_note(request.note.as_deref()) {
+        sqlx::query("UPDATE ledger_transactions SET note = $2 WHERE id = $1")
+            .bind(receipt.transaction_id)
+            .bind(note)
+            .execute(&pool)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to store note: {}", e)))?;
+    }
+
+    // Build a canonical, minimal receipt (only the two parties' tags, the
+    // amount, asset and timestamp) and sign it so it can be verified outside
+    // the app without exposing any other user's data.
+    let canonical = Receipt {
+        kind: ReceiptKind::Transfer,
+        transaction_id: receipt.transaction_id.to_string(),
+        amount: money.minor.to_string(),
+        asset: request.asset,
+        created_at: created_at.clone(),
+        key_id: state.receipt_signer.key_id().to_string(),
+        sender_tag: Some(sender_tag.clone()),
+        recipient_tag: Some(recipient_tag.clone()),
+    };
+    let signed: SignedReceipt = state
+        .receipt_signer
+        .sign(&canonical)
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to sign receipt: {}", e)))?;
+
     Ok((
         StatusCode::CREATED,
+        Json(TransferResponse {
+            receipt: TransferReceipt {
+                transaction_id: receipt.transaction_id.to_string(),
+                reference: request.reference.trim().to_string(),
+                sender_tag,
+                recipient_tag,
+                asset: request.asset,
+                amount: money.minor.to_string(),
+                created_at,
+                status: TransferStatus::Completed,
+                note: crate::routes::transfer_note::normalize_note(request.note.as_deref()),
+            },
+            signed_receipt: signed,
+        }),
         Json(TransferReceipt::completed(
             receipt.transaction_id.to_string(),
             sender.as_uuid().to_string(),
+            recipient_tag,
             &request,
             money.minor,
             now_iso8601(),
         )),
     ))
+}
+
+/// Response body for a successful transfer: the human-facing receipt plus the
+/// signed, verifiable receipt that can be shared and checked externally.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferResponse {
+    #[serde(flatten)]
+    pub receipt: TransferReceipt,
+    pub signed_receipt: SignedReceipt,
 }
 
 /// Current time as an ISO 8601 (UTC) timestamp.
@@ -287,6 +388,7 @@ mod tests {
             asset: Asset::Usdc,
             amount: amount.to_string(),
             reference: reference.to_string(),
+            note: None,
         }
     }
 
@@ -380,20 +482,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_recipient_id() {
-        let req = request(BOB, "100", "ref-1");
-        assert_eq!(
-            req.recipient_id().map(|id| id.as_uuid()),
-            Ok(Uuid::parse_str(BOB).unwrap())
-        );
-    }
-
-    #[test]
     fn receipt_serializes_with_transaction_metadata() {
         let req = request(ALICE, "100", "ref-1");
         let receipt = TransferReceipt::completed(
             "txn-123".to_string(),
             BOB.to_string(),
+            ALICE.to_string(),
             &req,
             1_000_000_000,
             "2024-01-02T03:04:05Z".to_string(),
@@ -418,6 +512,7 @@ mod tests {
         let receipt = TransferReceipt::completed(
             "txn-456".to_string(),
             BOB.to_string(),
+            ALICE.to_string(),
             &req,
             amount,
             "2024-06-07T08:09:10Z".to_string(),
@@ -434,6 +529,7 @@ mod tests {
         let receipt = TransferReceipt::completed(
             "txn-123".to_string(),
             BOB.to_string(),
+            ALICE.to_string(),
             &req,
             1_000_000_000,
             "2024-01-02T03:04:05Z".to_string(),
@@ -442,6 +538,42 @@ mod tests {
         let json = serde_json::to_string(&receipt).expect("receipt serializes");
         let decoded: TransferReceipt = serde_json::from_str(&json).expect("receipt deserializes");
         assert_eq!(decoded, receipt);
+    }
+
+    #[test]
+    fn transfer_response_includes_signed_receipt() {
+        use crate::services::receipts::ReceiptSigner;
+
+        let req = request(ALICE, "100", "ref-1");
+        let signer = ReceiptSigner::from_seed("test-key", &[7u8; 32]).expect("signer");
+        let canonical = Receipt {
+            kind: ReceiptKind::Transfer,
+            transaction_id: "txn-123".to_string(),
+            amount: "1000000000".to_string(),
+            asset: Asset::Usdc,
+            created_at: "2024-01-02T03:04:05Z".to_string(),
+            key_id: signer.key_id().to_string(),
+            sender_tag: Some(BOB.to_string()),
+            recipient_tag: Some(ALICE.to_string()),
+        };
+        let signed = signer.sign(&canonical).expect("signs");
+
+        let response = TransferResponse {
+            receipt: TransferReceipt::completed(
+                "txn-123".to_string(),
+                BOB.to_string(),
+                &req,
+                1_000_000_000,
+                "2024-01-02T03:04:05Z".to_string(),
+            ),
+            signed_receipt: signed.clone(),
+        };
+
+        let json = serde_json::to_value(&response).expect("serializes");
+        assert_eq!(json["transaction_id"], "txn-123");
+        assert_eq!(json["signed_receipt"]["key_id"], "test-key");
+        assert!(json["signed_receipt"]["signature"].is_string());
+        assert!(signed.verify(&signer.public_key()).is_ok());
     }
 
     #[test]
