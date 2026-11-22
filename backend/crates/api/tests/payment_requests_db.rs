@@ -100,16 +100,51 @@ async fn get_request(app: &axum::Router, id: &str) -> (StatusCode, Value) {
     .await
 }
 
-/// POST a payment against a request.
-async fn pay(app: &axum::Router, id: &str, body: Value) -> (StatusCode, Value) {
+/// POST a payment against a request as the given payer.
+async fn pay(app: &axum::Router, id: &str, token: &str, body: Value) -> (StatusCode, Value) {
     send(
         app,
         "POST",
         &format!("/v1/payment-requests/{id}/pay"),
-        None,
+        Some(token),
         Some(body),
     )
     .await
+}
+
+/// Credit a user's internal balance so they can pay.
+async fn fund(pool: &sqlx::PgPool, user_id: Uuid, amount_minor: i128) {
+    sqlx::query(
+        "INSERT INTO balances (user_id, asset, available) VALUES ($1, 'USDC', $2) \
+         ON CONFLICT (user_id, asset) DO UPDATE SET available = balances.available + $2",
+    )
+    .bind(user_id)
+    .bind(amount_minor)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Read a user's available internal balance for USDC.
+async fn balance(pool: &sqlx::PgPool, user_id: Uuid) -> i128 {
+    let row: Option<(i128,)> =
+        sqlx::query_as("SELECT available FROM balances WHERE user_id = $1 AND asset = 'USDC'")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap();
+    row.map(|(v,)| v).unwrap_or(0)
+}
+
+/// Count payment rows recorded for a request.
+async fn payment_count(pool: &sqlx::PgPool, request_id: &str) -> i64 {
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM payment_request_payments WHERE request_id = $1")
+            .bind(uuid::Uuid::parse_str(request_id).unwrap())
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    count
 }
 
 /// Force-expire a request in the database.
@@ -130,6 +165,7 @@ async fn expire_request(pool: &sqlx::PgPool, id: &str) {
 async fn exact_payment_marks_request_paid() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
 
     let (status, body) = create_request(
         &app,
@@ -141,18 +177,21 @@ async fn exact_payment_marks_request_paid() {
     let id = body["id"].as_str().unwrap().to_string();
     let requested_minor: i128 = 100_000_000; // 10 USDC × 10^7
 
-    // Record a payment for the exact amount.
+    fund(&pool, payer_id, requested_minor).await;
+
+    // Record an internal payment for the exact amount.
     let (pay_status, pay_body) = pay(
         &app,
         &id,
+        &payer_token,
         json!({
             "amount": "10.0000000",
-            "chain": "stellar",
-            "tx_hash": format!("tx-exact-{}", Uuid::new_v4())
+            "chain": "internal"
         }),
     )
     .await;
     assert_eq!(pay_status, StatusCode::CREATED, "{pay_body}");
+    assert_eq!(balance(&pool, payer_id).await, 0);
     assert_eq!(pay_body["request_status"], "paid");
     assert_eq!(
         pay_body["amount_paid"]
@@ -185,6 +224,7 @@ async fn exact_payment_marks_request_paid() {
 async fn partial_payment_sets_partially_paid_status() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
 
     let (status, body) = create_request(
         &app,
@@ -200,19 +240,22 @@ async fn partial_payment_sets_partially_paid_status() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["id"].as_str().unwrap().to_string();
 
+    fund(&pool, payer_id, 1_000_000_000).await;
+
     // First payment: partial.
     let (pay_status, pay_body) = pay(
         &app,
         &id,
+        &payer_token,
         json!({
             "amount": "40.0000000",
-            "chain": "base",
-            "tx_hash": format!("tx-partial-1-{}", Uuid::new_v4())
+            "chain": "internal"
         }),
     )
     .await;
     assert_eq!(pay_status, StatusCode::CREATED, "{pay_body}");
     assert_eq!(pay_body["request_status"], "partially_paid");
+    assert_eq!(balance(&pool, payer_id).await, 600_000_000);
 
     let (get_status, get_body) = get_request(&app, &id).await;
     assert_eq!(get_status, StatusCode::OK);
@@ -231,15 +274,16 @@ async fn partial_payment_sets_partially_paid_status() {
     let (pay2_status, pay2_body) = pay(
         &app,
         &id,
+        &payer_token,
         json!({
             "amount": "60.0000000",
-            "chain": "base",
-            "tx_hash": format!("tx-partial-2-{}", Uuid::new_v4())
+            "chain": "internal"
         }),
     )
     .await;
     assert_eq!(pay2_status, StatusCode::CREATED, "{pay2_body}");
     assert_eq!(pay2_body["request_status"], "paid");
+    assert_eq!(balance(&pool, payer_id).await, 0);
     assert_eq!(
         pay2_body["amount_remaining"]
             .as_str()
@@ -262,6 +306,7 @@ async fn partial_payment_sets_partially_paid_status() {
 async fn over_payment_is_rejected() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
 
     let (status, body) = create_request(
         &app,
@@ -276,14 +321,16 @@ async fn over_payment_is_rejected() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["id"].as_str().unwrap().to_string();
 
+    fund(&pool, payer_id, 1_000_000_000).await;
+
     // Attempt to pay more than the requested amount.
     let (pay_status, pay_body) = pay(
         &app,
         &id,
+        &payer_token,
         json!({
             "amount": "60.0000000",   // 10 more than requested
-            "chain": "stellar",
-            "tx_hash": format!("tx-over-{}", Uuid::new_v4())
+            "chain": "internal"
         }),
     )
     .await;
@@ -294,6 +341,10 @@ async fn over_payment_is_rejected() {
             .unwrap()
             .contains("exceed")
     );
+
+    // No payment row and no balance movement.
+    assert_eq!(payment_count(&pool, &id).await, 0);
+    assert_eq!(balance(&pool, payer_id).await, 1_000_000_000);
 
     // Request should still be open (pending).
     let (_, state_body) = get_request(&app, &id).await;
@@ -307,6 +358,7 @@ async fn over_payment_is_rejected() {
 async fn late_payment_is_rejected_after_expiry() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
 
     let (status, body) = create_request(
         &app,
@@ -317,6 +369,8 @@ async fn late_payment_is_rejected_after_expiry() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["id"].as_str().unwrap().to_string();
 
+    fund(&pool, payer_id, 200_000_000).await;
+
     // Force expiry.
     expire_request(&pool, &id).await;
 
@@ -324,6 +378,7 @@ async fn late_payment_is_rejected_after_expiry() {
     let (pay_status, pay_body) = pay(
         &app,
         &id,
+        &payer_token,
         json!({
             "amount": "20.0000000",
             "chain": "internal"
@@ -337,6 +392,8 @@ async fn late_payment_is_rejected_after_expiry() {
             .unwrap()
             .contains("expired")
     );
+    assert_eq!(payment_count(&pool, &id).await, 0);
+    assert_eq!(balance(&pool, payer_id).await, 200_000_000);
 
     // GET should show expired status.
     let (_, get_body) = get_request(&app, &id).await;
@@ -350,6 +407,7 @@ async fn late_payment_is_rejected_after_expiry() {
 async fn partial_payment_rejected_when_allow_partial_is_false() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
 
     let (status, body) = create_request(
         &app,
@@ -360,14 +418,16 @@ async fn partial_payment_rejected_when_allow_partial_is_false() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["id"].as_str().unwrap().to_string();
 
+    fund(&pool, payer_id, 500_000_000).await;
+
     // Pay less than the full amount – should be refused.
     let (pay_status, pay_body) = pay(
         &app,
         &id,
+        &payer_token,
         json!({
             "amount": "25.0000000",
-            "chain": "stellar",
-            "tx_hash": format!("tx-partial-disallowed-{}", Uuid::new_v4())
+            "chain": "internal"
         }),
     )
     .await;
@@ -377,6 +437,8 @@ async fn partial_payment_rejected_when_allow_partial_is_false() {
         msg.contains("partial"),
         "expected message about partial payments, got: {msg}"
     );
+    assert_eq!(payment_count(&pool, &id).await, 0);
+    assert_eq!(balance(&pool, payer_id).await, 500_000_000);
 
     // Request should still be open.
     let (_, state_body) = get_request(&app, &id).await;
@@ -390,6 +452,7 @@ async fn partial_payment_rejected_when_allow_partial_is_false() {
 async fn payment_below_min_amount_is_rejected() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
 
     let (status, body) = create_request(
         &app,
@@ -405,14 +468,16 @@ async fn payment_below_min_amount_is_rejected() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["id"].as_str().unwrap().to_string();
 
+    fund(&pool, payer_id, 1_000_000_000).await;
+
     // Pay less than min_amount.
     let (pay_status, pay_body) = pay(
         &app,
         &id,
+        &payer_token,
         json!({
             "amount": "5.0000000",
-            "chain": "base",
-            "tx_hash": format!("tx-below-min-{}", Uuid::new_v4())
+            "chain": "internal"
         }),
     )
     .await;
@@ -423,6 +488,8 @@ async fn payment_below_min_amount_is_rejected() {
             .unwrap()
             .contains("minimum")
     );
+    assert_eq!(payment_count(&pool, &id).await, 0);
+    assert_eq!(balance(&pool, payer_id).await, 1_000_000_000);
 }
 
 // ── #479: Duplicate tx_hash rejected ─────────────────────────────────────────
@@ -432,6 +499,7 @@ async fn payment_below_min_amount_is_rejected() {
 async fn duplicate_tx_hash_is_rejected() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
 
     let (status, body) = create_request(
         &app,
@@ -446,13 +514,16 @@ async fn duplicate_tx_hash_is_rejected() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["id"].as_str().unwrap().to_string();
 
+    fund(&pool, payer_id, 1_000_000_000).await;
+
     let tx_hash = format!("tx-dup-{}", Uuid::new_v4());
 
     // First payment.
     let (s1, _) = pay(
         &app,
         &id,
-        json!({ "amount": "10.0000000", "chain": "stellar", "tx_hash": tx_hash }),
+        &payer_token,
+        json!({ "amount": "10.0000000", "chain": "internal", "tx_hash": tx_hash }),
     )
     .await;
     assert_eq!(s1, StatusCode::CREATED);
@@ -461,10 +532,13 @@ async fn duplicate_tx_hash_is_rejected() {
     let (s2, b2) = pay(
         &app,
         &id,
-        json!({ "amount": "10.0000000", "chain": "stellar", "tx_hash": tx_hash }),
+        &payer_token,
+        json!({ "amount": "10.0000000", "chain": "internal", "tx_hash": tx_hash }),
     )
     .await;
     assert_eq!(s2, StatusCode::CONFLICT, "{b2}");
+    assert_eq!(payment_count(&pool, &id).await, 1);
+    assert_eq!(balance(&pool, payer_id).await, 900_000_000);
 }
 
 // ── #479: Merchant list ───────────────────────────────────────────────────────
@@ -511,6 +585,7 @@ async fn merchant_can_list_their_own_requests() {
 async fn list_reflects_partial_paid_amount() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
 
     let (status, body) = create_request(
         &app,
@@ -525,17 +600,21 @@ async fn list_reflects_partial_paid_amount() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["id"].as_str().unwrap().to_string();
 
+    fund(&pool, payer_id, 800_000_000).await;
+
     // Pay 30 USDC.
-    let (_, _) = pay(
+    let (pay_status, pay_body) = pay(
         &app,
         &id,
+        &payer_token,
         json!({
             "amount": "30.0000000",
-            "chain": "base",
-            "tx_hash": format!("tx-list-{}", Uuid::new_v4())
+            "chain": "internal"
         }),
     )
     .await;
+    assert_eq!(pay_status, StatusCode::CREATED, "{pay_body}");
+    assert_eq!(balance(&pool, payer_id).await, 500_000_000);
 
     // The list should show 30 paid and 50 remaining.
     let (_, list) = send(&app, "GET", "/v1/payment-requests", Some(&token), None).await;
@@ -552,6 +631,105 @@ async fn list_reflects_partial_paid_amount() {
     assert_eq!(item["status"], "partially_paid");
 }
 
+// ── #620: Authentication required ────────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn unauthenticated_payment_is_rejected() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+
+    let (status, body) = create_request(
+        &app,
+        &token,
+        json!({ "asset": "USDC", "amount": "10.0000000" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let (pay_status, pay_body) = send(
+        &app,
+        "POST",
+        &format!("/v1/payment-requests/{id}/pay"),
+        None,
+        Some(json!({ "amount": "10.0000000", "chain": "internal" })),
+    )
+    .await;
+    assert_eq!(pay_status, StatusCode::UNAUTHORIZED, "{pay_body}");
+    assert_eq!(payment_count(&pool, &id).await, 0);
+}
+
+// ── #620: On-chain claims rejected ───────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn on_chain_payment_claim_is_rejected() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
+
+    let (status, body) = create_request(
+        &app,
+        &token,
+        json!({ "asset": "USDC", "amount": "10.0000000" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    fund(&pool, payer_id, 100_000_000).await;
+
+    for chain in ["stellar", "base"] {
+        let (pay_status, pay_body) = pay(
+            &app,
+            &id,
+            &payer_token,
+            json!({
+                "amount": "10.0000000",
+                "chain": chain,
+                "tx_hash": format!("tx-onchain-{}", Uuid::new_v4())
+            }),
+        )
+        .await;
+        assert_eq!(pay_status, StatusCode::BAD_REQUEST, "{pay_body}");
+    }
+
+    assert_eq!(payment_count(&pool, &id).await, 0);
+    assert_eq!(balance(&pool, payer_id).await, 100_000_000);
+}
+
+// ── #620: Insufficient balance rejected ──────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn payment_without_funds_is_rejected() {
+    let (app, pool) = setup().await;
+    let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
+
+    let (status, body) = create_request(
+        &app,
+        &token,
+        json!({ "asset": "USDC", "amount": "10.0000000" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // Payer has no balance.
+    let (pay_status, pay_body) = pay(
+        &app,
+        &id,
+        &payer_token,
+        json!({ "amount": "10.0000000", "chain": "internal" }),
+    )
+    .await;
+    assert_eq!(pay_status, StatusCode::BAD_REQUEST, "{pay_body}");
+    assert_eq!(payment_count(&pool, &id).await, 0);
+    assert_eq!(balance(&pool, payer_id).await, 0);
+}
+
 // ── #647: Concurrent payments cannot overpay ─────────────────────────────────
 
 #[tokio::test]
@@ -559,12 +737,13 @@ async fn list_reflects_partial_paid_amount() {
 async fn concurrent_payments_cannot_overpay_a_payment_request() {
     let (app, pool) = setup().await;
     let (_, token) = user(&pool).await;
+    let (payer_id, payer_token) = user(&pool).await;
 
     // Create a payment request for exactly 10 USDC.
     let (status, body) = create_request(
         &app,
         &token,
-        serde_json::json!({
+        json!({
             "asset": "USDC",
             "amount": "10.0000000",
             "allow_partial": true
@@ -574,20 +753,21 @@ async fn concurrent_payments_cannot_overpay_a_payment_request() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["id"].as_str().unwrap().to_string();
 
+    // Give the payer enough for every attempt so only the overpay guard can reject.
+    fund(&pool, payer_id, 200_000_000).await;
+
     // Fire 5 concurrent payments of 4 USDC each (total 20 USDC > 10 USDC limit).
     let handles: Vec<_> = (0..5)
-        .map(|i| {
+        .map(|_| {
             let app = app.clone();
             let id = id.clone();
+            let payer_token = payer_token.clone();
             tokio::spawn(async move {
                 pay(
                     &app,
                     &id,
-                    serde_json::json!({
-                        "amount": "4.0000000",
-                        "chain": "base",
-                        "tx_hash": format!("tx-concurrent-overpay-{i}-{}", Uuid::new_v4())
-                    }),
+                    &payer_token,
+                    json!({ "amount": "4.0000000", "chain": "internal" }),
                 )
                 .await
             })
@@ -611,18 +791,7 @@ async fn concurrent_payments_cannot_overpay_a_payment_request() {
         "expected at least one rejection but all {paid_count} payments succeeded"
     );
 
-    // The final paid total must not exceed 10 USDC (100_000_000 minor units).
-    let (_, req) = get_request(&app, &id).await;
-    let total_paid: i64 = req["paid_amount"]
-        .as_str()
-        .unwrap_or("0")
-        .replace('.', "")
-        .parse()
-        .unwrap_or(0);
-    // 10 USDC = 100_000_000 minor units; allow for string formatting differences.
-    let max_minor = 100_000_000i64;
-    assert!(
-        total_paid <= max_minor,
-        "overpaid: total paid {total_paid} exceeds max {max_minor}"
-    );
+    // The payer must not have been charged more than the 10 USDC requested.
+    let spent = 200_000_000 - balance(&pool, payer_id).await;
+    assert!(spent <= 100_000_000, "overpaid: payer was charged {spent} minor units");
 }

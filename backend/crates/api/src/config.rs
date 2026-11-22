@@ -50,6 +50,10 @@ pub struct Config {
     /// Set `ENGIPAY_ENV=production` to enable production mode. In production
     /// the API refuses to start when any provider is still a fake.
     pub production_mode: bool,
+    /// Shared bearer token that internal workers present on internal-only
+    /// routes such as settling holds (`INTERNAL_API_TOKEN`). When unset those
+    /// routes reject every request.
+    pub internal_api_token: Option<String>,
 }
 
 /// Default withdrawal review threshold: 100 USDC, in minor units.
@@ -203,6 +207,10 @@ impl Config {
             withdrawal_review_threshold_minor,
             production_mode: env::var("ENGIPAY_ENV")
                 .is_ok_and(|v| v.trim().eq_ignore_ascii_case("production")),
+            internal_api_token: env::var("INTERNAL_API_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty())
+                .map(|token| token.trim().to_owned()),
         })
     }
 
@@ -235,6 +243,7 @@ impl Config {
             stellar_anchor_home_domain: "testanchor.stellar.org".to_owned(),
             withdrawal_review_threshold_minor: DEFAULT_REVIEW_THRESHOLD_MINOR,
             production_mode: false,
+            internal_api_token: Some("test-internal-token-do-not-use-in-production".to_owned()),
         }
     }
 }

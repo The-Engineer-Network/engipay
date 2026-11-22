@@ -243,9 +243,10 @@ pub(crate) async fn load_payment_request_detail(
 pub struct RecordPaymentRequest {
     /// Amount being paid, as a decimal string in the request's asset.
     pub amount: String,
-    /// Chain identifier: 'stellar', 'base', 'bitcoin', or 'internal'.
+    /// Chain identifier: only 'internal' is accepted here. On-chain payments
+    /// (stellar, base, bitcoin) must be recorded by the deposit watcher.
     pub chain: String,
-    /// On-chain transaction hash (required for chain payments, omit for internal).
+    /// On-chain transaction hash (not accepted for internal payments).
     #[serde(default)]
     pub tx_hash: Option<String>,
     /// Payer's wallet address or user tag (optional).
@@ -269,26 +270,58 @@ pub struct RecordPaymentResponse {
 
 /// POST /v1/payment-requests/{id}/pay
 ///
-/// Records a payment (on-chain or internal) against a payment request.
+/// Records an internal payment against a payment request, moving funds from
+/// the authenticated payer's balance to the request owner's balance in the
+/// same transaction that inserts the payment row.
+///
 /// Validates:
 /// - Request is open (pending or partially_paid) and not expired.
 /// - Amount >= min_amount (if set).
 /// - Amount <= max_amount (if set).
 /// - If allow_partial is false, amount must equal the outstanding balance.
 /// - Total paid must not exceed requested_amount.
+/// - Payer has sufficient balance.
 ///
-/// On success updates the request status to partially_paid or paid.
+/// On-chain payments are rejected here; they must be recorded by the deposit
+/// watcher. On success updates the request status to partially_paid or paid.
 async fn record_payment(
     State(state): State<AppState>,
+    auth: AuthUser,
     Path(id): Path<Uuid>,
     Json(payload): Json<RecordPaymentRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let payer_id = auth.user_id(state.config.jwt_secret.as_bytes())?;
     let pool = state
         .database
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
     let db_err = |e: sqlx::Error| ApiError::Internal(anyhow::anyhow!(e.to_string()));
+
+    // Reject on-chain claims through this endpoint. On-chain payments must be
+    // recorded by the deposit watcher, which verifies the transfer on-chain.
+    let chain = payload.chain.trim();
+    if chain.is_empty() {
+        return Err(ApiError::BadRequest("chain must not be empty".to_string()));
+    }
+    if chain != "internal" {
+        return Err(ApiError::BadRequest(
+            "on-chain payments must be recorded by the deposit watcher; \
+             this endpoint only accepts chain = 'internal'"
+                .to_string(),
+        ));
+    }
+    if payload
+        .tx_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some()
+    {
+        return Err(ApiError::BadRequest(
+            "tx_hash is not accepted for internal payments".to_string(),
+        ));
+    }
 
     // Begin a transaction and lock the payment request row so that concurrent
     // payments cannot both pass the outstanding-balance check.
@@ -301,6 +334,7 @@ async fn record_payment(
     let row = sqlx::query(
         r#"
         SELECT
+            pr.user_id,
             pr.requested_amount::text AS requested_amount,
             pr.asset,
             pr.status,
@@ -322,6 +356,7 @@ async fn record_payment(
     .map_err(db_err)?
     .ok_or(ApiError::NotFound)?;
 
+    let owner_id: Uuid = row.try_get("user_id").map_err(db_err)?;
     let status: String = row.try_get("status").map_err(db_err)?;
     let expires_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
         row.try_get("expires_at").map_err(db_err)?;
@@ -428,24 +463,25 @@ async fn record_payment(
         )));
     }
 
-    // Validate chain field.
-    let chain = payload.chain.trim();
-    if chain.is_empty() {
-        return Err(ApiError::BadRequest("chain must not be empty".to_string()));
-    }
-
-    // tx_hash uniqueness is enforced by the DB unique index, but validate presence
-    // for non-internal chains.
-    let tx_hash = payload
-        .tx_hash
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    if chain != "internal" && tx_hash.is_none() {
+    // A payer cannot pay their own request; that would be a no-op transfer.
+    if payer_id.as_uuid() == owner_id {
         return Err(ApiError::BadRequest(
-            "tx_hash is required for on-chain payments".to_string(),
+            "cannot pay your own payment request".to_string(),
         ));
     }
+
+    // Book the ledger transfer from payer to request owner inside the same
+    // transaction as the payment row. This guarantees the payment row only
+    // exists if the payer's balance actually moved.
+    let transfer_id = crate::routes::ledger::transfer_in_tx(
+        &mut tx,
+        payer_id.as_uuid(),
+        owner_id,
+        asset,
+        payment_amount,
+        Some(&format!("payment_request:{id}")),
+    )
+    .await?;
 
     let new_amount_paid = amount_paid_so_far + payment_amount;
     let new_status = if new_amount_paid >= requested_amount {
@@ -455,7 +491,7 @@ async fn record_payment(
     };
 
     // Insert payment and update request status atomically within the same
-    // transaction that holds the row lock.
+    // transaction that holds the row lock and the ledger transfer.
     let payment_id = Uuid::new_v4();
 
     sqlx::query(
@@ -470,7 +506,7 @@ async fn record_payment(
     .bind(payment_amount.to_string())
     .bind(&asset_str)
     .bind(chain)
-    .bind(tx_hash)
+    .bind(Option::<String>::None)
     .bind(
         payload
             .payer_address
@@ -514,6 +550,8 @@ async fn record_payment(
     tx.commit()
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("commit: {e}")))?;
+
+    let _ = transfer_id;
 
     let amount_remaining = requested_amount.saturating_sub(new_amount_paid).max(0);
 

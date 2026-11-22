@@ -49,3 +49,93 @@ async fn list_assets() -> Json<Vec<AssetInfo>> {
             .collect(),
     )
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::config::Config;
+    use crate::middleware::rate_limit::RateLimiter;
+
+    fn test_app() -> Router {
+        let config = Config::for_tests();
+        routes().with_state(AppState::with_fakes(None, config, RateLimiter::new()))
+    }
+
+    #[tokio::test]
+    async fn list_assets_returns_usdc_xlm_eth_and_btc_with_decimals() {
+        let Json(assets) = list_assets().await;
+
+        let usdc = assets
+            .iter()
+            .find(|a| a.symbol == "USDC")
+            .expect("USDC must be present");
+        assert_eq!(usdc.name, "USD Coin");
+        assert_eq!(usdc.decimals, 7);
+
+        let xlm = assets
+            .iter()
+            .find(|a| a.symbol == "XLM")
+            .expect("XLM must be present");
+        assert_eq!(xlm.name, "Stellar Lumens");
+        assert_eq!(xlm.decimals, 7);
+
+        let eth = assets
+            .iter()
+            .find(|a| a.symbol == "ETH")
+            .expect("ETH must be present");
+        assert_eq!(eth.name, "Ether");
+        assert_eq!(eth.decimals, 18);
+
+        let btc = assets
+            .iter()
+            .find(|a| a.symbol == "BTC")
+            .expect("BTC must be present");
+        assert_eq!(btc.name, "Bitcoin");
+        assert_eq!(btc.decimals, 8);
+    }
+
+    #[tokio::test]
+    async fn assets_endpoint_returns_200_and_lists_assets_with_decimals() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/assets")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let assets = body.as_array().expect("response must be a JSON array");
+
+        let find_asset = |sym: &str| {
+            assets
+                .iter()
+                .find(|a| a["symbol"] == sym)
+                .unwrap_or_else(|| panic!("{sym} must be present in response"))
+        };
+
+        let usdc = find_asset("USDC");
+        assert_eq!(usdc["decimals"], 7);
+
+        let xlm = find_asset("XLM");
+        assert_eq!(xlm["decimals"], 7);
+
+        let eth = find_asset("ETH");
+        assert_eq!(eth["decimals"], 18);
+
+        let btc = find_asset("BTC");
+        assert_eq!(btc["decimals"], 8);
+    }
+}

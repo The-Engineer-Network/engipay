@@ -19,6 +19,10 @@ export interface EngiPayTransaction {
   tx_hash?: string
   /** Human-readable counterpart label, e.g. "@alice" or "Bank withdrawal" */
   description?: string
+  /** Transaction reference number */
+  reference?: string
+  /** Counterparty information (e.g., recipient tag or address) */
+  counterparty?: string
 }
 
 interface TransactionPage {
@@ -37,19 +41,28 @@ interface UseEngiPayTransactionsResult {
   refetch: () => void
 }
 
+interface TransactionFilters {
+  kind?: string
+  startDate?: string
+  endDate?: string
+}
+
 /**
  * Fetches the authenticated user's transaction history from the EngiPay
  * backend (GET /v1/transactions) with cursor-based pagination.
  *
  * `limit` controls how many items are fetched per page.
  * Pass `maxItems` to cap the list (useful for the dashboard preview).
+ * Pass `filters` to filter by kind and date range.
  */
 export function useEngiPayTransactions(options?: {
   limit?: number
   maxItems?: number
+  filters?: TransactionFilters
 }): UseEngiPayTransactionsResult {
   const limit = options?.limit ?? 20
   const maxItems = options?.maxItems
+  const filters = options?.filters
 
   const [transactions, setTransactions] = useState<EngiPayTransaction[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
@@ -79,7 +92,7 @@ export function useEngiPayTransactions(options?: {
     setError(null)
 
     apiClient
-      .getTransactions({ limit }, token)
+      .getTransactions({ limit, filters }, token)
       .then((page: TransactionPage) => {
         if (cancelled) return
         const items = maxItems ? page.items.slice(0, maxItems) : page.items
@@ -101,7 +114,7 @@ export function useEngiPayTransactions(options?: {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetTick])
+  }, [resetTick, filters?.kind, filters?.startDate, filters?.endDate])
 
   /** Append the next page of results. */
   const loadMore = useCallback(() => {
@@ -114,7 +127,7 @@ export function useEngiPayTransactions(options?: {
     setIsLoadingMore(true)
 
     apiClient
-      .getTransactions({ limit, cursor }, token)
+      .getTransactions({ limit, cursor, filters }, token)
       .then((page: TransactionPage) => {
         setTransactions((prev) => {
           const next = [...prev, ...page.items]
@@ -127,7 +140,7 @@ export function useEngiPayTransactions(options?: {
       .catch(() => {
         setIsLoadingMore(false)
       })
-  }, [cursor, isLoadingMore, limit, maxItems])
+  }, [cursor, isLoadingMore, limit, maxItems, filters])
 
   return { transactions, isLoading, isLoadingMore, error, hasMore, loadMore, refetch }
 }

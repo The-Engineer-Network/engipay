@@ -1,8 +1,17 @@
-//! POST /v1/settles — settle a hold using a previously issued quote.
+//! POST /internal/settles — settle a hold using a previously issued quote.
 //!
-//! The client must:
+//! **Who calls this:** internal workers only. Settlement is not a user action;
+//! it is performed by the backend's own workers once a hold is ready to be
+//! booked. Hold references are predictable (`withdrawal:<id>`,
+//! `convert:<quote_id>`), so exposing this on the public `/v1` router would let
+//! any caller settle any hold whose reference they can guess. It is therefore
+//! mounted on an internal path and guarded by a shared token
+//! (`INTERNAL_API_TOKEN`), not by `AuthUser`.
+//!
+//! The worker must:
 //!   1. Call `POST /v1/quotes` to lock in a fee.
-//!   2. Call `POST /v1/settles` with the `hold_reference` and `quote_id`.
+//!   2. Call `POST /internal/settles` with the `hold_reference` and `quote_id`,
+//!      sending the shared token in the `x-internal-token` header.
 //!
 //! This endpoint:
 //!   * Looks up the quote in the database and verifies it has not expired.
@@ -17,6 +26,7 @@
 //! Without a database the endpoint returns 503.
 
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -25,8 +35,40 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiError;
 
+/// Header carrying the shared internal token.
+const INTERNAL_TOKEN_HEADER: &str = "x-internal-token";
+
 pub fn routes() -> Router<AppState> {
     Router::new().route("/settles", post(settle_hold))
+}
+
+/// Reject the request unless it carries the configured internal token.
+///
+/// Fails closed: if no token is configured, every request is rejected.
+fn require_internal_token(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let expected = state
+        .internal_api_token
+        .as_deref()
+        .filter(|t| !t.is_empty())
+        .ok_or(ApiError::Unauthorized)?;
+
+    let provided = headers
+        .get(INTERNAL_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or(ApiError::Unauthorized)?;
+
+    // Constant-time-ish comparison to avoid trivial timing leaks.
+    if provided.len() != expected.len()
+        || provided
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            != 0
+    {
+        return Err(ApiError::Unauthorized);
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,8 +108,11 @@ struct QuoteRow {
 
 async fn settle_hold(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<SettleRequest>,
 ) -> Result<Json<SettleResponse>, ApiError> {
+    require_internal_token(&state, &headers)?;
+
     let pool = state
         .database
         .as_ref()
