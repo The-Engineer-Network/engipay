@@ -121,6 +121,8 @@ pub async fn create(
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
 
+    crate::services::frozen::ensure_not_frozen(&pool, requester_id.as_uuid()).await?;
+
     // Validate asset.
     let asset_str = payload.asset.trim().to_uppercase();
     let asset: Asset = asset_str
@@ -249,6 +251,8 @@ pub async fn accept(
         .database
         .clone()
         .ok_or(ApiError::DatabaseUnavailable)?;
+
+    crate::services::frozen::ensure_not_frozen(&pool, user_id.as_uuid()).await?;
 
     // Load and verify the request.
     let req = load_request(&pool, id).await?;
