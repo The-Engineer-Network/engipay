@@ -1,15 +1,22 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import QRCode from "qrcode"
 import { Card, CardContent } from "@/components/ui/card"
-import { getPaymentRequest, type PaymentRequestDetail } from "@/lib/api-client"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { getPaymentRequest, payPaymentRequest, type PaymentRequestDetail } from "@/lib/api-client"
 import {
   buildRequestUri,
   formatRequestAmount,
   resolveRequestView,
 } from "@/lib/payment-request-view"
+import { useWallet } from "@/contexts/WalletContext"
+import { readSessionToken } from "@/lib/api-client"
+import { Loader2 } from "lucide-react"
+import { toast } from "@/hooks/use-toast"
 
 const BADGES: Record<string, string> = {
   open: "Open",
@@ -21,10 +28,15 @@ const BADGES: Record<string, string> = {
 
 export default function PayRequestPage() {
   const params = useParams<{ id: string }>()
+  const router = useRouter()
   const id = params?.id
   const [request, setRequest] = useState<PaymentRequestDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [qr, setQr] = useState("")
+  const [payAmount, setPayAmount] = useState("")
+  const [isPaying, setIsPaying] = useState(false)
+  
+  const isSignedIn = !!readSessionToken()
 
   useEffect(() => {
     if (!id) return
@@ -56,6 +68,91 @@ export default function PayRequestPage() {
       cancelled = true
     }
   }, [request, isOpen])
+
+  // Set default pay amount to remaining amount
+  useEffect(() => {
+    if (request && !payAmount) {
+      setPayAmount(request.amount_remaining)
+    }
+  }, [request, payAmount])
+
+  const handlePayWithBalance = async () => {
+    if (!request || !id) return
+    
+    const amount = parseFloat(payAmount)
+    if (isNaN(amount) || amount <= 0) {
+      toast({
+        title: "Invalid amount",
+        description: "Please enter a valid amount",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const remaining = parseFloat(request.amount_remaining)
+    if (amount > remaining) {
+      toast({
+        title: "Amount too large",
+        description: `Cannot pay more than ${formatRequestAmount(request.amount_remaining, request.asset)} ${request.asset}`,
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (!request.allow_partial && amount < remaining) {
+      toast({
+        title: "Partial payment not allowed",
+        description: "This request must be paid in full",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (request.min_amount && amount < parseFloat(request.min_amount)) {
+      toast({
+        title: "Amount too small",
+        description: `Minimum amount is ${formatRequestAmount(request.min_amount, request.asset)} ${request.asset}`,
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (request.max_amount && amount > parseFloat(request.max_amount)) {
+      toast({
+        title: "Amount too large",
+        description: `Maximum amount is ${formatRequestAmount(request.max_amount, request.asset)} ${request.asset}`,
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsPaying(true)
+    try {
+      const idempotencyKey = `pay-${id}-${Date.now()}-${Math.random().toString(36).substring(7)}`
+      await payPaymentRequest(id, {
+        amount: payAmount,
+        idempotency_key: idempotencyKey,
+      })
+      
+      toast({
+        title: "Payment successful",
+        description: `Paid ${formatRequestAmount(payAmount, request.asset)} ${request.asset}`,
+      })
+      
+      // Refresh the page state
+      const updated = await getPaymentRequest(id)
+      setRequest(updated)
+      setPayAmount(updated.amount_remaining)
+    } catch (e: unknown) {
+      toast({
+        title: "Payment failed",
+        description: e instanceof Error ? e.message : "Could not complete payment",
+        variant: "destructive",
+      })
+    } finally {
+      setIsPaying(false)
+    }
+  }
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md items-center px-4 py-10">
@@ -102,6 +199,36 @@ export default function PayRequestPage() {
                   <dd>{new Date(request.expires_at).toLocaleString()}</dd>
                 </div>
               </dl>
+              
+              {/* Pay with EngiPay balance section */}
+              {isSignedIn && isOpen && (
+                <div className="space-y-3 border-t pt-4 text-left">
+                  <h2 className="text-sm font-semibold">Pay with EngiPay balance</h2>
+                  <div className="space-y-2">
+                    <Label htmlFor="pay-amount">
+                      Amount {request.allow_partial && "(partial payment allowed)"}
+                    </Label>
+                    <Input
+                      id="pay-amount"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={payAmount}
+                      onChange={(e) => setPayAmount(e.target.value)}
+                      disabled={isPaying}
+                    />
+                  </div>
+                  <Button
+                    onClick={handlePayWithBalance}
+                    disabled={isPaying || !payAmount}
+                    className="w-full"
+                  >
+                    {isPaying && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    {isPaying ? "Processing..." : `Pay ${payAmount || "0"} ${request.asset}`}
+                  </Button>
+                </div>
+              )}
+              
               {isOpen && qr && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={qr} alt="QR code for this payment request" className="mx-auto h-60 w-60" />

@@ -48,9 +48,11 @@ EngiPay is in active development on testnet. This table is kept honest: nothing 
 | Receive codes for Base (EIP-681) and Stellar (SEP-7) | Working |
 | Scanner for EngiPay, EIP-681, BIP-21 and SEP-7 codes | Working |
 | Backend: exact money types, double-entry ledger, Postgres guarantees | Working, tested |
-| Chain service: Stellar deposit watching and payment signing | Working on testnet, not yet crediting the database ledger |
-| EngiPay balances, internal transfers, conversion | In progress |
-| Naira ramps and identity checks | Planned: partner not yet chosen |
+| Chain service: Stellar deposit watching and payment signing | Working on testnet |
+| EngiPay balances and transaction history | Working: view balances, activity list with filters |
+| Internal transfers and withdrawals | Working: send from balance, withdraw to external wallets |
+| Conversion between assets | UI complete, backend pricing and swap not yet connected |
+| Naira on-ramp and off-ramp | UI complete, [partner not yet chosen](#726) and identity check not connected |
 | Bitcoin sending | Planned |
 
 ## Architecture

@@ -362,3 +362,49 @@ export async function removeBankAccount(id: string): Promise<void> {
 // ── Convert (#676) ───────────────────────────────
 
 /* … truncated 1406 chars — edit only what you need near the top … */
+
+
+// ── Payment Requests (#690, #620, #730) ───────────────────────────────────────
+
+/** GET /v1/payment-requests/:id — public, no auth required. */
+export async function getPaymentRequest(id: string): Promise<PaymentRequestDetail> {
+  const result = await apiPublicRequest<PaymentRequestDetail>(
+    `/v1/payment-requests/${encodeURIComponent(id)}`
+  )
+  if (!result) throw new Error("API did not return a payment request.")
+  return result
+}
+
+/** POST /v1/payment-requests — create a new payment request (authenticated). */
+export async function createPaymentRequest(
+  req: CreatePaymentRequestInput
+): Promise<CreatePaymentRequestResponse> {
+  const result = await apiRequest<CreatePaymentRequestResponse>("/v1/payment-requests", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+  if (!result) throw new Error("API did not return a payment request.")
+  return result
+}
+
+/** GET /v1/payment-requests — list the signed-in user's payment requests. */
+export async function listPaymentRequests(): Promise<PaymentRequestSummary[]> {
+  const result = await apiRequest<PaymentRequestSummary[]>("/v1/payment-requests")
+  return result ?? []
+}
+
+export interface PayPaymentRequestInput {
+  amount: string
+  idempotency_key: string
+}
+
+/** POST /v1/payment-requests/:id/pay — pay a request from EngiPay balance. */
+export async function payPaymentRequest(
+  id: string,
+  req: PayPaymentRequestInput
+): Promise<void> {
+  await apiRequest<void>(`/v1/payment-requests/${encodeURIComponent(id)}/pay`, {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+}
