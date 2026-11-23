@@ -168,7 +168,7 @@ export function UserOnboarding() {
                     <div className="w-12 h-12 bg-primary/15 rounded-full flex items-center justify-center mx-auto mb-2">
                       <TrendingUp className="w-6 h-6 text-primary" />
                     </div>
-                    <p className="text-sm">Naira (coming soon)</p>
+                    <p className="text-sm">Sell for Naira</p>
                   </div>
                 </div>
               </div>
@@ -259,9 +259,9 @@ export function UserOnboarding() {
                   <div className="p-3 border border-border rounded-lg text-left">
                     <div className="flex items-center gap-2 mb-1">
                       <TrendingUp className="w-4 h-4 text-primary" />
-                      <h4 className="font-medium text-sm">Naira (coming soon)</h4>
+                      <h4 className="font-medium text-sm">Sell for Naira</h4>
                     </div>
-                    <p className="text-xs text-muted-foreground">Not live yet. The Naira partner is still being connected</p>
+                    <p className="text-xs text-muted-foreground">Cash out crypto to your Nigerian bank account via the SEP-24 anchor</p>
                   </div>
                 </div>
               </div>
