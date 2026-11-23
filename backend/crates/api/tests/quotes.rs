@@ -13,6 +13,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use engipay_api::middleware::rate_limit::RateLimiter;
 use engipay_api::{AppState, config::Config, router};
 use engipay_core::{Asset, Product};
 use http_body_util::BodyExt;
@@ -22,16 +23,27 @@ use tower::ServiceExt;
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 fn app() -> axum::Router {
-    router(AppState { database: None }, &Config::for_tests())
+    let config = Config::for_tests();
+    router(
+        AppState::with_fakes(None, config.clone(), RateLimiter::new()),
+        &config,
+    )
 }
 
 async fn post_json(path: &str, body: Value) -> (StatusCode, Value) {
+    let token = engipay_api::auth::jwt::create_token(
+        uuid::Uuid::from_u128(1),
+        String::new(),
+        Config::for_tests().jwt_secret.as_bytes(),
+    )
+    .unwrap();
     let response = app()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(path)
                 .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )
@@ -44,6 +56,29 @@ async fn post_json(path: &str, body: Value) -> (StatusCode, Value) {
 }
 
 // ─── POST /v1/quotes ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn quote_returns_401_without_token() {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/quotes")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "product": "transfer",
+                        "asset": "USDC",
+                        "gross_minor": 1_000_000_000_i64
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
 
 #[tokio::test]
 async fn quote_returns_fee_and_schedule_version_for_transfer() {
@@ -213,6 +248,28 @@ async fn each_product_has_a_distinct_schedule_version() {
 }
 
 // ─── POST /v1/settles ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn settle_returns_401_without_token() {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/settles")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "hold_reference": "wd-1",
+                        "quote_id": "00000000-0000-0000-0000-000000000001"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
 
 #[tokio::test]
 async fn settle_returns_503_without_database() {

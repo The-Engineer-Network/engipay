@@ -1,19 +1,11 @@
-//! POST /internal/settles — settle a hold using a previously issued quote.
+//! POST /v1/settles — settle a hold using a previously issued quote.
 //!
-//! **Who calls this:** internal workers only. Settlement is not a user action;
-//! it is performed by the backend's own workers once a hold is ready to be
-//! booked. Hold references are predictable (`withdrawal:<id>`,
-//! `convert:<quote_id>`), so exposing this on the public `/v1` router would let
-//! any caller settle any hold whose reference they can guess. It is therefore
-//! mounted on an internal path and guarded by a shared token
-//! (`INTERNAL_API_TOKEN`), not by `AuthUser`.
-//!
-//! The worker must:
+//! A user must:
 //!   1. Call `POST /v1/quotes` to lock in a fee.
-//!   2. Call `POST /internal/settles` with the `hold_reference` and `quote_id`,
-//!      sending the shared token in the `x-internal-token` header.
+//!   2. Call `POST /v1/settles` with the `hold_reference` and `quote_id`.
 //!
 //! This endpoint:
+//!   * Requires `AuthUser` and verifies that the quote belongs to the caller.
 //!   * Looks up the quote in the database and verifies it has not expired.
 //!   * Verifies the quote's `schedule_version` still exists and is unchanged
 //!     (always true because `fee_schedules` is append-only, but the JOIN makes
@@ -26,7 +18,6 @@
 //! Without a database the endpoint returns 503.
 
 use axum::extract::State;
-use axum::http::HeaderMap;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -34,41 +25,10 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::error::ApiError;
-
-/// Header carrying the shared internal token.
-const INTERNAL_TOKEN_HEADER: &str = "x-internal-token";
+use crate::routes::auth::AuthUser;
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/settles", post(settle_hold))
-}
-
-/// Reject the request unless it carries the configured internal token.
-///
-/// Fails closed: if no token is configured, every request is rejected.
-fn require_internal_token(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
-    let expected = state
-        .internal_api_token
-        .as_deref()
-        .filter(|t| !t.is_empty())
-        .ok_or(ApiError::Unauthorized)?;
-
-    let provided = headers
-        .get(INTERNAL_TOKEN_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .ok_or(ApiError::Unauthorized)?;
-
-    // Constant-time-ish comparison to avoid trivial timing leaks.
-    if provided.len() != expected.len()
-        || provided
-            .bytes()
-            .zip(expected.bytes())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            != 0
-    {
-        return Err(ApiError::Unauthorized);
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,14 +64,15 @@ struct QuoteRow {
     fee_minor: String,
     schedule_version: Uuid,
     expires_at: chrono::DateTime<chrono::Utc>,
+    user_id: Option<Uuid>,
 }
 
 async fn settle_hold(
+    auth: AuthUser,
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(req): Json<SettleRequest>,
 ) -> Result<Json<SettleResponse>, ApiError> {
-    require_internal_token(&state, &headers)?;
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?.as_uuid();
 
     let pool = state
         .database
@@ -156,7 +117,8 @@ async fn settle_hold(
     let quote: QuoteRow = sqlx::query_as(
         "SELECT q.fee_minor::TEXT AS fee_minor,
                 q.schedule_version,
-                q.expires_at
+                q.expires_at,
+                q.user_id
          FROM   quotes q
          JOIN   fee_schedules fs ON fs.id = q.schedule_version
          WHERE  q.id = $1",
@@ -166,6 +128,10 @@ async fn settle_hold(
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?
     .ok_or_else(|| ApiError::BadRequest(format!("quote {} not found", req.quote_id)))?;
+
+    if quote.user_id != Some(user_id) {
+        return Err(ApiError::Forbidden);
+    }
 
     let now = chrono::Utc::now();
     if now > quote.expires_at {
