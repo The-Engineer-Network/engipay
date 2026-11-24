@@ -1,6 +1,6 @@
-//! POST /internal/settles against a real Postgres (#643): an expired quote, a
-//! replayed hold and a hold reference that has never been settled. Settles are
-//! internal-only and require the shared internal token (#618).
+//! POST /v1/settles against a real Postgres (#643): an expired quote, a
+//! replayed hold, a hold reference that has never been settled, and quote
+//! ownership enforcement (#619).
 //!
 //! Needs DATABASE_URL pointing at a database with every migration applied, so
 //! it is ignored by default. Run it with:
@@ -22,9 +22,6 @@ use uuid::Uuid;
 const TRANSFER_SCHEDULE: &str = "00000000-0000-0000-0000-000000000001";
 const FEE_MINOR: i64 = 1_000_000;
 
-/// Settles are internal-only: callers must present the shared token.
-const INTERNAL_TOKEN: &str = "test-internal-token";
-
 async fn setup() -> (axum::Router, sqlx::PgPool) {
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPoolOptions::new()
@@ -32,8 +29,7 @@ async fn setup() -> (axum::Router, sqlx::PgPool) {
         .connect(&url)
         .await
         .unwrap();
-    let mut config = Config::for_tests();
-    config.internal_token = INTERNAL_TOKEN.to_owned();
+    let config = Config::for_tests();
     let app = router(
         AppState::with_fakes(Some(pool.clone()), config.clone(), RateLimiter::new()),
         &config,
@@ -41,45 +37,51 @@ async fn setup() -> (axum::Router, sqlx::PgPool) {
     (app, pool)
 }
 
+fn user_token(user_id: Uuid) -> String {
+    engipay_api::auth::jwt::create_token(
+        user_id,
+        String::new(),
+        Config::for_tests().jwt_secret.as_bytes(),
+    )
+    .unwrap()
+}
+
 /// Inserts a quote directly. Quotes are append-only, so an expired quote has
 /// to be written already expired rather than updated afterwards.
-async fn insert_quote(pool: &sqlx::PgPool, expires_in: &str) -> Uuid {
+async fn insert_quote(pool: &sqlx::PgPool, user_id: Uuid, expires_in: &str) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO quotes (id, product, asset, gross_minor, fee_minor, schedule_version, expires_at)
-         VALUES ($1, 'transfer', 'USDC', 1000000000, $2::numeric, $3::uuid, now() + $4::interval)",
+        "INSERT INTO quotes (id, product, asset, gross_minor, fee_minor, schedule_version, expires_at, user_id)
+         VALUES ($1, 'transfer', 'USDC', 1000000000, $2::numeric, $3::uuid, now() + $4::interval, $5)",
     )
     .bind(id)
     .bind(FEE_MINOR.to_string())
     .bind(TRANSFER_SCHEDULE)
     .bind(expires_in)
+    .bind(user_id)
     .execute(pool)
     .await
     .unwrap();
     id
 }
 
-async fn settle(app: &axum::Router, hold_reference: &str, quote_id: Uuid) -> (StatusCode, Value) {
-    settle_with_token(app, hold_reference, quote_id, Some(INTERNAL_TOKEN)).await
-}
-
-async fn settle_with_token(
+async fn settle(
     app: &axum::Router,
     hold_reference: &str,
     quote_id: Uuid,
     token: Option<&str>,
 ) -> (StatusCode, Value) {
-    let mut request = Request::builder()
+    let mut builder = Request::builder()
         .method("POST")
-        .uri("/internal/settles")
+        .uri("/v1/settles")
         .header(header::CONTENT_TYPE, "application/json");
-    if let Some(token) = token {
-        request = request.header("x-internal-token", token);
+    if let Some(tok) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {tok}"));
     }
     let response = app
         .clone()
         .oneshot(
-            request
+            builder
                 .body(Body::from(
                     json!({ "hold_reference": hold_reference, "quote_id": quote_id }).to_string(),
                 ))
@@ -107,35 +109,32 @@ async fn settle_rows(pool: &sqlx::PgPool, hold_reference: &str) -> i64 {
 #[ignore = "requires DATABASE_URL"]
 async fn an_unauthenticated_request_cannot_settle_a_hold() {
     let (app, pool) = setup().await;
-    let quote_id = insert_quote(&pool, "5 minutes").await;
+    let user_a = Uuid::new_v4();
+    let quote_id = insert_quote(&pool, user_a, "5 minutes").await;
     let hold = format!("hold-{}", Uuid::new_v4());
 
     // No token at all.
-    let (status, body) = settle_with_token(&app, &hold, quote_id, None).await;
+    let (status, body) = settle(&app, &hold, quote_id, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     assert_eq!(settle_rows(&pool, &hold).await, 0);
 
-    // A wrong token is refused too.
-    let (status, body) = settle_with_token(&app, &hold, quote_id, Some("wrong-token")).await;
+    // Invalid token is refused too.
+    let (status, body) = settle(&app, &hold, quote_id, Some("invalid-token")).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     assert_eq!(settle_rows(&pool, &hold).await, 0);
+}
 
-    // The public /v1 route no longer exists.
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/settles")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({ "hold_reference": hold, "quote_id": quote_id }).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
+async fn a_request_with_another_users_quote_is_refused() {
+    let (app, pool) = setup().await;
+    let user_a = Uuid::new_v4();
+    let user_b = Uuid::new_v4();
+    let quote_id = insert_quote(&pool, user_a, "5 minutes").await;
+    let hold = format!("hold-{}", Uuid::new_v4());
+
+    let (status, body) = settle(&app, &hold, quote_id, Some(&user_token(user_b))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(settle_rows(&pool, &hold).await, 0);
 }
 
@@ -143,10 +142,11 @@ async fn an_unauthenticated_request_cannot_settle_a_hold() {
 #[ignore = "requires DATABASE_URL"]
 async fn an_expired_quote_is_refused_and_records_nothing() {
     let (app, pool) = setup().await;
-    let quote_id = insert_quote(&pool, "-1 second").await;
+    let user = Uuid::new_v4();
+    let quote_id = insert_quote(&pool, user, "-1 second").await;
     let hold = format!("hold-{}", Uuid::new_v4());
 
-    let (status, body) = settle(&app, &hold, quote_id).await;
+    let (status, body) = settle(&app, &hold, quote_id, Some(&user_token(user))).await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
@@ -160,16 +160,17 @@ async fn an_expired_quote_is_refused_and_records_nothing() {
 #[ignore = "requires DATABASE_URL"]
 async fn a_second_call_with_the_same_hold_is_replayed() {
     let (app, pool) = setup().await;
-    let quote_id = insert_quote(&pool, "5 minutes").await;
+    let user = Uuid::new_v4();
+    let quote_id = insert_quote(&pool, user, "5 minutes").await;
     let hold = format!("hold-{}", Uuid::new_v4());
 
-    let (status, first) = settle(&app, &hold, quote_id).await;
+    let (status, first) = settle(&app, &hold, quote_id, Some(&user_token(user))).await;
     assert_eq!(status, StatusCode::OK, "{first}");
     assert_eq!(first["replayed"], false);
     assert_eq!(first["fee_minor"], FEE_MINOR);
     assert_eq!(first["schedule_version"], TRANSFER_SCHEDULE);
 
-    let (status, second) = settle(&app, &hold, quote_id).await;
+    let (status, second) = settle(&app, &hold, quote_id, Some(&user_token(user))).await;
     assert_eq!(status, StatusCode::OK, "{second}");
     assert_eq!(second["replayed"], true);
     // The replay returns the original fee and schedule.
@@ -184,12 +185,13 @@ async fn a_second_call_with_the_same_hold_is_replayed() {
 #[ignore = "requires DATABASE_URL"]
 async fn an_unknown_hold_is_not_reported_as_a_replay() {
     let (app, pool) = setup().await;
-    let quote_id = insert_quote(&pool, "5 minutes").await;
+    let user = Uuid::new_v4();
+    let quote_id = insert_quote(&pool, user, "5 minutes").await;
     // A hold reference that has never been settled before.
     let hold = format!("unknown-hold-{}", Uuid::new_v4());
     assert_eq!(settle_rows(&pool, &hold).await, 0);
 
-    let (status, body) = settle(&app, &hold, quote_id).await;
+    let (status, body) = settle(&app, &hold, quote_id, Some(&user_token(user))).await;
 
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["replayed"], false);
@@ -201,9 +203,10 @@ async fn an_unknown_hold_is_not_reported_as_a_replay() {
 #[ignore = "requires DATABASE_URL"]
 async fn an_unknown_quote_is_refused() {
     let (app, pool) = setup().await;
+    let user = Uuid::new_v4();
     let hold = format!("hold-{}", Uuid::new_v4());
 
-    let (status, body) = settle(&app, &hold, Uuid::new_v4()).await;
+    let (status, body) = settle(&app, &hold, Uuid::new_v4(), Some(&user_token(user))).await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(settle_rows(&pool, &hold).await, 0);

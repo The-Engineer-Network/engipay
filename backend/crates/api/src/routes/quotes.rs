@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::error::ApiError;
+use crate::routes::auth::AuthUser;
 
 /// How long a quote is valid for.
 const QUOTE_TTL_SECS: i64 = 300; // 5 minutes
@@ -58,9 +59,12 @@ pub struct QuoteResponse {
 }
 
 async fn create_quote(
+    auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<QuoteRequest>,
 ) -> Result<Json<QuoteResponse>, ApiError> {
+    let user_id = auth.user_id(state.config.jwt_secret.as_bytes())?.as_uuid();
+
     if req.gross_minor <= 0 {
         return Err(ApiError::BadRequest(
             "gross_minor must be greater than zero".to_owned(),
@@ -91,8 +95,8 @@ async fn create_quote(
     // Persist when a database is available.
     if let Some(pool) = &state.database {
         sqlx::query(
-            "INSERT INTO quotes (id, product, asset, gross_minor, fee_minor, schedule_version, expires_at)
-             VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6, $7)",
+            "INSERT INTO quotes (id, product, asset, gross_minor, fee_minor, schedule_version, expires_at, user_id)
+             VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6, $7, $8)",
         )
         .bind(quote_id)
         .bind(req.product.as_str())
@@ -101,6 +105,7 @@ async fn create_quote(
         .bind(fee_minor)
         .bind(fee_result.schedule_version)
         .bind(expires_at)
+        .bind(user_id)
         .execute(pool)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;

@@ -15,17 +15,17 @@ pub mod metrics;
 pub mod money_request_cancel;
 pub mod money_request_status;
 pub mod money_requests;
-pub mod transfer_note;
 pub mod naira;
 pub mod openapi;
 pub mod payment_request_cancel;
-pub mod payment_requests;
 pub mod payment_request_paging;
+pub mod payment_requests;
 pub mod quotes;
 pub mod receipts;
 pub mod requests;
 pub mod settles;
 pub mod transactions;
+pub mod transfer_note;
 pub mod transfers;
 pub mod withdrawals;
 
@@ -56,5 +56,6 @@ pub fn v1() -> Router<AppState> {
         .merge(transfers::routes())
         .merge(withdrawals::router())
         .merge(quotes::routes())
+        .merge(settles::routes())
 }
 pub mod batch_upload_limits;
