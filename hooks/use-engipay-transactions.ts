@@ -2,34 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { apiClient } from "@/lib/api-client"
+import {
+  hasMoreAfterFirstPage,
+  hasMoreAfterNextPage,
+  mergeTransactionItems,
+  type EngiPayTransaction,
+  type TransactionPage,
+} from "@/lib/engipay-pagination"
 
-/** One transaction entry from GET /v1/transactions. */
-export interface EngiPayTransaction {
-  id: string
-  /** e.g. "transfer", "deposit", "withdrawal", "conversion" */
-  type: string
-  /** "credit" = money came in, "debit" = money went out */
-  direction: "credit" | "debit"
-  amount: string
-  asset: string
-  /** ISO-8601 timestamp */
-  created_at: string
-  status: "completed" | "pending" | "failed"
-  /** Present when the transaction was settled on-chain. */
-  tx_hash?: string
-  /** Human-readable counterpart label, e.g. "@alice" or "Bank withdrawal" */
-  description?: string
-  /** Transaction reference number */
-  reference?: string
-  /** Counterparty information (e.g., recipient tag or address) */
-  counterparty?: string
-}
-
-interface TransactionPage {
-  items: EngiPayTransaction[]
-  /** Pass as `cursor` param in the next request to get the next page. */
-  next_cursor: string | null
-}
+export type { EngiPayTransaction } from "@/lib/engipay-pagination"
 
 interface UseEngiPayTransactionsResult {
   transactions: EngiPayTransaction[]
@@ -95,12 +76,10 @@ export function useEngiPayTransactions(options?: {
       .getTransactions({ limit, filters }, token)
       .then((page: TransactionPage) => {
         if (cancelled) return
-        const items = maxItems ? page.items.slice(0, maxItems) : page.items
+        const items = mergeTransactionItems([], page.items, maxItems)
         setTransactions(items)
         setCursor(page.next_cursor)
-        setHasMore(
-          page.next_cursor !== null && (!maxItems || items.length < maxItems)
-        )
+        setHasMore(hasMoreAfterFirstPage(page, maxItems))
         setIsLoading(false)
       })
       .catch((err: unknown) => {
@@ -129,12 +108,9 @@ export function useEngiPayTransactions(options?: {
     apiClient
       .getTransactions({ limit, cursor, filters }, token)
       .then((page: TransactionPage) => {
-        setTransactions((prev) => {
-          const next = [...prev, ...page.items]
-          return maxItems ? next.slice(0, maxItems) : next
-        })
+        setTransactions((prev) => mergeTransactionItems(prev, page.items, maxItems))
         setCursor(page.next_cursor)
-        setHasMore(page.next_cursor !== null)
+        setHasMore(hasMoreAfterNextPage(page))
         setIsLoadingMore(false)
       })
       .catch(() => {
